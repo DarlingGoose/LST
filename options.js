@@ -66,6 +66,78 @@ function formatCacheDate(value) {
   }).format(date);
 }
 
+function formatTimestamp(milliseconds) {
+  if (!Number.isFinite(Number(milliseconds)) || Number(milliseconds) < 0) return "—";
+  const total = Number(milliseconds);
+  const hours = Math.floor(total / 3_600_000);
+  const minutes = Math.floor((total % 3_600_000) / 60_000);
+  const seconds = Math.floor((total % 60_000) / 1000);
+  const millis = Math.floor(total % 1000);
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:` +
+    `${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+}
+
+function cueTimestamp(cue) {
+  if (cue.startMs == null) return "—";
+  return `${formatTimestamp(cue.startMs)} → ${formatTimestamp(cue.endMs)}`;
+}
+
+function createCacheItem(cache) {
+  const item = document.createElement("article");
+  item.className = "cache-item";
+  item.dataset.cacheId = cache.cacheId;
+
+  const details = document.createElement("div");
+  const episode = document.createElement("div");
+  episode.className = "cache-title";
+  episode.textContent = cache.episodeName || cache.title ||
+    `Episode ${cache.videoId || "unknown"}`;
+  episode.title = episode.textContent;
+
+  const meta = document.createElement("div");
+  meta.className = "cache-meta";
+  const translatedCues = Number(cache.cueCount) || 0;
+  const sourceCues = Number(cache.sourceCueCount) || 0;
+  const cueLabel = sourceCues >= translatedCues && sourceCues > 0
+    ? `${translatedCues}/${sourceCues} translated cues`
+    : `${translatedCues} translated cues`;
+  for (const value of [
+    cueLabel,
+    formatBytes(cache.bytes),
+    cache.model || "Unknown model",
+    cache.targetLanguage || "Unknown language",
+    formatCacheDate(cache.updatedAt)
+  ]) {
+    const part = document.createElement("span");
+    part.textContent = value;
+    meta.appendChild(part);
+  }
+  details.append(episode, meta);
+
+  const actions = document.createElement("div");
+  actions.className = "cache-item-actions";
+  for (const [action, label, className] of [
+    ["preview", "Preview", "quiet"],
+    ["export", "Export TSV", "quiet"],
+    ["remove", "Remove", "cache-remove"]
+  ]) {
+    const button = document.createElement("button");
+    button.className = className;
+    button.type = "button";
+    button.dataset.cacheAction = action;
+    button.textContent = label;
+    button.setAttribute("aria-label", `${label} ${episode.textContent}`);
+    if (action === "preview") button.setAttribute("aria-expanded", "false");
+    actions.appendChild(button);
+  }
+
+  const preview = document.createElement("div");
+  preview.className = "cache-preview";
+  preview.hidden = true;
+  item.append(details, actions, preview);
+  return item;
+}
+
 function renderCacheLibrary(caches, totalBytes) {
   const list = $("cacheList");
   list.replaceChildren();
@@ -81,53 +153,97 @@ function renderCacheLibrary(caches, totalBytes) {
     return;
   }
 
+  const groups = new Map();
   for (const cache of caches) {
-    const item = document.createElement("article");
-    item.className = "cache-item";
-
-    const details = document.createElement("div");
-    const title = document.createElement("div");
-    title.className = "cache-title";
-    title.textContent = cache.showName || cache.title || `Netflix episode ${cache.videoId || "unknown"}`;
-    title.title = title.textContent;
-    const episode = document.createElement("div");
-    episode.className = "cache-episode";
-    episode.textContent = cache.episodeName || "";
-    episode.hidden = !episode.textContent;
-
-    const meta = document.createElement("div");
-    meta.className = "cache-meta";
-    const translatedCues = Number(cache.cueCount) || 0;
-    const sourceCues = Number(cache.sourceCueCount) || 0;
-    const cueLabel = sourceCues >= translatedCues && sourceCues > 0
-      ? `${translatedCues}/${sourceCues} translated cues`
-      : `${translatedCues} translated cues`;
-    for (const value of [
-      cueLabel,
-      formatBytes(cache.bytes),
-      cache.model || "Unknown model",
-      cache.targetLanguage || "Unknown language",
-      formatCacheDate(cache.updatedAt)
-    ]) {
-      const part = document.createElement("span");
-      part.textContent = value;
-      meta.appendChild(part);
-    }
-
-    const remove = document.createElement("button");
-    remove.className = "cache-remove";
-    remove.type = "button";
-    remove.dataset.cacheId = cache.cacheId;
-    remove.textContent = "Remove";
-    remove.setAttribute(
-      "aria-label",
-      `Remove cached translations for ${[title.textContent, episode.textContent].filter(Boolean).join(", ")}`
-    );
-
-    details.append(title, episode, meta);
-    item.append(details, remove);
-    list.appendChild(item);
+    const showName = cache.showName || "Netflix";
+    if (!groups.has(showName)) groups.set(showName, []);
+    groups.get(showName).push(cache);
   }
+
+  for (const [showName, episodes] of groups) {
+    const group = document.createElement("section");
+    group.className = "cache-show";
+    const heading = document.createElement("h3");
+    heading.className = "cache-show-title";
+    heading.textContent = showName;
+    const episodeList = document.createElement("div");
+    episodeList.className = "cache-episodes";
+    for (const cache of episodes) episodeList.appendChild(createCacheItem(cache));
+    group.append(heading, episodeList);
+    list.appendChild(group);
+  }
+}
+
+async function loadCacheDetails(cacheId) {
+  return runtimeMessage({ type: "GET_TRANSLATION_CACHE", cacheId });
+}
+
+function renderCachePreview(container, detail) {
+  container.replaceChildren();
+  const cues = detail.cues || [];
+  if (!cues.length) {
+    container.textContent = "No translated cues are stored in this cache.";
+    return;
+  }
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "cache-preview-table-wrap";
+  const table = document.createElement("table");
+  table.className = "cache-preview-table";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const label of ["Timestamp", "Original", "Translation"]) {
+    const cell = document.createElement("th");
+    cell.scope = "col";
+    cell.textContent = label;
+    headRow.appendChild(cell);
+  }
+  head.appendChild(headRow);
+
+  const body = document.createElement("tbody");
+  for (const cue of cues) {
+    const row = document.createElement("tr");
+    for (const value of [cueTimestamp(cue), cue.sourceText, cue.translatedText]) {
+      const cell = document.createElement("td");
+      cell.textContent = value || "—";
+      row.appendChild(cell);
+    }
+    body.appendChild(row);
+  }
+  table.append(head, body);
+  tableWrap.appendChild(table);
+  container.appendChild(tableWrap);
+}
+
+function exportCache(detail) {
+  const metadata = detail.metadata || {};
+  const quote = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const rows = [
+    ["Timestamp", "Untranslated text", "Translated text"],
+    ...(detail.cues || []).map((cue) => [
+      cueTimestamp(cue),
+      cue.sourceText,
+      cue.translatedText
+    ])
+  ];
+  const contents = rows.map((row) => row.map(quote).join("\t")).join("\n");
+  const filename = [metadata.showName, metadata.episodeName, metadata.targetLanguage]
+    .filter(Boolean)
+    .join(" - ")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .trim() || "lst-translation";
+  const url = URL.createObjectURL(new Blob(
+    ["\uFEFF", contents],
+    { type: "text/tab-separated-values;charset=utf-8" }
+  ));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${filename}.tsv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 async function loadCacheLibrary() {
@@ -379,19 +495,40 @@ $("refreshCache").addEventListener("click", () => {
 });
 
 $("cacheList").addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-cache-id]");
+  const button = event.target.closest("[data-cache-action]");
   if (!button) return;
+  const item = button.closest("[data-cache-id]");
+  const cacheId = item?.dataset.cacheId;
+  if (!cacheId) return;
+  const action = button.dataset.cacheAction;
   button.disabled = true;
+
   try {
-    await runtimeMessage({
-      type: "DELETE_TRANSLATION_CACHE",
-      cacheId: button.dataset.cacheId
-    });
-    await loadCacheLibrary();
-    setStatus("Cached episode removed.", "success");
+    if (action === "remove") {
+      await runtimeMessage({ type: "DELETE_TRANSLATION_CACHE", cacheId });
+      await loadCacheLibrary();
+      setStatus("Cached episode removed.", "success");
+    } else if (action === "preview") {
+      const preview = item.querySelector(".cache-preview");
+      if (!preview.hidden) {
+        preview.hidden = true;
+        button.textContent = "Preview";
+        button.setAttribute("aria-expanded", "false");
+      } else {
+        preview.hidden = false;
+        preview.textContent = "Loading translation…";
+        button.textContent = "Hide preview";
+        button.setAttribute("aria-expanded", "true");
+        renderCachePreview(preview, await loadCacheDetails(cacheId));
+      }
+    } else if (action === "export") {
+      exportCache(await loadCacheDetails(cacheId));
+      setStatus("Translation exported as TSV.", "success");
+    }
   } catch (error) {
-    button.disabled = false;
-    setStatus(`Could not remove cached episode: ${error.message}`, "error");
+    setStatus(`Cache action failed: ${error.message}`, "error");
+  } finally {
+    if (button.isConnected) button.disabled = false;
   }
 });
 

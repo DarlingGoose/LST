@@ -521,11 +521,54 @@ function decodeCachePart(value, fallback = "") {
 
 function inferCacheMetadata(cacheId) {
   const [videoId = "unknown", model = "", targetLanguage = ""] = String(cacheId).split(":");
+  const knownVideo = videoId !== "unknown";
   return {
     videoId,
-    title: videoId === "unknown" ? "Unknown Netflix episode" : `Netflix episode ${videoId}`,
+    showName: "Netflix",
+    episodeName: knownVideo ? `Episode ${videoId}` : "Unknown episode",
+    title: knownVideo ? `Netflix episode ${videoId}` : "Unknown Netflix episode",
     model: decodeCachePart(model, "Unknown model"),
     targetLanguage: decodeCachePart(targetLanguage, "Unknown language")
+  };
+}
+
+function isGenericCacheName(value) {
+  return !value || /^(?:Netflix|Unknown Netflix episode|Netflix episode \S+)$/i.test(value);
+}
+
+function mergeCacheMetadata(inferred, existing, incoming) {
+  const merged = { ...inferred, ...existing, ...incoming };
+
+  for (const field of ["showName", "title"]) {
+    if (isGenericCacheName(incoming[field]) && !isGenericCacheName(existing[field])) {
+      merged[field] = existing[field];
+    }
+  }
+
+  if (incoming.episodeName === inferred.episodeName &&
+      existing.episodeName && existing.episodeName !== inferred.episodeName) {
+    merged.episodeName = existing.episodeName;
+  }
+
+  return merged;
+}
+
+function parseCachedCue(key, translation) {
+  const match = String(key).match(/^(-?\d+):(-?\d+):([\s\S]*)$/);
+  if (!match) {
+    return {
+      startMs: null,
+      endMs: null,
+      sourceText: String(key),
+      translatedText: String(translation || "")
+    };
+  }
+
+  return {
+    startMs: Number(match[1]),
+    endMs: Number(match[2]),
+    sourceText: match[3],
+    translatedText: String(translation || "")
   };
 }
 
@@ -559,9 +602,7 @@ async function cacheSet(cacheId, entries, metadata = {}) {
   await ext.storage.local.set({
     [storageKey]: existing,
     [metadataKey]: {
-      ...inferred,
-      ...existingMetadata,
-      ...usefulMetadata,
+      ...mergeCacheMetadata(inferred, existingMetadata, usefulMetadata),
       cacheId,
       cueCount: Object.keys(existing).length,
       updatedAt: new Date().toISOString()
@@ -579,11 +620,16 @@ async function listTranslationCaches() {
     const metadataKey = cacheMetadataKey(cacheId);
     const metadata = all[metadataKey] || {};
     const inferred = inferCacheMetadata(cacheId);
+    const showName = !isGenericCacheName(metadata.showName)
+      ? metadata.showName
+      : !isGenericCacheName(metadata.title)
+        ? metadata.title
+        : inferred.showName;
     caches.push({
       ...inferred,
       ...metadata,
-      showName: metadata.showName || metadata.title || inferred.title,
-      episodeName: metadata.episodeName || "",
+      showName,
+      episodeName: metadata.episodeName || inferred.episodeName,
       cacheId,
       cueCount: Object.keys(entries || {}).length,
       bytes: storedByteSize(storageKey, entries) +
@@ -593,6 +639,39 @@ async function listTranslationCaches() {
 
   caches.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   return caches;
+}
+
+async function getTranslationCache(cacheId) {
+  if (!cacheId) throw new Error("A cache ID is required.");
+  const storageKey = cacheStorageKey(cacheId);
+  const metadataKey = cacheMetadataKey(cacheId);
+  const stored = await ext.storage.local.get([storageKey, metadataKey]);
+  const entries = stored[storageKey];
+  if (entries === undefined) throw new Error("Cached episode was not found.");
+
+  const inferred = inferCacheMetadata(cacheId);
+  const storedMetadata = stored[metadataKey] || {};
+  const showName = !isGenericCacheName(storedMetadata.showName)
+    ? storedMetadata.showName
+    : !isGenericCacheName(storedMetadata.title)
+      ? storedMetadata.title
+      : inferred.showName;
+  const metadata = {
+    ...inferred,
+    ...storedMetadata,
+    showName,
+    episodeName: storedMetadata.episodeName || inferred.episodeName,
+    cacheId
+  };
+  const cues = Object.entries(entries || {})
+    .map(([key, translation]) => parseCachedCue(key, translation))
+    .sort((a, b) => {
+      if (a.startMs == null) return b.startMs == null ? 0 : 1;
+      if (b.startMs == null) return -1;
+      return a.startMs - b.startMs || a.endMs - b.endMs;
+    });
+
+  return { metadata, cues };
 }
 
 async function deleteTranslationCache(cacheId) {
@@ -700,6 +779,11 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
           caches,
           totalBytes: caches.reduce((total, cache) => total + cache.bytes, 0)
         });
+        return;
+      }
+
+      case "GET_TRANSLATION_CACHE": {
+        sendResponse({ ok: true, ...(await getTranslationCache(message.cacheId)) });
         return;
       }
 
