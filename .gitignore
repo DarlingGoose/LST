@@ -1,5 +1,6 @@
 node_modules/
 web-ext-artifacts/
 .firefox-build/
+.chrome-build/
 *.xpi
 .web-extension-id
