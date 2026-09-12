@@ -10,6 +10,7 @@
     showOriginal: false,
     showTranslated: true,
     minimumSubtitleDisplaySeconds: 2,
+    maximumVisibleSubtitles: 2,
     showStatusMessages: true,
     autoTranslateAhead: true,
     lookAheadSeconds: 30,
@@ -18,8 +19,6 @@
     requestTimeoutSeconds: 75,
     showDebugPanel: false,
     debugPanelAlwaysOnTop: false,
-    showSubtitleControls: true,
-    subtitleControlsMinimized: false,
     showQuickPills: true,
     subtitleHorizontalPosition: "center",
     subtitleVerticalPosition: 9,
@@ -38,8 +37,7 @@
   const storedTitleSignaturesByCacheId = new Map();
 
   let overlay;
-  let originalLine;
-  let translatedLine;
+  let subtitleStack;
   let statusLine;
   let hud;
   let quickPillsPanel;
@@ -47,18 +45,16 @@
   let quickPillsState;
   let debugPanel;
   let debugPanelBody;
-  let subtitleControlsPanel;
-  let subtitleControlsStatus;
-  let subtitleControlsStatusTimer;
+  let unifiedControlsStatus;
+  let unifiedControlsStatusTimer;
   let statusMessageRequestedVisible = false;
 
   let lastRenderedCueKey = "";
+  let renderedSubtitles = [];
   let lastFallbackText = "";
   let fallbackTimer = null;
   let lastTimedCueMatchAt = 0;
   let noTimedCueSince = 0;
-  let lastRenderedCueEndVideoTime = 0;
-  let lastRenderedCueRetainUntilVideoTime = 0;
   let lastTitleMetadataRefreshAt = 0;
 
   let translationInFlight = new Map();
@@ -447,14 +443,10 @@
     if (!overlay?.isConnected) {
       overlay = document.createElement("div");
       overlay.id = "not-overlay";
-      overlay.innerHTML = `
-        <div id="not-original"></div>
-        <div id="not-translated"></div>
-      `;
+      overlay.innerHTML = `<div id="lst-subtitle-stack"></div>`;
       document.documentElement.appendChild(overlay);
 
-      originalLine = overlay.querySelector("#not-original");
-      translatedLine = overlay.querySelector("#not-translated");
+      subtitleStack = overlay.querySelector("#lst-subtitle-stack");
     }
 
     if (!hud?.isConnected) {
@@ -480,27 +472,64 @@
           <strong>LST</strong>
           <span id="lst-pill-state">Waiting</span>
           <span id="lst-pill-ahead" class="lst-pill-ahead"></span>
-          <span aria-hidden="true">⌄</span>
+          <span class="lst-pill-controls-label">Controls</span>
         </button>
         <div id="lst-pill-menu" hidden>
-          <div class="lst-pill-menu-title">Quick subtitles</div>
-          <label><span>LST translation</span><input data-pill-setting="showTranslated" type="checkbox"></label>
-          <label><span>LST original</span><input data-pill-setting="showOriginal" type="checkbox"></label>
-          <label><span>Hide Netflix subtitles</span><input data-pill-setting="hideNetflixSubtitles" type="checkbox"></label>
-          <div class="lst-pill-timing">
-            <span>Timing <output id="lst-pill-timing-value">0 ms</output></span>
+          <div class="lst-pill-menu-header">
             <div>
-              <button type="button" data-pill-action="earlier" aria-label="Show subtitles 100 milliseconds earlier">−100</button>
+              <strong>Subtitle controls</strong>
+              <span id="lst-pill-panel-status">Waiting for subtitles</span>
+            </div>
+            <button type="button" data-pill-action="collapse">Collapse</button>
+          </div>
+          <section class="lst-pill-section" aria-labelledby="lst-visibility-heading">
+            <h3 id="lst-visibility-heading">Visibility</h3>
+            <label><span>Translation</span><input data-pill-setting="showTranslated" type="checkbox"></label>
+            <label><span>Original text</span><input data-pill-setting="showOriginal" type="checkbox"></label>
+            <label><span>Hide Netflix subtitles</span><input data-pill-setting="hideNetflixSubtitles" type="checkbox"></label>
+          </section>
+          <section class="lst-pill-section lst-pill-timing" aria-labelledby="lst-timing-heading">
+            <span><h3 id="lst-timing-heading">Timing offset</h3><output id="lst-pill-timing-value">0 ms</output></span>
+            <div>
+              <button type="button" data-pill-action="earlier" aria-label="Show subtitles 100 milliseconds earlier">−100 ms</button>
               <button type="button" data-pill-action="timing-reset">Reset</button>
-              <button type="button" data-pill-action="later" aria-label="Show subtitles 100 milliseconds later">+100</button>
+              <button type="button" data-pill-action="later" aria-label="Show subtitles 100 milliseconds later">+100 ms</button>
+            </div>
+          </section>
+          <section class="lst-pill-section" aria-labelledby="lst-readability-heading">
+            <h3 id="lst-readability-heading">Readability</h3>
+            <div class="lst-pill-readability-grid">
+              <label><span>Minimum display</span><select data-pill-setting="minimumSubtitleDisplaySeconds" data-number>
+                <option value="0">Original timing</option>
+                <option value="1">1 second</option>
+                <option value="2">2 seconds</option>
+                <option value="3">3 seconds</option>
+                <option value="4">4 seconds</option>
+                <option value="5">5 seconds</option>
+                <option value="7">7 seconds</option>
+                <option value="10">10 seconds</option>
+              </select></label>
+              <label><span>Subtitle stack</span><select data-pill-setting="maximumVisibleSubtitles" data-number>
+                <option value="1">1 line</option>
+                <option value="2">2 lines</option>
+                <option value="3">3 lines</option>
+                <option value="4">4 lines</option>
+              </select></label>
+            </div>
+          </section>
+          <div class="lst-pill-menu-footer">
+            <span id="lst-pill-save-status" role="status" aria-live="polite"></span>
+            <div>
+              <button type="button" data-pill-action="settings">All settings</button>
+              <button type="button" data-pill-action="hide-overlay">Hide overlay</button>
             </div>
           </div>
-          <button type="button" data-pill-action="settings">Open all settings</button>
         </div>
       `;
       hud.appendChild(quickPillsPanel);
       quickPillsMenu = quickPillsPanel.querySelector("#lst-pill-menu");
       quickPillsState = quickPillsPanel.querySelector("#lst-pill-state");
+      unifiedControlsStatus = quickPillsPanel.querySelector("#lst-pill-save-status");
       bindQuickPills();
     }
 
@@ -520,77 +549,6 @@
         `v${ext.runtime.getManifest().version}`;
     }
 
-    if (!subtitleControlsPanel?.isConnected) {
-      subtitleControlsPanel = document.createElement("div");
-      subtitleControlsPanel.id = "lst-subtitle-controls";
-      subtitleControlsPanel.innerHTML = `
-        <div id="lst-controls-header">
-          <strong>Subtitle controls</strong>
-          <div class="lst-controls-header-actions">
-            <button type="button" data-action="minimize" aria-expanded="true" aria-controls="lst-controls-body">Minimize</button>
-            <button type="button" data-action="hide">Hide</button>
-          </div>
-        </div>
-        <div id="lst-controls-body">
-        <label class="lst-control-field">
-          <span>Alignment</span>
-          <select data-setting="subtitleHorizontalPosition">
-            <option value="left">Left</option>
-            <option value="center">Center</option>
-            <option value="right">Right</option>
-          </select>
-        </label>
-        <label class="lst-control-field">
-          <span>Height <output data-output-for="subtitleVerticalPosition"></output></span>
-          <input data-setting="subtitleVerticalPosition" data-number type="range" min="4" max="82" step="1">
-        </label>
-        <label class="lst-control-field">
-          <span>Translation size <output data-output-for="translatedFontSize"></output></span>
-          <input data-setting="translatedFontSize" data-number type="range" min="18" max="64" step="1">
-        </label>
-        <label class="lst-control-field">
-          <span>Original size <output data-output-for="originalFontSize"></output></span>
-          <input data-setting="originalFontSize" data-number type="range" min="14" max="56" step="1">
-        </label>
-        <label class="lst-control-field">
-          <span>Line width <output data-output-for="subtitleMaxWidth"></output></span>
-          <input data-setting="subtitleMaxWidth" data-number type="range" min="40" max="96" step="1">
-        </label>
-        <label class="lst-control-field">
-          <span>Background <output data-output-for="subtitleBackgroundOpacity"></output></span>
-          <input data-setting="subtitleBackgroundOpacity" data-number type="range" min="0" max="90" step="1">
-        </label>
-        <label class="lst-control-field">
-          <span>Timing <output data-output-for="subtitleTimingOffsetMs"></output></span>
-          <input data-setting="subtitleTimingOffsetMs" data-number type="range" min="-2000" max="2000" step="50">
-        </label>
-        <label class="lst-control-check">
-          <input data-setting="hideNetflixSubtitles" type="checkbox">
-          <span>Hide Netflix subtitles</span>
-        </label>
-        <label class="lst-control-check">
-          <input data-setting="showOriginal" type="checkbox">
-          <span>Show LST original</span>
-        </label>
-        <label class="lst-control-check">
-          <input data-setting="showTranslated" type="checkbox">
-          <span>Show LST translation</span>
-        </label>
-        <label class="lst-control-check">
-          <input data-setting="showStatusMessages" type="checkbox">
-          <span>Show info messages</span>
-        </label>
-        <div id="lst-controls-footer">
-          <span id="lst-controls-status" role="status"></span>
-          <button type="button" data-action="settings">All settings</button>
-        </div>
-        </div>
-      `;
-      document.documentElement.appendChild(subtitleControlsPanel);
-      subtitleControlsStatus = subtitleControlsPanel.querySelector("#lst-controls-status");
-      bindSubtitleControls();
-    }
-
     updateDebugPanel();
     applySubtitleAppearance();
     updateOverlayPanelVisibility();
@@ -603,7 +561,7 @@
   }
 
   function applySubtitleAppearance() {
-    if (!overlay || !originalLine || !translatedLine) return;
+    if (!overlay || !subtitleStack) return;
 
     document.documentElement.classList.toggle(
       "lst-hide-netflix-subtitles",
@@ -622,110 +580,35 @@
     overlay.style.right = alignment === "right" ? "4vw" : "auto";
     overlay.style.transform = alignment === "center" ? "translateX(-50%)" : "none";
 
-    originalLine.style.fontSize = `${clamp(settings.originalFontSize, 14, 56, 30)}px`;
-    translatedLine.style.fontSize = `${clamp(settings.translatedFontSize, 18, 64, 36)}px`;
+    overlay.style.setProperty(
+      "--lst-original-font-size",
+      `${clamp(settings.originalFontSize, 14, 56, 30)}px`
+    );
+    overlay.style.setProperty(
+      "--lst-translated-font-size",
+      `${clamp(settings.translatedFontSize, 18, 64, 36)}px`
+    );
+    overlay.style.setProperty("--lst-subtitle-background", `rgba(0, 0, 0, ${opacity})`);
+    overlay.dataset.alignment = alignment;
 
-    for (const line of [originalLine, translatedLine]) {
-      line.style.backgroundColor = `rgba(0, 0, 0, ${opacity})`;
-      line.style.marginLeft = alignment === "left" ? "0" : "auto";
-      line.style.marginRight = alignment === "right" ? "0" : "auto";
-    }
-
-    originalLine.style.display =
-      settings.enabled && settings.showOriginal && originalLine.textContent ? "block" : "none";
-    translatedLine.style.display =
-      settings.enabled && settings.showTranslated && translatedLine.textContent ? "block" : "none";
+    trimRenderedSubtitles();
+    renderSubtitleStack();
     statusLine.style.display =
       settings.showStatusMessages && statusMessageRequestedVisible && currentStatus.message
         ? "block"
         : "none";
 
-    syncSubtitleControls();
     updateQuickPills();
   }
 
-  function quickControlValue(control) {
-    if (control.type === "checkbox") return control.checked;
-    if (control.hasAttribute("data-number")) return Number(control.value);
-    return control.value;
-  }
-
-  function updateQuickControl(control) {
-    const key = control?.dataset?.setting;
-    if (!key) return;
-    settings[key] = quickControlValue(control);
-    applySubtitleAppearance();
-  }
-
-  async function saveQuickSetting(control) {
-    const key = control?.dataset?.setting;
-    if (!key) return;
-
-    try {
-      await runtimeMessage({ type: "SAVE_SETTINGS", settings: { [key]: settings[key] } });
-      showSubtitleControlsStatus("Saved");
-    } catch (error) {
-      showSubtitleControlsStatus("Could not save", true);
-      console.warn("[LST] Could not save subtitle control:", error);
-    }
-  }
-
-  function showSubtitleControlsStatus(message, isError = false) {
-    if (!subtitleControlsStatus) return;
-    subtitleControlsStatus.textContent = message;
-    subtitleControlsStatus.dataset.error = isError ? "true" : "false";
-    clearTimeout(subtitleControlsStatusTimer);
-    subtitleControlsStatusTimer = setTimeout(() => {
-      if (subtitleControlsStatus) subtitleControlsStatus.textContent = "";
+  function showUnifiedControlsStatus(message, isError = false) {
+    if (!unifiedControlsStatus) return;
+    unifiedControlsStatus.textContent = message;
+    unifiedControlsStatus.dataset.error = isError ? "true" : "false";
+    clearTimeout(unifiedControlsStatusTimer);
+    unifiedControlsStatusTimer = setTimeout(() => {
+      if (unifiedControlsStatus) unifiedControlsStatus.textContent = "";
     }, 1800);
-  }
-
-  function bindSubtitleControls() {
-    subtitleControlsPanel.addEventListener("input", (event) => {
-      const control = event.target.closest("[data-setting]");
-      if (control) updateQuickControl(control);
-    });
-
-    subtitleControlsPanel.addEventListener("change", (event) => {
-      const control = event.target.closest("[data-setting]");
-      if (!control) return;
-      updateQuickControl(control);
-      saveQuickSetting(control);
-    });
-
-    subtitleControlsPanel.addEventListener("click", async (event) => {
-      const action = event.target.closest("[data-action]")?.dataset.action;
-      if (action === "minimize") {
-        settings.subtitleControlsMinimized = !settings.subtitleControlsMinimized;
-        syncSubtitleControlsMinimized();
-        requestAnimationFrame(positionDebugPanel);
-        try {
-          await runtimeMessage({
-            type: "SAVE_SETTINGS",
-            settings: { subtitleControlsMinimized: settings.subtitleControlsMinimized }
-          });
-        } catch (error) {
-          showSubtitleControlsStatus("Could not save panel state", true);
-          console.warn("[LST] Could not save subtitle controls state:", error);
-        }
-      } else if (action === "hide") {
-        settings.showSubtitleControls = false;
-        updateOverlayPanelVisibility();
-        try {
-          await runtimeMessage({
-            type: "SAVE_SETTINGS",
-            settings: { showSubtitleControls: false }
-          });
-        } catch (error) {
-          console.warn("[LST] Could not hide subtitle controls:", error);
-        }
-      } else if (action === "settings") {
-        runtimeMessage({ type: "OPEN_OPTIONS" }).catch((error) => {
-          showSubtitleControlsStatus("Could not open settings", true);
-          console.warn("[LST] Could not open settings:", error);
-        });
-      }
-    });
   }
 
   function quickPillStatus() {
@@ -759,14 +642,24 @@
     const status = quickPillStatus();
     quickPillsPanel.dataset.state = status.state;
     quickPillsState.textContent = status.label;
+    const panelStatus = quickPillsPanel.querySelector("#lst-pill-panel-status");
     const ahead = quickPillsPanel.querySelector("#lst-pill-ahead");
+    const aheadLabel = currentStatus.cachedAheadSeconds > 0
+      ? formatAheadDuration(currentStatus.cachedAheadSeconds)
+      : "";
     if (ahead) {
-      ahead.textContent = currentStatus.cachedAheadSeconds > 0
-        ? `· ${formatAheadDuration(currentStatus.cachedAheadSeconds)} ahead`
-        : "";
+      ahead.textContent = aheadLabel ? `· ${aheadLabel} cached` : "";
+    }
+    if (panelStatus) {
+      panelStatus.textContent = status.state === "completed"
+        ? "Completed · episode cached"
+        : `${status.label}${aheadLabel ? ` · ${aheadLabel} cached ahead` : ""}`;
+      panelStatus.dataset.state = status.state;
     }
     for (const control of quickPillsPanel.querySelectorAll("[data-pill-setting]")) {
-      control.checked = settings[control.dataset.pillSetting] !== false;
+      const value = settings[control.dataset.pillSetting];
+      if (control.type === "checkbox") control.checked = value !== false;
+      else control.value = String(value);
     }
     const timing = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0);
     const timingOutput = quickPillsPanel.querySelector("#lst-pill-timing-value");
@@ -778,6 +671,8 @@
       const action = event.target.closest("[data-pill-action]")?.dataset.pillAction;
       if (action === "toggle") {
         setQuickPillsMenu(quickPillsMenu.hidden);
+      } else if (action === "collapse") {
+        setQuickPillsMenu(false);
       } else if (["earlier", "timing-reset", "later"].includes(action)) {
         const current = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0);
         settings.subtitleTimingOffsetMs = action === "timing-reset"
@@ -787,12 +682,19 @@
         runtimeMessage({
           type: "SAVE_SETTINGS",
           settings: { subtitleTimingOffsetMs: settings.subtitleTimingOffsetMs }
-        }).catch((error) => setStatus(`Could not save subtitle timing: ${error.message}`, true));
+        }).then(() => showUnifiedControlsStatus("Saved"))
+          .catch((error) => showUnifiedControlsStatus(`Could not save: ${error.message}`, true));
       } else if (action === "settings") {
         setQuickPillsMenu(false);
         runtimeMessage({ type: "OPEN_OPTIONS" }).catch((error) => {
           setStatus(`Could not open settings: ${error.message}`, true);
         });
+      } else if (action === "hide-overlay") {
+        settings.showQuickPills = false;
+        setQuickPillsMenu(false);
+        updateOverlayPanelVisibility();
+        runtimeMessage({ type: "SAVE_SETTINGS", settings: { showQuickPills: false } })
+          .catch((error) => setStatus(`Could not hide LST controls: ${error.message}`, true));
       }
     });
 
@@ -800,10 +702,11 @@
       const control = event.target.closest("[data-pill-setting]");
       if (!control) return;
       const key = control.dataset.pillSetting;
-      settings[key] = control.checked;
+      settings[key] = control.type === "checkbox" ? control.checked : Number(control.value);
       applySubtitleAppearance();
       runtimeMessage({ type: "SAVE_SETTINGS", settings: { [key]: settings[key] } })
-        .catch((error) => setStatus(`Could not save quick setting: ${error.message}`, true));
+        .then(() => showUnifiedControlsStatus("Saved"))
+        .catch((error) => showUnifiedControlsStatus(`Could not save: ${error.message}`, true));
     });
 
     document.addEventListener("pointerdown", (event) => {
@@ -823,63 +726,22 @@
     quickPillsMenu.hidden = !open;
     quickPillsPanel.querySelector("#lst-pill-trigger")
       ?.setAttribute("aria-expanded", String(open));
-  }
-
-  function syncSubtitleControls() {
-    if (!subtitleControlsPanel) return;
-    syncSubtitleControlsMinimized();
-    for (const control of subtitleControlsPanel.querySelectorAll("[data-setting]")) {
-      const value = settings[control.dataset.setting];
-      if (control.type === "checkbox") control.checked = value !== false;
-      else control.value = value;
-    }
-
-    const formats = {
-      subtitleVerticalPosition: (value) => `${value}%`,
-      translatedFontSize: (value) => `${value}px`,
-      originalFontSize: (value) => `${value}px`,
-      subtitleMaxWidth: (value) => `${value}%`,
-      subtitleBackgroundOpacity: (value) => `${value}%`,
-      subtitleTimingOffsetMs: (value) => `${Number(value) > 0 ? "+" : ""}${value}ms`
-    };
-    for (const output of subtitleControlsPanel.querySelectorAll("[data-output-for]")) {
-      const key = output.dataset.outputFor;
-      output.textContent = formats[key]?.(settings[key]) || "";
-    }
-  }
-
-  function syncSubtitleControlsMinimized() {
-    if (!subtitleControlsPanel) return;
-    const minimized = settings.subtitleControlsMinimized === true;
-    const body = subtitleControlsPanel.querySelector("#lst-controls-body");
-    const button = subtitleControlsPanel.querySelector('[data-action="minimize"]');
-
-    subtitleControlsPanel.dataset.minimized = String(minimized);
-    if (body) body.hidden = minimized;
-    if (button) {
-      button.textContent = minimized ? "Expand" : "Minimize";
-      button.setAttribute("aria-expanded", String(!minimized));
-      button.setAttribute(
-        "aria-label",
-        minimized ? "Expand subtitle controls" : "Minimize subtitle controls"
-      );
-    }
+    requestAnimationFrame(positionDebugPanel);
   }
 
   function positionDebugPanel() {
     if (!debugPanel) return;
-    const controlsVisible = subtitleControlsPanel?.style.display !== "none";
+    const controlsVisible = quickPillsPanel?.style.display !== "none";
     const top = controlsVisible
-      ? Math.round(subtitleControlsPanel.getBoundingClientRect().bottom + 12)
+      ? Math.round(quickPillsPanel.getBoundingClientRect().bottom + 12)
       : 12;
     debugPanel.style.setProperty("top", `${top}px`, "important");
     debugPanel.style.maxHeight = `max(120px, calc(100vh - ${top + 12}px))`;
   }
 
   function updateOverlayPanelVisibility() {
-    if (!subtitleControlsPanel) return;
-    subtitleControlsPanel.style.display = settings.showSubtitleControls ? "block" : "none";
-    syncSubtitleControls();
+    if (!quickPillsPanel) return;
+    updateQuickPills();
     requestAnimationFrame(positionDebugPanel);
   }
 
@@ -980,64 +842,146 @@
     updateDebugPanel();
   }
 
-  function render(original, translated) {
-    ensureOverlay();
+  function maximumVisibleSubtitles() {
+    return Math.round(clamp(settings.maximumVisibleSubtitles, 1, 4, 2));
+  }
 
-    if (!settings.enabled) {
-      overlay.style.display = "none";
-      return;
+  function trimRenderedSubtitles() {
+    const excess = renderedSubtitles.length - maximumVisibleSubtitles();
+    if (excess > 0) renderedSubtitles.splice(0, excess);
+    if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
+      lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
+    }
+  }
+
+  function renderSubtitleStack() {
+    if (!overlay?.isConnected) ensureOverlay();
+    if (!subtitleStack) return;
+
+    subtitleStack.replaceChildren();
+    for (const subtitle of renderedSubtitles) {
+      const entry = document.createElement("div");
+      entry.className = "lst-subtitle-entry";
+
+      if (settings.showOriginal && subtitle.original) {
+        const original = document.createElement("div");
+        original.className = "lst-subtitle-original";
+        original.textContent = subtitle.original;
+        entry.appendChild(original);
+      }
+
+      if (settings.showTranslated && subtitle.translated) {
+        const translated = document.createElement("div");
+        translated.className = "lst-subtitle-translated";
+        translated.textContent = subtitle.translated;
+        entry.appendChild(translated);
+      }
+
+      if (entry.childElementCount) subtitleStack.appendChild(entry);
     }
 
-    overlay.style.display = "block";
-    originalLine.style.display =
-      settings.showOriginal && original ? "block" : "none";
-    originalLine.textContent = original || "";
+    overlay.style.display = settings.enabled && subtitleStack.childElementCount
+      ? "block"
+      : "none";
+  }
 
-    translatedLine.style.display =
-      settings.showTranslated && translated ? "block" : "none";
-    translatedLine.textContent = translated || "";
+  function removeRenderedSubtitle(key) {
+    const next = renderedSubtitles.filter((entry) => entry.key !== key);
+    if (next.length === renderedSubtitles.length) return;
+    renderedSubtitles = next;
+    if (lastRenderedCueKey === key) {
+      lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
+    }
+    renderSubtitleStack();
   }
 
   function clearRenderedSubtitle() {
-    render("", "");
+    renderedSubtitles = [];
     lastRenderedCueKey = "";
-    lastRenderedCueEndVideoTime = 0;
-    lastRenderedCueRetainUntilVideoTime = 0;
+    renderSubtitleStack();
   }
 
   function minimumSubtitleDisplaySeconds() {
     return clamp(settings.minimumSubtitleDisplaySeconds, 0, 10, 2);
   }
 
-  function beginSubtitleRetention(naturalEndVideoTime, videoTime) {
+  function beginRenderedSubtitle({
+    key,
+    original,
+    translated = "",
+    naturalEndVideoTime,
+    videoTime,
+    source
+  }) {
     const now = Number(videoTime);
     const naturalEnd = Number(naturalEndVideoTime);
     if (!Number.isFinite(now)) return;
 
-    lastRenderedCueEndVideoTime = Number.isFinite(naturalEnd) ? naturalEnd : now;
-    lastRenderedCueRetainUntilVideoTime = Math.max(
-      lastRenderedCueEndVideoTime,
+    renderedSubtitles = renderedSubtitles.filter((entry) => entry.source === source);
+    const existing = renderedSubtitles.find((entry) => entry.key === key);
+    const endVideoTime = Number.isFinite(naturalEnd) ? naturalEnd : now;
+    const retainUntilVideoTime = Math.max(
+      endVideoTime,
       now + minimumSubtitleDisplaySeconds()
     );
+
+    if (existing) {
+      existing.original = original || existing.original;
+      existing.translated = translated || existing.translated;
+      existing.endVideoTime = endVideoTime;
+      existing.retainUntilVideoTime = retainUntilVideoTime;
+    } else {
+      renderedSubtitles.push({
+        key,
+        original: original || "",
+        translated: translated || "",
+        endVideoTime,
+        retainUntilVideoTime,
+        source
+      });
+    }
+
+    lastRenderedCueKey = key;
+    trimRenderedSubtitles();
+    renderSubtitleStack();
   }
 
-  function extendSubtitleRetention(videoTime) {
+  function updateRenderedSubtitleTranslation(key, original, translated, videoTime) {
     const now = Number(videoTime);
-    if (!lastRenderedCueKey || !Number.isFinite(now)) return;
-    lastRenderedCueRetainUntilVideoTime = Math.max(
-      lastRenderedCueRetainUntilVideoTime,
+    const entry = renderedSubtitles.find((subtitle) => subtitle.key === key);
+    if (!entry || !Number.isFinite(now)) return false;
+
+    entry.original = original || entry.original;
+    entry.translated = translated || entry.translated;
+    entry.retainUntilVideoTime = Math.max(
+      entry.retainUntilVideoTime,
       now + minimumSubtitleDisplaySeconds()
     );
+    renderSubtitleStack();
+    return true;
   }
 
-  function shouldRetainRenderedSubtitle(videoTime) {
+  function shouldRetainRenderedSubtitle(key, videoTime) {
     const now = Number(videoTime);
+    const entry = renderedSubtitles.find((subtitle) => subtitle.key === key);
     return Boolean(
-      lastRenderedCueKey &&
+      entry &&
       Number.isFinite(now) &&
-      now >= lastRenderedCueEndVideoTime &&
-      now < lastRenderedCueRetainUntilVideoTime
+      now >= entry.endVideoTime &&
+      now < entry.retainUntilVideoTime
     );
+  }
+
+  function removeExpiredRenderedSubtitles(videoTime) {
+    const now = Number(videoTime);
+    if (!Number.isFinite(now)) return;
+    const next = renderedSubtitles.filter((entry) => now < entry.retainUntilVideoTime);
+    if (next.length === renderedSubtitles.length) return;
+    renderedSubtitles = next;
+    if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
+      lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
+    }
+    renderSubtitleStack();
   }
 
   function findCueAt(time) {
@@ -1065,11 +1009,11 @@
 
   function isTimedCueStillCurrent(key) {
     const video = document.querySelector("video");
-    if (!video || lastRenderedCueKey !== key) return false;
+    if (!video || !renderedSubtitles.some((entry) => entry.key === key)) return false;
     const match = findCueAt(subtitleLookupTime(video.currentTime));
     return Boolean(
       (match && cueKey(match.cue) === key) ||
-      (!match && shouldRetainRenderedSubtitle(video.currentTime))
+      shouldRetainRenderedSubtitle(key, video.currentTime)
     );
   }
 
@@ -1237,8 +1181,12 @@
       currentStatus.playbackMode = "timed-text cache";
       currentStatus.lastTranslatedText = truncate(cached[key]);
       if (isTimedCueStillCurrent(key)) {
-        extendSubtitleRetention(document.querySelector("video")?.currentTime);
-        render(cue.text, cached[key]);
+        updateRenderedSubtitleTranslation(
+          key,
+          cue.text,
+          cached[key],
+          document.querySelector("video")?.currentTime
+        );
       }
     } else {
       const currentResult = await translateCues([cue]);
@@ -1246,8 +1194,12 @@
         currentStatus.playbackMode = "timed-text realtime";
         currentStatus.lastTranslatedText = truncate(currentResult.entries[key]);
         if (isTimedCueStillCurrent(key)) {
-          extendSubtitleRetention(document.querySelector("video")?.currentTime);
-          render(cue.text, currentResult.entries[key]);
+          updateRenderedSubtitleTranslation(
+            key,
+            cue.text,
+            currentResult.entries[key],
+            document.querySelector("video")?.currentTime
+          );
         }
       }
     }
@@ -1416,11 +1368,11 @@
       // when Netflix is also between subtitles.
       if (
         lastRenderedCueKey &&
-        !shouldRetainRenderedSubtitle(video.currentTime) &&
+        !shouldRetainRenderedSubtitle(lastRenderedCueKey, video.currentTime) &&
         performance.now() - noTimedCueSince > 220 &&
         !findNetflixRenderedSubtitle()
       ) {
-        clearRenderedSubtitle();
+        removeExpiredRenderedSubtitles(video.currentTime);
       }
       requestAnimationFrame(playbackLoop);
       return;
@@ -1432,13 +1384,18 @@
     currentStatus.activeCueEnd = match.cue.end;
     updateDebugPanel();
     const key = cueKey(match.cue);
+    removeExpiredRenderedSubtitles(video.currentTime);
 
     if (key !== lastRenderedCueKey) {
-      lastRenderedCueKey = key;
       const timingOffsetSeconds = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000;
-      beginSubtitleRetention(match.cue.end + timingOffsetSeconds, video.currentTime);
+      beginRenderedSubtitle({
+        key,
+        original: match.cue.text,
+        naturalEndVideoTime: match.cue.end + timingOffsetSeconds,
+        videoTime: video.currentTime,
+        source: "timed"
+      });
       currentStatus.playbackMode = "timed-text pending";
-      render(match.cue.text, "");
 
       ensureCueTranslated(match.cue, match.index).catch((error) => {
         currentStatus.lastError = error.message;
@@ -1471,9 +1428,10 @@
     if (!text) {
       if (lastFallbackText && String(currentStatus.playbackMode).startsWith("DOM")) {
         const video = document.querySelector("video");
-        if (shouldRetainRenderedSubtitle(video?.currentTime)) return;
+        const fallbackKey = cueKey(fallbackCueForText(lastFallbackText));
+        if (shouldRetainRenderedSubtitle(fallbackKey, video?.currentTime)) return;
         lastFallbackText = "";
-        clearRenderedSubtitle();
+        removeRenderedSubtitle(fallbackKey);
       }
       return;
     }
@@ -1504,10 +1462,15 @@
         currentStatus.playbackMode =
           cues.length ? "DOM fallback (timing mismatch)" : "DOM realtime";
         currentStatus.lastTranslatedText = truncate(translated);
-        lastRenderedCueKey = key;
         const videoTime = document.querySelector("video")?.currentTime;
-        beginSubtitleRetention(videoTime, videoTime);
-        render(text, translated);
+        beginRenderedSubtitle({
+          key,
+          original: text,
+          translated,
+          naturalEndVideoTime: videoTime,
+          videoTime,
+          source: "dom"
+        });
 
         if (!precomputeInProgress) {
           setStatus(

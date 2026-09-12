@@ -317,11 +317,11 @@ async function load() {
   $("autoTranslateAhead").checked = s.autoTranslateAhead !== false;
   $("showDebugPanel").checked = s.showDebugPanel === true;
   $("debugPanelAlwaysOnTop").checked = s.debugPanelAlwaysOnTop === true;
-  $("showSubtitleControls").checked = s.showSubtitleControls === true;
   $("showQuickPills").checked = s.showQuickPills !== false;
   $("lookAheadSeconds").value = Math.max(30, Number(s.lookAheadSeconds) || 30);
   $("batchSize").value = s.batchSize ?? 8;
   $("minimumSubtitleDisplaySeconds").value = s.minimumSubtitleDisplaySeconds ?? 2;
+  $("maximumVisibleSubtitles").value = s.maximumVisibleSubtitles ?? 2;
   $("requestTimeoutSeconds").value = s.requestTimeoutSeconds ?? 75;
   applyAppearance(s);
   await loadCacheLibrary();
@@ -404,11 +404,11 @@ function collectSettings() {
     autoTranslateAhead: $("autoTranslateAhead").checked,
     showDebugPanel: $("showDebugPanel").checked,
     debugPanelAlwaysOnTop: $("debugPanelAlwaysOnTop").checked,
-    showSubtitleControls: $("showSubtitleControls").checked,
     showQuickPills: $("showQuickPills").checked,
     lookAheadSeconds: clampNumber("lookAheadSeconds", 30),
     batchSize: clampNumber("batchSize", 8),
     minimumSubtitleDisplaySeconds: clampNumber("minimumSubtitleDisplaySeconds", 2),
+    maximumVisibleSubtitles: Math.round(clampNumber("maximumVisibleSubtitles", 2)),
     requestTimeoutSeconds: clampNumber("requestTimeoutSeconds", 75),
     subtitleHorizontalPosition: $("subtitleHorizontalPosition").value,
     subtitleVerticalPosition: clampNumber("subtitleVerticalPosition", 9),

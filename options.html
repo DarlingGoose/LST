@@ -209,12 +209,8 @@
           </div>
 
           <div class="switch-row">
-            <div class="switch-copy"><div class="label">Show controls on Netflix</div><p class="help">Add a collapsible top-right panel for adjusting subtitles while you watch.</p></div>
-            <label class="switch" aria-label="Show subtitle controls on Netflix"><input id="showSubtitleControls" type="checkbox"><span class="switch-ui"></span></label>
-          </div>
-          <div class="switch-row">
-            <div class="switch-copy"><div class="label">Persistent quick-settings pill</div><p class="help">Keep a compact LST status pill on Netflix with a subtitle visibility menu.</p></div>
-            <label class="switch" aria-label="Show persistent quick-settings pill"><input id="showQuickPills" type="checkbox"><span class="switch-ui"></span></label>
+            <div class="switch-copy"><div class="label">Show LST controls on Netflix</div><p class="help">Keep a compact status pill that expands into subtitle controls while you watch.</p></div>
+            <label class="switch" aria-label="Show LST controls on Netflix"><input id="showQuickPills" type="checkbox"><span class="switch-ui"></span></label>
           </div>
           <div class="switch-row">
             <div class="switch-copy"><div class="label">Hide Netflix subtitles</div><p class="help">Keep Netflix's subtitle track active for capture, but hide its rendered text.</p></div>
@@ -289,7 +285,10 @@
             <div class="field"><label for="lookAheadSeconds">Look-ahead window</label><input id="lookAheadSeconds" type="number" min="30" max="600" value="30"><p class="help">Seconds of upcoming subtitles to prepare. LST always enforces a 30-second minimum.</p></div>
             <div class="field"><label for="batchSize">Precompute batch size</label><input id="batchSize" type="number" min="1" max="50" value="8"></div>
           </div>
-          <div class="field"><label for="minimumSubtitleDisplaySeconds">Minimum subtitle display time</label><input id="minimumSubtitleDisplaySeconds" type="number" min="0" max="10" step="0.5" value="2"><p class="help">Keep short LST subtitles visible for at least this many seconds. A new subtitle still replaces the previous one immediately.</p></div>
+          <div class="two-col">
+            <div class="field"><label for="minimumSubtitleDisplaySeconds">Minimum subtitle display time</label><input id="minimumSubtitleDisplaySeconds" type="number" min="0" max="10" step="0.5" value="2"><p class="help">Keep short LST subtitles visible for at least this many seconds.</p></div>
+            <div class="field"><label for="maximumVisibleSubtitles">Maximum visible subtitles</label><input id="maximumVisibleSubtitles" type="number" min="1" max="4" step="1" value="2"><p class="help">Stack recent subtitles when their display times overlap.</p></div>
+          </div>
           <div class="field"><label for="requestTimeoutSeconds">Request timeout</label><input id="requestTimeoutSeconds" type="number" min="15" max="300" value="75"><p class="help">Seconds before an unresponsive Ollama request is stopped.</p></div>
         </section>
 
