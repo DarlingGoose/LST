@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest an improvement or new feature for LST
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the use case or limitation you are running into.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like LST to do?
+      description: Describe the feature or behavior you would like to see.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Translation/model support
+        - Streaming service support
+        - Subtitle appearance or controls
+        - Performance/buffering
+        - Storage/cache
+        - Language learning
+        - Browser support
+        - TV/mobile support
+        - Developer tooling
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: Have you found another way to solve this today?
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Mockups, screenshots, links, or implementation ideas are welcome.
