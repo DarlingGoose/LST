@@ -289,6 +289,7 @@
             <div class="field"><label for="lookAheadSeconds">Look-ahead window</label><input id="lookAheadSeconds" type="number" min="30" max="600" value="30"><p class="help">Seconds of upcoming subtitles to prepare. LST always enforces a 30-second minimum.</p></div>
             <div class="field"><label for="batchSize">Precompute batch size</label><input id="batchSize" type="number" min="1" max="50" value="8"></div>
           </div>
+          <div class="field"><label for="minimumSubtitleDisplaySeconds">Minimum subtitle display time</label><input id="minimumSubtitleDisplaySeconds" type="number" min="0" max="10" step="0.5" value="2"><p class="help">Keep short LST subtitles visible for at least this many seconds. A new subtitle still replaces the previous one immediately.</p></div>
           <div class="field"><label for="requestTimeoutSeconds">Request timeout</label><input id="requestTimeoutSeconds" type="number" min="15" max="300" value="75"><p class="help">Seconds before an unresponsive Ollama request is stopped.</p></div>
         </section>
 

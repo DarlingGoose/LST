@@ -321,6 +321,7 @@ async function load() {
   $("showQuickPills").checked = s.showQuickPills !== false;
   $("lookAheadSeconds").value = Math.max(30, Number(s.lookAheadSeconds) || 30);
   $("batchSize").value = s.batchSize ?? 8;
+  $("minimumSubtitleDisplaySeconds").value = s.minimumSubtitleDisplaySeconds ?? 2;
   $("requestTimeoutSeconds").value = s.requestTimeoutSeconds ?? 75;
   applyAppearance(s);
   await loadCacheLibrary();
@@ -407,6 +408,7 @@ function collectSettings() {
     showQuickPills: $("showQuickPills").checked,
     lookAheadSeconds: clampNumber("lookAheadSeconds", 30),
     batchSize: clampNumber("batchSize", 8),
+    minimumSubtitleDisplaySeconds: clampNumber("minimumSubtitleDisplaySeconds", 2),
     requestTimeoutSeconds: clampNumber("requestTimeoutSeconds", 75),
     subtitleHorizontalPosition: $("subtitleHorizontalPosition").value,
     subtitleVerticalPosition: clampNumber("subtitleVerticalPosition", 9),

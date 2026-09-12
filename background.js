@@ -8,6 +8,7 @@ const DEFAULTS = {
   hideNetflixSubtitles: true,
   showOriginal: false,
   showTranslated: true,
+  minimumSubtitleDisplaySeconds: 2,
   showStatusMessages: true,
   autoTranslateAhead: true,
   lookAheadSeconds: 30,

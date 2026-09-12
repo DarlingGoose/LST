@@ -9,6 +9,7 @@
     hideNetflixSubtitles: true,
     showOriginal: false,
     showTranslated: true,
+    minimumSubtitleDisplaySeconds: 2,
     showStatusMessages: true,
     autoTranslateAhead: true,
     lookAheadSeconds: 30,
@@ -56,6 +57,8 @@
   let fallbackTimer = null;
   let lastTimedCueMatchAt = 0;
   let noTimedCueSince = 0;
+  let lastRenderedCueEndVideoTime = 0;
+  let lastRenderedCueRetainUntilVideoTime = 0;
   let lastTitleMetadataRefreshAt = 0;
 
   let translationInFlight = new Map();
@@ -998,6 +1001,43 @@
   function clearRenderedSubtitle() {
     render("", "");
     lastRenderedCueKey = "";
+    lastRenderedCueEndVideoTime = 0;
+    lastRenderedCueRetainUntilVideoTime = 0;
+  }
+
+  function minimumSubtitleDisplaySeconds() {
+    return clamp(settings.minimumSubtitleDisplaySeconds, 0, 10, 2);
+  }
+
+  function beginSubtitleRetention(naturalEndVideoTime, videoTime) {
+    const now = Number(videoTime);
+    const naturalEnd = Number(naturalEndVideoTime);
+    if (!Number.isFinite(now)) return;
+
+    lastRenderedCueEndVideoTime = Number.isFinite(naturalEnd) ? naturalEnd : now;
+    lastRenderedCueRetainUntilVideoTime = Math.max(
+      lastRenderedCueEndVideoTime,
+      now + minimumSubtitleDisplaySeconds()
+    );
+  }
+
+  function extendSubtitleRetention(videoTime) {
+    const now = Number(videoTime);
+    if (!lastRenderedCueKey || !Number.isFinite(now)) return;
+    lastRenderedCueRetainUntilVideoTime = Math.max(
+      lastRenderedCueRetainUntilVideoTime,
+      now + minimumSubtitleDisplaySeconds()
+    );
+  }
+
+  function shouldRetainRenderedSubtitle(videoTime) {
+    const now = Number(videoTime);
+    return Boolean(
+      lastRenderedCueKey &&
+      Number.isFinite(now) &&
+      now >= lastRenderedCueEndVideoTime &&
+      now < lastRenderedCueRetainUntilVideoTime
+    );
   }
 
   function findCueAt(time) {
@@ -1027,7 +1067,10 @@
     const video = document.querySelector("video");
     if (!video || lastRenderedCueKey !== key) return false;
     const match = findCueAt(subtitleLookupTime(video.currentTime));
-    return Boolean(match && cueKey(match.cue) === key);
+    return Boolean(
+      (match && cueKey(match.cue) === key) ||
+      (!match && shouldRetainRenderedSubtitle(video.currentTime))
+    );
   }
 
   async function getCachedTranslations(selectedCues) {
@@ -1193,13 +1236,19 @@
     if (cached[key]) {
       currentStatus.playbackMode = "timed-text cache";
       currentStatus.lastTranslatedText = truncate(cached[key]);
-      if (isTimedCueStillCurrent(key)) render(cue.text, cached[key]);
+      if (isTimedCueStillCurrent(key)) {
+        extendSubtitleRetention(document.querySelector("video")?.currentTime);
+        render(cue.text, cached[key]);
+      }
     } else {
       const currentResult = await translateCues([cue]);
       if (currentResult.entries[key]) {
         currentStatus.playbackMode = "timed-text realtime";
         currentStatus.lastTranslatedText = truncate(currentResult.entries[key]);
-        if (isTimedCueStillCurrent(key)) render(cue.text, currentResult.entries[key]);
+        if (isTimedCueStillCurrent(key)) {
+          extendSubtitleRetention(document.querySelector("video")?.currentTime);
+          render(cue.text, currentResult.entries[key]);
+        }
       }
     }
 
@@ -1355,7 +1404,8 @@
     }
 
     currentStatus.videoTime = video.currentTime;
-    const match = findCueAt(subtitleLookupTime(video.currentTime));
+    const lookupTime = subtitleLookupTime(video.currentTime);
+    const match = findCueAt(lookupTime);
 
     if (!match) {
       if (!noTimedCueSince) noTimedCueSince = performance.now();
@@ -1366,6 +1416,7 @@
       // when Netflix is also between subtitles.
       if (
         lastRenderedCueKey &&
+        !shouldRetainRenderedSubtitle(video.currentTime) &&
         performance.now() - noTimedCueSince > 220 &&
         !findNetflixRenderedSubtitle()
       ) {
@@ -1384,6 +1435,8 @@
 
     if (key !== lastRenderedCueKey) {
       lastRenderedCueKey = key;
+      const timingOffsetSeconds = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000;
+      beginSubtitleRetention(match.cue.end + timingOffsetSeconds, video.currentTime);
       currentStatus.playbackMode = "timed-text pending";
       render(match.cue.text, "");
 
@@ -1417,6 +1470,8 @@
     const text = findNetflixRenderedSubtitle();
     if (!text) {
       if (lastFallbackText && String(currentStatus.playbackMode).startsWith("DOM")) {
+        const video = document.querySelector("video");
+        if (shouldRetainRenderedSubtitle(video?.currentTime)) return;
         lastFallbackText = "";
         clearRenderedSubtitle();
       }
@@ -1449,6 +1504,9 @@
         currentStatus.playbackMode =
           cues.length ? "DOM fallback (timing mismatch)" : "DOM realtime";
         currentStatus.lastTranslatedText = truncate(translated);
+        lastRenderedCueKey = key;
+        const videoTime = document.querySelector("video")?.currentTime;
+        beginSubtitleRetention(videoTime, videoTime);
         render(text, translated);
 
         if (!precomputeInProgress) {
