@@ -15,6 +15,7 @@ A small cross-browser Manifest V3 extension for Firefox and Chromium browsers th
 - Time-based look-ahead translation with an enforced 30-second minimum
 - Dual subtitle overlay
 - Custom subtitle height, alignment, line width, font sizes, and background strength
+- Collapsible in-player subtitle editor that remembers its panel state
 - Independent visibility controls for Netflix subtitles, LST original text, and LST translations
 - Adjustable ±2-second subtitle timing offset in Settings and the in-player pill
 - Captures Netflix TTML/WebVTT subtitle documents when available
