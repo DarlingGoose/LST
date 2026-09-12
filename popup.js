@@ -39,6 +39,12 @@ function formatElapsed(startedAt) {
 }
 
 function renderStatus(status) {
+  const completed = Boolean(
+    status.captured &&
+    status.cueCount > 0 &&
+    status.translatedCount >= status.cueCount
+  );
+
   modelEl.textContent = status.model || "not selected";
   targetEl.textContent = status.targetLanguage || "English";
   trackEl.textContent = status.captured
@@ -79,12 +85,15 @@ function renderStatus(status) {
   const error = status.lastError ? `\nLast error: ${status.lastError}` : "";
   messageEl.textContent = `${status.message || ""}${error}`;
 
-  if (status.lastError) {
-    statePillEl.textContent = "Needs attention";
-    statePillEl.dataset.state = "error";
-  } else if (status.precomputing) {
+  if (status.precomputing) {
     statePillEl.textContent = "Working";
     statePillEl.dataset.state = "working";
+  } else if (completed) {
+    statePillEl.textContent = "Completed";
+    statePillEl.dataset.state = "completed";
+  } else if (status.lastError) {
+    statePillEl.textContent = "Needs attention";
+    statePillEl.dataset.state = "error";
   } else if (status.captured) {
     statePillEl.textContent = "Ready";
     statePillEl.dataset.state = "ready";
@@ -94,7 +103,7 @@ function renderStatus(status) {
   }
 
   precomputeButton.disabled =
-    !status.captured || !status.model || status.precomputing;
+    !status.captured || !status.model || status.precomputing || completed;
   cancelButton.disabled = !status.precomputing;
 }
 

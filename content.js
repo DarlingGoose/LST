@@ -669,6 +669,13 @@
     if (currentStatus.requestState === "running" || lookAheadQueued.size) {
       return { label: "Buffering", state: "buffering" };
     }
+    if (
+      currentStatus.captured &&
+      currentStatus.cueCount > 0 &&
+      currentStatus.translatedCount >= currentStatus.cueCount
+    ) {
+      return { label: "Completed", state: "completed" };
+    }
     if (currentStatus.requestState === "error") return { label: "Error", state: "error" };
     if (String(currentStatus.playbackMode).includes("realtime")) {
       return { label: "Realtime", state: "realtime" };
@@ -683,10 +690,10 @@
   function updateQuickPills() {
     if (!quickPillsPanel || !quickPillsState) return;
     quickPillsPanel.style.display = settings.showQuickPills ? "block" : "none";
+    refreshCacheCoverage();
     const status = quickPillStatus();
     quickPillsPanel.dataset.state = status.state;
     quickPillsState.textContent = status.label;
-    refreshCacheCoverage();
     const ahead = quickPillsPanel.querySelector("#lst-pill-ahead");
     if (ahead) {
       ahead.textContent = currentStatus.cachedAheadSeconds > 0
@@ -1560,6 +1567,7 @@
       currentStatus.precomputing = false;
       currentStatus.batchStartedAt = 0;
       currentStatus.currentText = "";
+      updateQuickPills();
     }
   }
 
