@@ -13,6 +13,7 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
   width: min(92vw, 1100px);
   z-index: 2147483646;
   pointer-events: none;
+  color: #fff;
   text-align: center;
   font-family: Netflix Sans, Helvetica Neue, Segoe UI, sans-serif;
   text-shadow:
@@ -188,7 +189,12 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 }
 .lst-pill-section h3 { margin: 0 0 6px; color: #a7afbc; font-size: 10px; font-weight: 750; letter-spacing: 0.055em; text-transform: uppercase; }
 .lst-pill-section > label { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 29px; cursor: pointer; }
-#lst-pill-menu input { width: 17px; height: 17px; margin: 0; accent-color: #e50914; }
+.lst-pill-switch { position: relative; flex: 0 0 auto; width: 38px; height: 22px; }
+.lst-pill-switch input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
+.lst-pill-switch-ui { display: block; width: 100%; height: 100%; border-radius: 999px; background: #3a414d; transition: background 0.16s ease; }
+.lst-pill-switch-ui::after { content: ""; display: block; width: 16px; height: 16px; margin: 3px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); transition: transform 0.16s ease; }
+.lst-pill-switch input:checked + .lst-pill-switch-ui { background: #e50914; }
+.lst-pill-switch input:checked + .lst-pill-switch-ui::after { transform: translateX(16px); }
 .lst-pill-timing > span { display: flex; justify-content: space-between; gap: 12px; color: #d8dadd; }
 .lst-pill-timing output { color: #f7f8fa; font-variant-numeric: tabular-nums; font-weight: 650; }
 .lst-pill-timing > div { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
@@ -213,9 +219,9 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 #lst-pill-save-status { color: #9de2bd; font-size: 11px; }
 #lst-pill-save-status[data-error="true"] { color: #ff9da2; }
 #lst-pill-trigger:focus-visible,
-#lst-pill-menu input:focus-visible,
 #lst-pill-menu button:focus-visible,
 #lst-pill-menu select:focus-visible { outline: 2px solid #ff747b; outline-offset: 2px; }
+.lst-pill-switch input:focus-visible + .lst-pill-switch-ui { outline: 2px solid #ff747b; outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
   #lst-quick-pills[data-state="buffering"] .lst-pill-dot { animation: none; }

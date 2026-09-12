@@ -484,9 +484,9 @@
           </div>
           <section class="lst-pill-section" aria-labelledby="lst-visibility-heading">
             <h3 id="lst-visibility-heading">Visibility</h3>
-            <label><span>Translation</span><input data-pill-setting="showTranslated" type="checkbox"></label>
-            <label><span>Original text</span><input data-pill-setting="showOriginal" type="checkbox"></label>
-            <label><span>Hide Netflix subtitles</span><input data-pill-setting="hideNetflixSubtitles" type="checkbox"></label>
+            <label><span>Translation</span><span class="lst-pill-switch"><input data-pill-setting="showTranslated" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
+            <label><span>Original text</span><span class="lst-pill-switch"><input data-pill-setting="showOriginal" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
+            <label><span>Hide Netflix subtitles</span><span class="lst-pill-switch"><input data-pill-setting="hideNetflixSubtitles" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
           </section>
           <section class="lst-pill-section lst-pill-timing" aria-labelledby="lst-timing-heading">
             <span><h3 id="lst-timing-heading">Timing offset</h3><output id="lst-pill-timing-value">0 ms</output></span>
