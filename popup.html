@@ -1,0 +1,111 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>LST — Local Subtitle Translate</title>
+  <style>
+    body {
+      width: 370px;
+      margin: 0;
+      padding: 14px;
+      font: 13px system-ui, sans-serif;
+      background: #151515;
+      color: #f5f5f5;
+    }
+    h1 { margin: 0 0 12px; font-size: 16px; }
+    .card {
+      padding: 11px;
+      border-radius: 9px;
+      background: #242424;
+    }
+    .meta {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 9px;
+      line-height: 1.4;
+    }
+    .label { color: #999; }
+    .value { overflow-wrap: anywhere; }
+    .progress-wrap {
+      margin-top: 11px;
+      height: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #111;
+    }
+    #progressBar {
+      height: 100%;
+      width: 0%;
+      background: #e50914;
+      transition: width .2s ease;
+    }
+    #progressText {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #ccc;
+    }
+    #currentText {
+      margin-top: 10px;
+      padding: 9px;
+      border-radius: 7px;
+      background: #181818;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      max-height: 92px;
+      overflow: auto;
+    }
+    #message {
+      margin-top: 9px;
+      color: #bbb;
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
+    .buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    button {
+      padding: 9px 10px;
+      border: 0;
+      border-radius: 7px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.primary { background: #e50914; color: white; }
+    button.secondary { background: #333; color: white; }
+    button:disabled { opacity: .5; cursor: default; }
+    .small { opacity: .68; margin-top: 9px; font-size: 12px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <h1>LST — Local Subtitle Translate</h1>
+
+  <div class="card">
+    <div class="meta">
+      <div class="label">Model</div><div id="model" class="value">—</div>
+      <div class="label">Target</div><div id="target" class="value">—</div>
+      <div class="label">Track</div><div id="track" class="value">—</div>
+      <div class="label">Playback</div><div id="playback" class="value">—</div>
+    </div>
+
+    <div class="progress-wrap"><div id="progressBar"></div></div>
+    <div id="progressText">0%</div>
+    <div id="currentText">Waiting for subtitle work…</div>
+    <div id="message"></div>
+  </div>
+
+  <div class="buttons">
+    <button id="precompute" class="primary">Precompute</button>
+    <button id="cancel" class="secondary">Stop</button>
+  </div>
+  <button id="settings" class="secondary" style="width:100%; margin-top:8px;">Settings</button>
+
+  <div class="small">
+    Precompute runs in the Netflix tab, not in this popup. You can close this popup and reopen it without stopping the job.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

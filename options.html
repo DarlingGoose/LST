@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>LST — Local Subtitle Translate Settings</title>
+  <style>
+    body { margin: 0; background: #101010; color: #f5f5f5; font: 14px system-ui, sans-serif; }
+    main { max-width: 720px; margin: 36px auto; padding: 0 22px 60px; }
+    h1 { font-size: 25px; margin-bottom: 8px; }
+    .muted { color: #aaa; line-height: 1.5; }
+    .card { margin-top: 22px; padding: 18px; background: #1b1b1b; border: 1px solid #2e2e2e; border-radius: 12px; }
+    label { display: block; margin: 14px 0 6px; font-weight: 650; }
+    input[type="text"], input[type="number"], select { box-sizing: border-box; width: 100%; padding: 9px 10px; border-radius: 7px; border: 1px solid #444; background: #111; color: #fff; }
+    .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+    .check { display: flex; gap: 9px; align-items: center; margin-top: 13px; font-weight: 500; }
+    .check input { margin: 0; }
+    button { padding: 9px 13px; border: 0; border-radius: 7px; cursor: pointer; font-weight: 650; }
+    button.primary { background: #e50914; color: white; }
+    button.secondary { background: #333; color: white; }
+    #status { margin-top: 12px; white-space: pre-wrap; color: #bbb; }
+    code { color: #ddd; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>LST — Local Subtitle Translate</h1>
+  <div class="muted">
+    Translation requests stay on your machine when you use a local Ollama model.
+  </div>
+
+  <div class="card">
+    <label for="ollamaUrl">Ollama URL</label>
+    <div class="row">
+      <input id="ollamaUrl" type="text" value="http://localhost:11434">
+      <button id="refreshModels" class="secondary">Refresh models</button>
+    </div>
+
+    <label for="model">Installed model</label>
+    <select id="model"></select>
+
+    <label for="targetLanguage">Target language</label>
+    <input id="targetLanguage" type="text" value="English">
+
+    <label class="check"><input id="enabled" type="checkbox"> Enable translator</label>
+    <label class="check"><input id="showOriginal" type="checkbox"> Show original subtitle above translation</label>
+    <label class="check"><input id="autoTranslateAhead" type="checkbox"> Translate upcoming cues in the background</label>
+
+    <label class="check"><input id="showDebugPanel" type="checkbox"> Show detailed LST debug panel on Netflix</label>
+    <label class="check"><input id="debugPanelAlwaysOnTop" type="checkbox"> Keep debug panel pinned in the top-right corner</label>
+
+    <label for="aheadCount">Realtime look-ahead cues</label>
+    <input id="aheadCount" type="number" min="0" max="100" value="12">
+
+    <label for="batchSize">Precompute batch size</label>
+    <input id="batchSize" type="number" min="1" max="50" value="16">
+
+    <label for="requestTimeoutSeconds">Ollama request timeout (seconds)</label>
+    <input id="requestTimeoutSeconds" type="number" min="15" max="300" value="75">
+
+    <div style="display:flex; gap:8px; margin-top:18px;">
+      <button id="save" class="primary">Save settings</button>
+      <button id="clearCache" class="secondary">Clear translation cache</button>
+    </div>
+
+    <div id="status"></div>
+  </div>
+
+  <div class="card muted">
+    If Ollama rejects requests from the extension, restart Ollama with an allowed extension origin, for example:
+    <p><code>OLLAMA_ORIGINS=chrome-extension://*,moz-extension://* ollama serve</code></p>
+    On a systemd Linux install, set the environment variable on the Ollama service instead of launching a second server.
+  </div>
+
+  <script src="options.js"></script>
+</main>
+</body>
+</html>
