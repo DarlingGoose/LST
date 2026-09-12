@@ -65,6 +65,7 @@
   let pausedCacheNoticeShown = false;
   let pausedCacheCompleteNoticeShown = false;
   let pausedCacheFailedKeys = new Set();
+  let lastPlaybackWasPaused = false;
 
   let currentStatus = {
     captured: false,
@@ -412,6 +413,7 @@
           <span class="lst-pill-dot" aria-hidden="true"></span>
           <strong>LST</strong>
           <span id="lst-pill-state">Waiting</span>
+          <span id="lst-pill-ahead" class="lst-pill-ahead"></span>
           <span aria-hidden="true">⌄</span>
         </button>
         <div id="lst-pill-menu" hidden>
@@ -641,6 +643,7 @@
   }
 
   function quickPillStatus() {
+    if (pausedCachingPromise) return { label: "Caching", state: "buffering" };
     if (currentStatus.precomputing) return { label: "Precomputing", state: "buffering" };
     if (currentStatus.requestState === "running" || lookAheadQueued.size) {
       return { label: "Buffering", state: "buffering" };
@@ -662,6 +665,13 @@
     const status = quickPillStatus();
     quickPillsPanel.dataset.state = status.state;
     quickPillsState.textContent = status.label;
+    refreshCacheCoverage();
+    const ahead = quickPillsPanel.querySelector("#lst-pill-ahead");
+    if (ahead) {
+      ahead.textContent = currentStatus.cachedAheadSeconds > 0
+        ? `· ${formatAheadDuration(currentStatus.cachedAheadSeconds)} ahead`
+        : "";
+    }
     for (const control of quickPillsPanel.querySelectorAll("[data-pill-setting]")) {
       control.checked = settings[control.dataset.pillSetting] !== false;
     }
@@ -767,6 +777,14 @@
     return value < 1000 ? `${Math.round(value)}ms` : `${(value / 1000).toFixed(1)}s`;
   }
 
+  function formatAheadDuration(seconds) {
+    const value = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (value < 60) return `${value}s`;
+    const minutes = Math.floor(value / 60);
+    const remainder = value % 60;
+    return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+  }
+
   function shortUrl(url) {
     if (!url) return "—";
     try {
@@ -799,6 +817,7 @@
       `target      ${settings.targetLanguage || "—"}`,
       `track       ${currentStatus.cueCount || 0} cues`,
       `cached      ${currentStatus.translatedCount || 0}/${currentStatus.cueCount || 0} (${currentStatus.progressPercent || 0}%)`,
+      `cache ahead ${formatAheadDuration(currentStatus.cachedAheadSeconds)}`,
       `precompute  ${currentStatus.precomputing ? "RUNNING" : "idle"} · batch ${currentStatus.currentBatch || 0}/${currentStatus.totalBatches || 0}`,
       `request     ${currentStatus.requestState || "idle"} · ${formatMs(currentStatus.lastRequestMs)}`,
       `result      ${currentStatus.lastRequestTranslated || 0}/${currentStatus.lastRequestRequested || 0} translated · ${currentStatus.lastRequestFailed || 0} failed`,
@@ -912,7 +931,40 @@
       keys
     });
 
-    return response.entries || {};
+    const entries = response.entries || {};
+    rememberCachedEntries(entries);
+    return entries;
+  }
+
+  function rememberCachedEntries(entries) {
+    for (const key of Object.keys(entries || {})) knownCachedKeys.add(key);
+    refreshCacheCoverage();
+  }
+
+  function refreshCacheCoverage(videoTime) {
+    currentStatus.translatedCount = cues.reduce(
+      (count, cue) => count + (knownCachedKeys.has(cueKey(cue)) ? 1 : 0),
+      0
+    );
+    updateProgress();
+
+    const video = document.querySelector("video");
+    const rawTime = Number.isFinite(Number(videoTime))
+      ? Number(videoTime)
+      : Number(video?.currentTime);
+    if (!Number.isFinite(rawTime) || !cues.length) {
+      currentStatus.cachedAheadSeconds = 0;
+      return;
+    }
+
+    const time = subtitleLookupTime(rawTime);
+    let coveredUntil = time;
+    for (const cue of cues) {
+      if (cue.end <= time) continue;
+      if (!knownCachedKeys.has(cueKey(cue))) break;
+      coveredUntil = Math.max(coveredUntil, cue.end);
+    }
+    currentStatus.cachedAheadSeconds = Math.max(0, coveredUntil - time);
   }
 
   async function translateCues(selectedCues) {
@@ -989,6 +1041,7 @@
       for (const entry of response.translations || []) {
         if (entry.text) newEntries[entry.id] = entry.text;
       }
+      rememberCachedEntries(newEntries);
 
       if (Object.keys(newEntries).length) {
         await runtimeMessage({
@@ -1094,6 +1147,66 @@
     }
   }
 
+  function startPausedCaching(video) {
+    if (
+      pausedCachingPromise ||
+      !settings.cacheWhilePaused ||
+      !settings.model ||
+      !cues.length ||
+      precomputeInProgress
+    ) return;
+
+    pausedCachingPromise = runPausedCaching(video).finally(() => {
+      pausedCachingPromise = null;
+      refreshCacheCoverage(video.currentTime);
+      updateQuickPills();
+    });
+    updateQuickPills();
+  }
+
+  async function runPausedCaching(video) {
+    if (!pausedCacheNoticeShown) {
+      pausedCacheNoticeShown = true;
+      setStatus("Paused — building more of this episode's translation cache…", true);
+    }
+
+    while (video.paused && settings.cacheWhilePaused && !precomputeInProgress) {
+      const playbackTime = subtitleLookupTime(video.currentTime);
+      const remaining = cues.filter((cue) =>
+        cue.end > playbackTime &&
+        !knownCachedKeys.has(cueKey(cue)) &&
+        !pausedCacheFailedKeys.has(cueKey(cue))
+      );
+
+      if (!remaining.length) {
+        if (!pausedCacheCompleteNoticeShown) {
+          pausedCacheCompleteNoticeShown = true;
+          setStatus("Paused cache complete from the current position to the end.", true);
+        }
+        return;
+      }
+
+      const available = remaining.filter((cue) =>
+        !translationInFlight.has(cueKey(cue)) && !lookAheadQueued.has(cueKey(cue))
+      );
+      if (!available.length) return;
+
+      const batchSize = Math.max(1, Number(settings.batchSize) || 8);
+      const batch = available.slice(0, batchSize);
+      const result = await translateCues(batch);
+      for (const failure of result.failures) {
+        if (failure.id) pausedCacheFailedKeys.add(failure.id);
+      }
+
+      refreshCacheCoverage(video.currentTime);
+      setStatus(
+        `Paused cache · ${formatAheadDuration(currentStatus.cachedAheadSeconds)} ahead · ` +
+        `${currentStatus.translatedCount}/${cues.length} cues`,
+        true
+      );
+    }
+  }
+
   async function playbackLoop() {
     ensureOverlay();
 
@@ -1106,6 +1219,24 @@
     if (!cues.length) {
       requestAnimationFrame(playbackLoop);
       return;
+    }
+
+    if (video.paused) {
+      if (!lastPlaybackWasPaused) {
+        pausedCacheNoticeShown = false;
+        pausedCacheCompleteNoticeShown = false;
+      }
+      lastPlaybackWasPaused = true;
+      startPausedCaching(video);
+    } else if (lastPlaybackWasPaused) {
+      lastPlaybackWasPaused = false;
+      refreshCacheCoverage(video.currentTime);
+      if (pausedCacheNoticeShown) {
+        setStatus(
+          `Playback resumed · ${formatAheadDuration(currentStatus.cachedAheadSeconds)} cached ahead.`,
+          true
+        );
+      }
     }
 
     currentStatus.videoTime = video.currentTime;
