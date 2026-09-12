@@ -2,8 +2,17 @@ import { readFile, stat } from "node:fs/promises";
 import process from "node:process";
 
 const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
-const firefoxManifest = JSON.parse(await readFile(".firefox-build/manifest.json", "utf8"));
-const archive = `web-ext-artifacts/lst-firefox-${manifest.version}.zip`;
+const browser = process.argv[2];
+
+if (!new Set(["firefox", "chrome"]).has(browser)) {
+  console.error("Usage: node scripts/verify-package.mjs <firefox|chrome>");
+  process.exit(1);
+}
+
+const packagedManifest = JSON.parse(
+  await readFile(`.${browser}-build/manifest.json`, "utf8")
+);
+const archive = `web-ext-artifacts/lst-${browser}-${manifest.version}.zip`;
 
 await stat(archive).catch(() => {
   console.error(`Expected release archive was not created: ${archive}`);
@@ -66,17 +75,33 @@ const forbidden = [
 ];
 const errors = [];
 
-if (firefoxManifest.background?.service_worker) {
-  errors.push("Firefox package manifest still contains background.service_worker");
+if (packagedManifest.version !== manifest.version) {
+  errors.push(`${browser} package version does not match the shared manifest`);
 }
-if (!firefoxManifest.background?.scripts?.includes("background.js")) {
-  errors.push("Firefox package manifest is missing background.scripts");
-}
-if (Number.parseInt(
-  firefoxManifest.browser_specific_settings?.gecko_android?.strict_min_version,
-  10
-) < 142) {
-  errors.push("Firefox package manifest must require Firefox Android 142 or newer");
+
+if (browser === "firefox") {
+  if (packagedManifest.background?.service_worker) {
+    errors.push("Firefox package manifest still contains background.service_worker");
+  }
+  if (!packagedManifest.background?.scripts?.includes("background.js")) {
+    errors.push("Firefox package manifest is missing background.scripts");
+  }
+  if (Number.parseInt(
+    packagedManifest.browser_specific_settings?.gecko_android?.strict_min_version,
+    10
+  ) < 142) {
+    errors.push("Firefox package manifest must require Firefox Android 142 or newer");
+  }
+} else {
+  if (packagedManifest.background?.service_worker !== "background.js") {
+    errors.push("Chrome package manifest is missing background.service_worker");
+  }
+  if (packagedManifest.background?.scripts) {
+    errors.push("Chrome package manifest still contains background.scripts");
+  }
+  if (packagedManifest.browser_specific_settings) {
+    errors.push("Chrome package manifest still contains Firefox metadata");
+  }
 }
 
 if (!entries.includes("manifest.json")) {

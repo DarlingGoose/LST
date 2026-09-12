@@ -1,0 +1,290 @@
+name: Browser release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release (for example, 1.2.3)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install release tooling
+        run: npm ci
+
+      - name: Update version metadata
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: npm run version:set -- "$RELEASE_VERSION"
+
+      - name: Validate release metadata
+        run: npm run check:release
+
+      - name: Commit and tag manual release
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(node -p "require('./manifest.json').version")"
+          TAG="v${VERSION}"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json package.json package-lock.json
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: release ${TAG}"
+          fi
+
+          git tag "$TAG"
+          git push --atomic origin HEAD:main "$TAG"
+
+      - name: Resolve release source
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(node -p "require('./manifest.json').version")"
+          TAG="v${VERSION}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" != "$TAG" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match manifest version ${VERSION}"
+            exit 1
+          fi
+
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Package ${{ matrix.browser }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser:
+          - firefox
+          - chrome
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install release tooling
+        run: npm ci
+
+      - name: Build and verify ${{ matrix.browser }} package
+        run: npm run package:${{ matrix.browser }}
+
+      - name: Create checksum
+        working-directory: web-ext-artifacts
+        run: sha256sum lst-${{ matrix.browser }}-*.zip > SHA256SUMS-${{ matrix.browser }}.txt
+
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: lst-${{ matrix.browser }}-${{ needs.prepare.outputs.tag }}
+          path: |
+            web-ext-artifacts/lst-${{ matrix.browser }}-*.zip
+            web-ext-artifacts/SHA256SUMS-${{ matrix.browser }}.txt
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub release
+    needs:
+      - prepare
+      - package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download browser packages
+        uses: actions/download-artifact@v5
+        with:
+          pattern: lst-*-${{ needs.prepare.outputs.tag }}
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" release-artifacts/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$TAG"
+          fi
+
+  publish-firefox:
+    name: Submit to Firefox Add-ons
+    if: vars.AMO_PUBLISH == 'true'
+    needs:
+      - prepare
+      - package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: firefox-addons
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install release tooling
+        run: npm ci
+
+      - name: Submit listed version to addons.mozilla.org
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: npm run sign:amo
+
+  publish-chrome:
+    name: Submit to Chrome Web Store
+    if: vars.CHROME_PUBLISH == 'true'
+    needs:
+      - prepare
+      - package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: chrome-web-store
+
+    steps:
+      - name: Download Chrome package
+        uses: actions/download-artifact@v5
+        with:
+          name: lst-chrome-${{ needs.prepare.outputs.tag }}
+          path: web-ext-artifacts
+
+      - name: Authenticate to Google
+        id: google-auth
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.CHROME_SERVICE_ACCOUNT_JSON }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          create_credentials_file: false
+
+      - name: Upload package to Chrome Web Store
+        shell: bash
+        env:
+          ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID }}
+        run: |
+          set -euo pipefail
+
+          : "${ACCESS_TOKEN:?Missing Google access token}"
+          : "${CWS_PUBLISHER_ID:?Missing CHROME_PUBLISHER_ID}"
+          : "${CWS_EXTENSION_ID:?Missing CHROME_EXTENSION_ID}"
+
+          ZIP="$(find web-ext-artifacts -maxdepth 1 -name 'lst-chrome-*.zip' -print -quit)"
+          test -n "$ZIP"
+          ITEM="publishers/${CWS_PUBLISHER_ID}/items/${CWS_EXTENSION_ID}"
+
+          RESPONSE="$(curl --fail-with-body --silent --show-error --request POST \
+            --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+            --header "Content-Type: application/zip" \
+            --upload-file "$ZIP" \
+            "https://chromewebstore.googleapis.com/upload/v2/${ITEM}:upload")"
+          echo "$RESPONSE" | jq .
+          STATE="$(echo "$RESPONSE" | jq -r '.uploadState')"
+
+          if [[ "$STATE" == "IN_PROGRESS" ]]; then
+            for attempt in $(seq 1 30); do
+              sleep 2
+              STATUS="$(curl --fail-with-body --silent --show-error \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                "https://chromewebstore.googleapis.com/v2/${ITEM}:fetchStatus")"
+              STATE="$(echo "$STATUS" | jq -r '.lastAsyncUploadState // empty')"
+              echo "Upload status: $STATE"
+              if [[ "$STATE" != "IN_PROGRESS" ]]; then
+                echo "$STATUS" | jq .
+                break
+              fi
+            done
+          fi
+
+          if [[ "$STATE" != "SUCCEEDED" ]]; then
+            echo "Chrome Web Store upload failed or timed out: $STATE"
+            exit 1
+          fi
+
+      - name: Submit Chrome extension for review
+        shell: bash
+        env:
+          ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID }}
+        run: |
+          set -euo pipefail
+
+          ITEM="publishers/${CWS_PUBLISHER_ID}/items/${CWS_EXTENSION_ID}"
+          RESPONSE="$(curl --fail-with-body --silent --show-error --request POST \
+            --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data '{}' \
+            "https://chromewebstore.googleapis.com/v2/${ITEM}:publish")"
+          echo "$RESPONSE" | jq .

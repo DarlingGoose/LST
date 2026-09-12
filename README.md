@@ -2,7 +2,7 @@
 
 A small cross-browser Manifest V3 extension for Firefox and Chromium browsers that translates Netflix subtitles using a local Ollama model.
 
-[Privacy policy](PRIVACY.md) · [Firefox release guide](FIREFOX_RELEASE.md)
+[Privacy policy](PRIVACY.md) · [Browser release guide](FIREFOX_RELEASE.md)
 
 ## Features
 
@@ -147,7 +147,7 @@ For Japanese → English, `translategemma:4b` is the initial default and a good 
 
 There is no build step. Reload the unpacked extension after editing files.
 
-Firefox release packaging generates `.firefox-build` from the shared Chromium/Firefox source manifest. This removes Chromium-only manifest fields before Mozilla linting and AMO submission without changing unpacked Chromium development.
+Release packaging generates `.firefox-build` and `.chrome-build` from the shared Chromium/Firefox source manifest. Run `npm run package:all` to validate and build both store-ready archives. The preparation step removes fields unsupported by each target browser without changing unpacked development.
 
 Useful files:
 
@@ -164,7 +164,7 @@ Useful files:
 - Store caches in IndexedDB with per-show metadata and LRU cleanup.
 - Precompute starting near the current playback position before translating the rest.
 - Add export/import for translated VTT/SRT.
-- Add Firefox packaging.
+- Expand automated browser compatibility tests.
 - Add a side panel showing the episode transcript and translation progress.
 - Add model-specific translation prompt presets.
 

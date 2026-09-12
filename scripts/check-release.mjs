@@ -3,10 +3,16 @@ import process from "node:process";
 
 const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
+const packageLock = JSON.parse(await readFile("package-lock.json", "utf8"));
 const errors = [];
 
 if (manifest.version !== packageJson.version) {
   errors.push(`manifest version ${manifest.version} does not match package version ${packageJson.version}`);
+}
+
+if (manifest.version !== packageLock.version ||
+    manifest.version !== packageLock.packages?.[""]?.version) {
+  errors.push(`manifest version ${manifest.version} does not match package-lock versions`);
 }
 
 if (process.env.GITHUB_REF_TYPE === "tag") {

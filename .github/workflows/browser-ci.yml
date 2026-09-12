@@ -1,4 +1,4 @@
-name: Firefox CI
+name: Browser CI
 
 on:
   pull_request:
@@ -10,17 +10,24 @@ permissions:
   contents: read
 
 concurrency:
-  group: firefox-ci-${{ github.ref }}
+  group: browser-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint-and-package:
-    name: Lint and package
+  package:
+    name: Package ${{ matrix.browser }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser:
+          - firefox
+          - chrome
+
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -31,13 +38,13 @@ jobs:
       - name: Install release tooling
         run: npm ci
 
-      - name: Lint and build Firefox package
-        run: npm run package
+      - name: Build and verify ${{ matrix.browser }} package
+        run: npm run package:${{ matrix.browser }}
 
       - name: Upload review package
         uses: actions/upload-artifact@v4
         with:
-          name: lst-firefox-${{ github.sha }}
-          path: web-ext-artifacts/lst-firefox-*.zip
+          name: lst-${{ matrix.browser }}-${{ github.sha }}
+          path: web-ext-artifacts/lst-${{ matrix.browser }}-*.zip
           if-no-files-found: error
           retention-days: 14
