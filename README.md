@@ -21,7 +21,7 @@ A small cross-browser Manifest V3 extension for Firefox and Chromium browsers th
 - Captures Netflix TTML/WebVTT subtitle documents when available
 - Precomputes an entire captured episode subtitle track
 - Caches translations locally per Netflix watch ID + model + target language
-- Browsable translated-episode storage with per-cache size and removal controls
+- Show-grouped translation history with timestamped preview, TSV export, size, and removal controls
 - Separate Netflix show and episode names for newly cached or refreshed entries
 - Structured JSON output from Ollama to keep batch translations aligned
 
@@ -164,7 +164,7 @@ Useful files:
 - Add subtitle context windows to improve pronoun/name translation.
 - Store caches in IndexedDB with per-show metadata and LRU cleanup.
 - Precompute starting near the current playback position before translating the rest.
-- Add export/import for translated VTT/SRT.
+- Add import and VTT/SRT export formats.
 - Expand automated browser compatibility tests.
 - Add a side panel showing the episode transcript and translation progress.
 - Add model-specific translation prompt presets.
@@ -200,7 +200,7 @@ Settings now includes a live preview and controls for:
 
 Saved appearance changes are pushed to open Netflix tabs immediately. The optional in-player controls overlay saves adjustments as you make them and shares the top-right area with the debug panel without covering it. Settings can also pull an Ollama model by name and show its download progress. The detailed debug panel is off by default for new installs.
 
-The Translated episodes section in Settings lists each locally cached episode/model/language combination, its translated cue count, estimated storage use, and last update time. Individual caches or the entire local translation library can be removed there. Older caches remain readable and are labeled with their Netflix video ID until they are updated with richer episode metadata.
+The Translated episodes section in Settings groups locally cached episodes under their Netflix show, then lists each model/language combination with its translated cue count, estimated storage use, and last update time. Each episode can be previewed as timestamp, original text, and translated text, or exported as a UTF-8 TSV file. Individual caches or the entire local translation library can be removed there. Older caches remain readable and are grouped under Netflix with their video ID until revisiting the episode provides richer metadata.
 
 When look-ahead is enabled, LST prepares every subtitle within the configured time window and the first cue after that boundary. The window cannot be set below 30 seconds. Optional top-left notices report when the buffer is being prepared, when it is ready, or when an upcoming cue could not be translated.
 

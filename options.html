@@ -73,14 +73,32 @@
     #pullProgressBar { width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #ff626a); transition: width .2s ease; }
     #pullProgressText { min-height: 17px; margin-top: 7px; color: var(--muted); font-size: 12px; }
     .cache-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: center; margin: 14px 0; color: var(--muted); font-size: 12px; }
-    .cache-list { display: grid; gap: 9px; }
+    .cache-list { display: grid; gap: 16px; }
     .cache-empty { padding: 20px; border: 1px dashed #343842; border-radius: 11px; color: var(--muted); text-align: center; }
-    .cache-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 13px; border: 1px solid #2d3139; border-radius: 11px; background: #101216; }
+    .cache-show { overflow: hidden; border: 1px solid #30343d; border-radius: 13px; background: #0e1014; }
+    .cache-show-title { margin: 0; padding: 12px 14px; border-bottom: 1px solid #30343d; background: #1c1f25; color: #fff; font-size: 14px; }
+    .cache-episodes { display: grid; gap: 9px; padding: 9px; }
+    .cache-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 13px; border: 1px solid #2d3139; border-radius: 11px; background: #101216; }
     .cache-title { overflow: hidden; color: #f5f5f6; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-    .cache-episode { overflow: hidden; margin-top: 2px; color: #c7cad1; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
     .cache-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .cache-item-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .cache-item-actions button { min-height: 34px; padding: 6px 10px; }
     .cache-remove { min-height: 34px; padding: 6px 10px; border-color: #543338; background: #29171a; color: #ffb0b4; }
     .cache-remove:hover { background: #3b1d22; }
+    .cache-preview { grid-column: 1 / -1; min-width: 0; padding-top: 12px; border-top: 1px solid #292d34; color: var(--muted); }
+    .cache-preview[hidden] { display: none !important; }
+    .cache-preview-table-wrap { max-height: 440px; overflow: auto; border: 1px solid #30343d; border-radius: 9px; }
+    .cache-preview-table { width: 100%; border-collapse: collapse; table-layout: fixed; background: #0b0d10; font-size: 12px; }
+    .cache-preview-table th, .cache-preview-table td { padding: 9px 10px; border-bottom: 1px solid #252930; text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .cache-preview-table th { position: sticky; top: 0; z-index: 1; background: #20232a; color: #f2f3f5; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    .cache-preview-table th:first-child, .cache-preview-table td:first-child { width: 180px; color: #aeb4bf; font-variant-numeric: tabular-nums; }
+    .cache-preview-table tr:last-child td { border-bottom: 0; }
+    @media (max-width: 720px) {
+      .cache-item { grid-template-columns: 1fr; }
+      .cache-item-actions { justify-content: flex-start; }
+      .cache-preview { grid-column: 1; }
+      .cache-preview-table { min-width: 680px; }
+    }
 
     .switch-row { display: flex; justify-content: space-between; gap: 18px; align-items: center; padding: 13px 0; border-top: 1px solid #272a31; }
     .switch-row:first-of-type { padding-top: 0; border-top: 0; }
@@ -292,7 +310,7 @@
 
         <section id="panel-storage" class="card" aria-labelledby="cacheHeading" data-settings-panel="storage" role="tabpanel" hidden>
           <div class="section-heading">
-            <div><h2 id="cacheHeading">Translated episodes</h2><p class="section-copy">Browse locally cached translations and remove episodes you no longer need.</p></div>
+            <div><h2 id="cacheHeading">Translated episodes</h2><p class="section-copy">Browse episodes by show, preview timestamped translations, or export them as TSV.</p></div>
           </div>
           <div class="cache-summary">
             <span id="cacheSummary">Loading cached episodes…</span>

@@ -32,6 +32,9 @@
   let settings = { ...DEFAULTS };
   let cues = [];
   let cueSourceUrl = "";
+  let cueVideoId = "";
+  const titleMetadataByVideoId = new Map();
+  const storedTitleSignaturesByCacheId = new Map();
 
   let overlay;
   let originalLine;
@@ -53,6 +56,7 @@
   let fallbackTimer = null;
   let lastTimedCueMatchAt = 0;
   let noTimedCueSince = 0;
+  let lastTitleMetadataRefreshAt = 0;
 
   let translationInFlight = new Map();
   let knownCachedKeys = new Set();
@@ -138,7 +142,7 @@
   function cacheId() {
     const model = encodeURIComponent(settings.model || "none");
     const language = encodeURIComponent(settings.targetLanguage || "English");
-    return `${getVideoId()}:${model}:${language}`;
+    return `${cueVideoId || getVideoId()}:${model}:${language}`;
   }
 
   function cleanPageTitle() {
@@ -161,11 +165,17 @@
 
   function netflixTitleMetadata() {
     const titleContainer = document.querySelector(
-      '[data-uia="video-title"], .watch-video--player-view .video-title'
+      '[data-uia="video-title"], [data-uia="player-title"], ' +
+      '.watch-video--player-view .video-title, .ellipsize-text'
     );
     const explicitShow = firstMetadataText([
       '[data-uia="video-title"] [data-uia="series-title"]',
-      '[data-uia="series-title"]'
+      '[data-uia="series-title"]',
+      '[data-uia="video-title"] h4',
+      '[data-uia="player-title"] h4',
+      '.watch-video--player-view .video-title h4',
+      '.ellipsize-text h4',
+      '.player-status-main-title'
     ]) || firstMetadataText([
       '[data-uia="video-title"] img[alt]',
       '.watch-video--player-view .video-title img[alt]'
@@ -174,7 +184,10 @@
       '[data-uia="video-title"] [data-uia="episode-title"]',
       '[data-uia="episode-title"]',
       '.watch-video--player-view .video-title .episode-title',
-      '.watch-video--player-view .video-title h4'
+      '[data-uia="video-title"] span',
+      '[data-uia="player-title"] span',
+      '.ellipsize-text span',
+      '.player-status-subtitle'
     ]);
     const pageTitle = cleanPageTitle();
     const parts = titleContainer
@@ -188,34 +201,83 @@
         )
       : [];
 
-    const usableExplicitShow = /^Netflix$/i.test(explicitShow) ? "" : explicitShow;
-    const showName = usableExplicitShow || pageTitle || parts[0] || "";
-    const markedEpisode = parts.find((value) =>
-      /^(?:S\d+\s*:\s*E\d+|Episode\s+\d+)/i.test(value)
+    const genericTitle = (value) =>
+      !value || /^(?:Netflix|Netflix episode \S+|Unknown Netflix episode)$/i.test(value);
+    const usableExplicitShow = genericTitle(explicitShow) ? "" : explicitShow;
+    const usablePageTitle = genericTitle(pageTitle) ? "" : pageTitle;
+    const episodeMarker = parts.find((value) =>
+      /^(?:S(?:eason)?\s*\d+\s*[:·-]?\s*E(?:pisode)?\s*\d+|Episode\s+\d+)/i.test(value)
     );
-    let episodeName = explicitEpisode || markedEpisode || parts.find((value) =>
-      value !== showName && value !== pageTitle && value.length > 1
+    const showName = usableExplicitShow || usablePageTitle || parts.find((value) =>
+      value !== explicitEpisode && value !== episodeMarker
     ) || "";
-    if (episodeName === showName) episodeName = "";
+    const episodeTitle = explicitEpisode && explicitEpisode !== showName &&
+      explicitEpisode !== episodeMarker
+      ? explicitEpisode
+      : parts.find((value) =>
+        value !== showName && value !== usablePageTitle && value !== episodeMarker
+      ) || "";
+    const episodeName = [...new Set([episodeMarker, episodeTitle].filter(Boolean))].join(" · ");
+    const videoId = getVideoId();
+    const previous = titleMetadataByVideoId.get(videoId) || {};
+    const discovered = {
+      showName: showName || previous.showName || "Netflix",
+      episodeName: episodeName || previous.episodeName || `Episode ${videoId}`
+    };
+
+    const hasSpecificEpisode = discovered.episodeName !== `Episode ${videoId}`;
+    if (!genericTitle(discovered.showName) || !previous.showName || hasSpecificEpisode) {
+      titleMetadataByVideoId.set(videoId, discovered);
+    }
+    const remembered = titleMetadataByVideoId.get(videoId) || discovered;
 
     return {
-      showName,
-      episodeName,
-      title: [showName, episodeName].filter(Boolean).join(" — ") ||
-        `Netflix episode ${getVideoId()}`
+      ...remembered,
+      title: [remembered.showName, remembered.episodeName].filter(Boolean).join(" — ")
     };
   }
 
   function cacheMetadata() {
-    const titleMetadata = netflixTitleMetadata();
+    const videoId = cueVideoId || getVideoId();
+    const currentVideoId = getVideoId();
+    const remembered = titleMetadataByVideoId.get(videoId);
+    const titleMetadata = videoId === currentVideoId
+      ? netflixTitleMetadata()
+      : {
+          showName: remembered?.showName || "Netflix",
+          episodeName: remembered?.episodeName || `Episode ${videoId}`,
+          title: [remembered?.showName, remembered?.episodeName].filter(Boolean).join(" — ") ||
+            `Netflix episode ${videoId}`
+        };
     return {
-      videoId: getVideoId(),
+      videoId,
       ...titleMetadata,
       url: location.href,
       model: settings.model || "Unknown model",
       targetLanguage: settings.targetLanguage || "English",
       sourceCueCount: cues.length
     };
+  }
+
+  function persistImprovedCacheMetadata() {
+    if (!cues.length || !knownCachedKeys.size || cueVideoId !== getVideoId()) return;
+    const metadata = cacheMetadata();
+    if (!metadata.showName || metadata.showName === "Netflix") return;
+
+    const signature = `${metadata.showName}|${metadata.episodeName}`;
+    const currentCacheId = cacheId();
+    if (storedTitleSignaturesByCacheId.get(currentCacheId) === signature) return;
+    storedTitleSignaturesByCacheId.set(currentCacheId, signature);
+
+    runtimeMessage({
+      type: "CACHE_SET",
+      cacheId: currentCacheId,
+      entries: {},
+      metadata
+    }).catch((error) => {
+      storedTitleSignaturesByCacheId.delete(currentCacheId);
+      console.warn("[LST] Could not refresh cached episode title:", error);
+    });
   }
 
   function updateProgress() {
@@ -1257,6 +1319,12 @@
   async function playbackLoop() {
     ensureOverlay();
 
+    if (Date.now() - lastTitleMetadataRefreshAt >= 2000) {
+      lastTitleMetadataRefreshAt = Date.now();
+      netflixTitleMetadata();
+      persistImprovedCacheMetadata();
+    }
+
     const video = document.querySelector("video");
     if (!video || !settings.enabled) {
       requestAnimationFrame(playbackLoop);
@@ -1432,6 +1500,9 @@
 
     cues = parsed.sort((a, b) => a.start - b.start);
     cueSourceUrl = url || "captured";
+    cueVideoId = getVideoId();
+    knownCachedKeys = new Set();
+    pausedCacheFailedKeys = new Set();
 
     currentStatus.captured = true;
     currentStatus.cueCount = cues.length;
@@ -1626,14 +1697,21 @@
           sendResponse({ ok: true });
           return;
 
-        case "RELOAD_SETTINGS":
+        case "RELOAD_SETTINGS": {
+          const previousCacheId = cacheId();
           await loadSettings();
+          if (cacheId() !== previousCacheId) {
+            knownCachedKeys = new Set();
+            pausedCacheFailedKeys = new Set();
+            if (cues.length) await getCachedTranslations(cues);
+          }
           ensureOverlay();
           applySubtitleAppearance();
           updateOverlayPanelVisibility();
           updateDebugPanel();
           sendResponse({ ok: true });
           return;
+        }
 
         default:
           sendResponse({ ok: false, error: "Unknown page message." });
