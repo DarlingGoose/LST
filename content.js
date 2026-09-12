@@ -53,7 +53,9 @@
   let renderedSubtitles = [];
   let lastFallbackText = "";
   let fallbackTimer = null;
-  let lastTimedCueMatchAt = 0;
+  let timedTrackSyncState = "unverified";
+  let automaticCueTimeOffsetSeconds = 0;
+  let lastNetflixSyncText = "";
   let noTimedCueSince = 0;
   let lastTitleMetadataRefreshAt = 0;
 
@@ -75,6 +77,9 @@
     captured: false,
     cueCount: 0,
     translatedCount: 0,
+    remainingCueCount: 0,
+    remainingTranslatedCount: 0,
+    episodeProgressPercent: 0,
     cachedAheadSeconds: 0,
     failedCount: 0,
     precomputing: false,
@@ -124,6 +129,17 @@
       .trim();
   }
 
+  function comparableSubtitleText(text) {
+    return normalizeText(text).replace(/\s+/g, " ");
+  }
+
+  function subtitleTextsMatch(left, right) {
+    const comparableLeft = comparableSubtitleText(left);
+    return Boolean(
+      comparableLeft && comparableLeft === comparableSubtitleText(right),
+    );
+  }
+
   function truncate(text, max = 160) {
     const normalized = normalizeText(text);
     return normalized.length <= max
@@ -146,31 +162,60 @@
     return `${cueVideoId || getVideoId()}:${model}:${language}`;
   }
 
-  function cleanPageTitle() {
-    return normalizeText(document.title)
+  function cleanNetflixPageTitle(value) {
+    return normalizeText(value)
       .replace(/^Watch\s+/i, "")
-      .replace(/\s*(?:\||-|–|—)\s*Netflix.*$/i, "")
+      .replace(/\s*(?:\||-|–|—)\s*Netflix(?: Official Site)?.*$/i, "")
       .trim();
   }
 
-  function firstMetadataText(selectors, attribute = "") {
+  function metadataTexts(selectors, attribute = "") {
+    const values = [];
     for (const selector of selectors) {
-      const element = document.querySelector(selector);
-      const value = normalizeText(
-        attribute ? element?.getAttribute(attribute) : element?.textContent,
-      );
-      if (value) return value;
+      for (const element of document.querySelectorAll(selector)) {
+        const value = normalizeText(
+          attribute
+            ? element.getAttribute(attribute)
+            : element.innerText || element.textContent,
+        );
+        if (value && !values.includes(value)) values.push(value);
+      }
     }
-    return "";
+    return values;
+  }
+
+  function firstMetadataText(selectors, attribute = "") {
+    return metadataTexts(selectors, attribute)[0] || "";
+  }
+
+  function isGenericNetflixTitle(value) {
+    return (
+      !value ||
+      /^(?:Netflix(?:\s*[-–—|:].*)?|Netflix episode \S+|Unknown Netflix episode)$/i.test(
+        value,
+      )
+    );
+  }
+
+  function episodeMarker(text) {
+    const value = normalizeText(text);
+    const seasonEpisode = value.match(
+      /\bS(?:eason)?\s*(\d+)\s*[:·-]?\s*E(?:pisode)?\s*(\d+)\b/i,
+    );
+    if (seasonEpisode) {
+      return `Season ${Number(seasonEpisode[1])} · Episode ${Number(seasonEpisode[2])}`;
+    }
+    const episode = value.match(/\bE(?:pisode)?\s*(\d+)\b/i);
+    return episode ? `Episode ${Number(episode[1])}` : "";
   }
 
   function netflixTitleMetadata() {
-    const titleContainer = document.querySelector(
+    const titleContainers = document.querySelectorAll(
       '[data-uia="video-title"], [data-uia="player-title"], ' +
-        ".watch-video--player-view .video-title, .ellipsize-text",
+        ".watch-video--player-view .video-title, .player-status",
     );
-    const explicitShow =
-      firstMetadataText([
+    const explicitShowCandidates = [
+      ...metadataTexts([
         '[data-uia="video-title"] [data-uia="series-title"]',
         '[data-uia="series-title"]',
         '[data-uia="video-title"] h4',
@@ -178,66 +223,85 @@
         ".watch-video--player-view .video-title h4",
         ".ellipsize-text h4",
         ".player-status-main-title",
-      ]) ||
-      firstMetadataText(
+      ]),
+      ...metadataTexts(
         [
           '[data-uia="video-title"] img[alt]',
           ".watch-video--player-view .video-title img[alt]",
         ],
         "alt",
-      );
-    const explicitEpisode = firstMetadataText([
+      ),
+    ];
+    const explicitEpisodeCandidates = metadataTexts([
       '[data-uia="video-title"] [data-uia="episode-title"]',
       '[data-uia="episode-title"]',
       ".watch-video--player-view .video-title .episode-title",
-      '[data-uia="video-title"] span',
-      '[data-uia="player-title"] span',
-      ".ellipsize-text span",
       ".player-status-subtitle",
     ]);
-    const pageTitle = cleanPageTitle();
-    const parts = titleContainer
-      ? [...titleContainer.querySelectorAll("h1, h2, h3, h4, span")]
-          .map((element) => normalizeText(element.textContent))
-          .filter(
-            (value, index, values) =>
-              value &&
-              values.indexOf(value) === index &&
-              !/^\d+(?::\d+)+$/.test(value) &&
-              !/^(?:HD|4K|HDR|UHD|AD|CC)$/i.test(value),
-          )
-      : [];
-
-    const genericTitle = (value) =>
-      !value ||
-      /^(?:Netflix|Netflix episode \S+|Unknown Netflix episode)$/i.test(value);
-    const usableExplicitShow = genericTitle(explicitShow) ? "" : explicitShow;
-    const usablePageTitle = genericTitle(pageTitle) ? "" : pageTitle;
-    const episodeMarker = parts.find((value) =>
-      /^(?:S(?:eason)?\s*\d+\s*[:·-]?\s*E(?:pisode)?\s*\d+|Episode\s+\d+)/i.test(
-        value,
+    const pageTitleCandidates = [
+      document.title,
+      ...metadataTexts(
+        [
+          'meta[property="og:title"]',
+          'meta[name="twitter:title"]',
+          'meta[name="title"]',
+        ],
+        "content",
       ),
+    ]
+      .map(cleanNetflixPageTitle)
+      .filter((value) => !isGenericNetflixTitle(value));
+    const parts = [...titleContainers]
+      .flatMap((container) => [
+        ...container.querySelectorAll("h1, h2, h3, h4, span"),
+      ])
+      .map((element) => normalizeText(element.innerText || element.textContent))
+      .filter(
+        (value, index, values) =>
+          value &&
+          values.indexOf(value) === index &&
+          !/^\d+(?::\d+)+$/.test(value) &&
+          !/^(?:HD|4K|HDR|UHD|AD|CC)$/i.test(value),
+      );
+
+    const markerSource = [...explicitEpisodeCandidates, ...parts].find(
+      (value) => episodeMarker(value),
     );
+    const normalizedEpisodeMarker = episodeMarker(markerSource);
+    const usableExplicitShow = explicitShowCandidates.find(
+      (value) =>
+        !isGenericNetflixTitle(value) &&
+        !episodeMarker(value) &&
+        !explicitEpisodeCandidates.includes(value),
+    );
+    const usablePageTitle = pageTitleCandidates[0] || "";
     const showName =
       usableExplicitShow ||
       usablePageTitle ||
       parts.find(
-        (value) => value !== explicitEpisode && value !== episodeMarker,
+        (value) =>
+          !isGenericNetflixTitle(value) &&
+          !episodeMarker(value) &&
+          !explicitEpisodeCandidates.includes(value),
       ) ||
       "";
     const episodeTitle =
-      explicitEpisode &&
-      explicitEpisode !== showName &&
-      explicitEpisode !== episodeMarker
-        ? explicitEpisode
-        : parts.find(
-            (value) =>
-              value !== showName &&
-              value !== usablePageTitle &&
-              value !== episodeMarker,
-          ) || "";
+      explicitEpisodeCandidates.find(
+        (value) => value !== showName && !episodeMarker(value),
+      ) ||
+      (normalizedEpisodeMarker
+        ? parts
+            .slice(Math.max(0, parts.indexOf(markerSource) + 1))
+            .find(
+              (value) =>
+                value !== showName &&
+                value !== usablePageTitle &&
+                !episodeMarker(value),
+            )
+        : "") ||
+      "";
     const episodeName = [
-      ...new Set([episodeMarker, episodeTitle].filter(Boolean)),
+      ...new Set([normalizedEpisodeMarker, episodeTitle].filter(Boolean)),
     ].join(" · ");
     const videoId = getVideoId();
     const previous = titleMetadataByVideoId.get(videoId) || {};
@@ -248,7 +312,7 @@
 
     const hasSpecificEpisode = discovered.episodeName !== `Episode ${videoId}`;
     if (
-      !genericTitle(discovered.showName) ||
+      !isGenericNetflixTitle(discovered.showName) ||
       !previous.showName ||
       hasSpecificEpisode
     ) {
@@ -312,12 +376,38 @@
     });
   }
 
-  function updateProgress() {
+  function updateProgress(videoTime) {
     const total = Math.max(0, currentStatus.cueCount || 0);
     const translated = Math.max(0, currentStatus.translatedCount || 0);
-    currentStatus.progressPercent = total
+    currentStatus.episodeProgressPercent = total
       ? Math.min(100, Number(((translated / total) * 100).toFixed(1)))
       : 0;
+
+    const video = document.querySelector("video");
+    const rawTime = Number.isFinite(Number(videoTime))
+      ? Number(videoTime)
+      : Number(video?.currentTime);
+    if (!Number.isFinite(rawTime) || !cues.length) {
+      currentStatus.remainingCueCount = total;
+      currentStatus.remainingTranslatedCount = translated;
+      currentStatus.progressPercent = currentStatus.episodeProgressPercent;
+      return;
+    }
+
+    const time = subtitleLookupTime(rawTime);
+    const remainingCues = cues.filter((cue) => cue.end > time);
+    const remainingTranslated = remainingCues.reduce(
+      (count, cue) => count + (knownCachedKeys.has(cueKey(cue)) ? 1 : 0),
+      0,
+    );
+    currentStatus.remainingCueCount = remainingCues.length;
+    currentStatus.remainingTranslatedCount = remainingTranslated;
+    currentStatus.progressPercent = remainingCues.length
+      ? Math.min(
+          100,
+          Number(((remainingTranslated / remainingCues.length) * 100).toFixed(1)),
+        )
+      : 100;
   }
 
   function parseClock(value, tickRate = 10_000_000) {
@@ -686,6 +776,13 @@
     ) {
       return { label: "Completed", state: "completed" };
     }
+    if (
+      currentStatus.captured &&
+      currentStatus.remainingCueCount >= 0 &&
+      currentStatus.remainingTranslatedCount >= currentStatus.remainingCueCount
+    ) {
+      return { label: "Ready from here", state: "ready" };
+    }
     if (currentStatus.requestState === "error")
       return { label: "Error", state: "error" };
     if (String(currentStatus.playbackMode).includes("realtime")) {
@@ -718,6 +815,8 @@
       panelStatus.textContent =
         status.state === "completed"
           ? "Completed · episode cached"
+          : status.label === "Ready from here"
+            ? "Ready from here · remaining subtitles cached"
           : `${status.label}${aheadLabel ? ` · ${aheadLabel} cached ahead` : ""}`;
       panelStatus.dataset.state = status.state;
     }
@@ -885,7 +984,8 @@
       `model       ${settings.model || "—"}`,
       `target      ${settings.targetLanguage || "—"}`,
       `track       ${currentStatus.cueCount || 0} cues`,
-      `cached      ${currentStatus.translatedCount || 0}/${currentStatus.cueCount || 0} (${currentStatus.progressPercent || 0}%)`,
+      `episode     ${currentStatus.translatedCount || 0}/${currentStatus.cueCount || 0} (${currentStatus.episodeProgressPercent || 0}%)`,
+      `remaining   ${currentStatus.remainingTranslatedCount || 0}/${currentStatus.remainingCueCount || 0} (${currentStatus.progressPercent || 0}%)`,
       `cache ahead ${formatAheadDuration(currentStatus.cachedAheadSeconds)}`,
       `precompute  ${currentStatus.precomputing ? "RUNNING" : "idle"} · batch ${currentStatus.currentBatch || 0}/${currentStatus.totalBatches || 0}`,
       `request     ${currentStatus.requestState || "idle"} · ${formatMs(currentStatus.lastRequestMs)}`,
@@ -894,6 +994,7 @@
       `playback    ${currentStatus.playbackMode || "waiting"}`,
       `video       ${Number(currentStatus.videoTime || 0).toFixed(2)}s`,
       `sync offset ${clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0)}ms`,
+      `track sync  ${timedTrackSyncState} · auto ${automaticCueTimeOffsetSeconds.toFixed(2)}s`,
       `cue         ${currentStatus.activeCueStart == null ? "—" : `${Number(currentStatus.activeCueStart).toFixed(2)}–${Number(currentStatus.activeCueEnd).toFixed(2)}s`}`,
       `in-flight   ${translationInFlight.size}`,
       `source      ${shortUrl(cueSourceUrl)}`,
@@ -990,6 +1091,16 @@
     if (next.length === renderedSubtitles.length) return;
     renderedSubtitles = next;
     if (lastRenderedCueKey === key) {
+      lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
+    }
+    renderSubtitleStack();
+  }
+
+  function removeRenderedSubtitlesBySource(source) {
+    const next = renderedSubtitles.filter((entry) => entry.source !== source);
+    if (next.length === renderedSubtitles.length) return;
+    renderedSubtitles = next;
+    if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
       lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
     }
     renderSubtitleStack();
@@ -1111,12 +1222,98 @@
     return null;
   }
 
+  function findCueMatchingText(text, expectedTime) {
+    let best = null;
+    let bestDistance = Infinity;
+
+    for (let index = 0; index < cues.length; index++) {
+      const cue = cues[index];
+      if (!subtitleTextsMatch(cue.text, text)) continue;
+      const distance =
+        expectedTime < cue.start
+          ? cue.start - expectedTime
+          : expectedTime >= cue.end
+            ? expectedTime - cue.end
+            : 0;
+      if (distance < bestDistance) {
+        best = { cue, index };
+        bestDistance = distance;
+      }
+    }
+
+    return best;
+  }
+
+  function cueListContainsText(selectedCues, text) {
+    return Boolean(
+      text && selectedCues.some((cue) => subtitleTextsMatch(cue.text, text)),
+    );
+  }
+
+  function cueListSpan(selectedCues) {
+    if (!selectedCues.length) return 0;
+    return Math.max(
+      0,
+      Number(selectedCues.at(-1)?.end) - Number(selectedCues[0]?.start),
+    );
+  }
+
+  function naturalSubtitleLookupTime(videoTime) {
+    return Number(videoTime) + automaticCueTimeOffsetSeconds;
+  }
+
   function subtitleLookupTime(videoTime) {
     // Positive values delay LST subtitles; negative values show them earlier.
     return (
-      Number(videoTime) -
+      naturalSubtitleLookupTime(videoTime) -
       clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000
     );
+  }
+
+  function validateTimedTrackAgainstNetflix(video, netflixText) {
+    if (!video || !cues.length) return false;
+
+    const naturalTime = naturalSubtitleLookupTime(video.currentTime);
+    const naturalMatch = findCueAt(naturalTime);
+
+    if (!netflixText) return timedTrackSyncState === "verified";
+
+    if (
+      naturalMatch &&
+      subtitleTextsMatch(naturalMatch.cue.text, netflixText)
+    ) {
+      timedTrackSyncState = "verified";
+      lastNetflixSyncText = netflixText;
+      return true;
+    }
+
+    const matchingCue = findCueMatchingText(netflixText, naturalTime);
+    if (
+      matchingCue &&
+      (timedTrackSyncState !== "verified" ||
+        !subtitleTextsMatch(lastNetflixSyncText, netflixText))
+    ) {
+      // Captured subtitle fragments can use a timeline starting at zero even when
+      // playback began in the middle of an episode. Anchor that timeline to the
+      // line Netflix is displaying. A later visible line will refine the anchor.
+      automaticCueTimeOffsetSeconds =
+        matchingCue.cue.start + 0.04 - Number(video.currentTime);
+      timedTrackSyncState = "verified";
+      lastNetflixSyncText = netflixText;
+      return true;
+    }
+
+    if (matchingCue && timedTrackSyncState === "verified") {
+      // The player DOM and video clock can cross a cue boundary a frame apart.
+      // Suppress that frame instead of repeatedly moving the track timeline.
+      removeRenderedSubtitlesBySource("timed");
+      return false;
+    }
+
+    timedTrackSyncState = "mismatch";
+    lastNetflixSyncText = netflixText;
+    removeRenderedSubtitlesBySource("timed");
+    return false;
   }
 
   function isTimedCueStillCurrent(key) {
@@ -1130,18 +1327,21 @@
     );
   }
 
-  async function getCachedTranslations(selectedCues) {
+  async function getCachedTranslations(
+    selectedCues,
+    requestedCacheId = cacheId(),
+  ) {
     const keys = selectedCues.map(cueKey);
     if (!keys.length) return {};
 
     const response = await runtimeMessage({
       type: "CACHE_GET",
-      cacheId: cacheId(),
+      cacheId: requestedCacheId,
       keys,
     });
 
     const entries = response.entries || {};
-    rememberCachedEntries(entries);
+    if (requestedCacheId === cacheId()) rememberCachedEntries(entries);
     return entries;
   }
 
@@ -1155,7 +1355,6 @@
       (count, cue) => count + (knownCachedKeys.has(cueKey(cue)) ? 1 : 0),
       0,
     );
-    updateProgress();
 
     const video = document.querySelector("video");
     const rawTime = Number.isFinite(Number(videoTime))
@@ -1163,10 +1362,12 @@
       : Number(video?.currentTime);
     if (!Number.isFinite(rawTime) || !cues.length) {
       currentStatus.cachedAheadSeconds = 0;
+      updateProgress(rawTime);
       return;
     }
 
     const time = subtitleLookupTime(rawTime);
+    updateProgress(rawTime);
     let coveredUntil = time;
     for (const cue of cues) {
       if (cue.end <= time) continue;
@@ -1191,7 +1392,11 @@
       return { entries: {}, failures: [] };
     }
 
-    const cached = await getCachedTranslations(deduped);
+    // Keep an in-flight request tied to the episode/track that started it. A
+    // Netflix navigation must not write late results into the next episode.
+    const requestedCacheId = cacheId();
+    const requestedCacheMetadata = cacheMetadata();
+    const cached = await getCachedTranslations(deduped, requestedCacheId);
     const missing = deduped.filter(
       (cue) => !Object.prototype.hasOwnProperty.call(cached, cueKey(cue)),
     );
@@ -1251,14 +1456,14 @@
       for (const entry of response.translations || []) {
         if (entry.text) newEntries[entry.id] = entry.text;
       }
-      rememberCachedEntries(newEntries);
+      if (requestedCacheId === cacheId()) rememberCachedEntries(newEntries);
 
       if (Object.keys(newEntries).length) {
         await runtimeMessage({
           type: "CACHE_SET",
-          cacheId: cacheId(),
+          cacheId: requestedCacheId,
           entries: newEntries,
-          metadata: cacheMetadata(),
+          metadata: requestedCacheMetadata,
         });
       }
 
@@ -1450,7 +1655,8 @@
       refreshCacheCoverage(video.currentTime);
       setStatus(
         `Paused cache · ${formatAheadDuration(currentStatus.cachedAheadSeconds)} ahead · ` +
-          `${currentStatus.translatedCount}/${cues.length} cues`,
+          `${currentStatus.remainingTranslatedCount}/` +
+          `${currentStatus.remainingCueCount} remaining cues`,
         true,
       );
     }
@@ -1467,6 +1673,34 @@
 
     const video = document.querySelector("video");
     if (!video || !settings.enabled) {
+      requestAnimationFrame(playbackLoop);
+      return;
+    }
+
+    if (cueVideoId && cueVideoId !== getVideoId()) {
+      precomputeCancelled = true;
+      cues = [];
+      cueSourceUrl = "";
+      cueVideoId = getVideoId();
+      knownCachedKeys = new Set();
+      pausedCacheFailedKeys = new Set();
+      timedTrackSyncState = "unverified";
+      automaticCueTimeOffsetSeconds = 0;
+      lastNetflixSyncText = "";
+      lastFallbackText = "";
+      currentStatus.captured = false;
+      currentStatus.cueCount = 0;
+      currentStatus.translatedCount = 0;
+      currentStatus.remainingCueCount = 0;
+      currentStatus.remainingTranslatedCount = 0;
+      currentStatus.episodeProgressPercent = 0;
+      currentStatus.progressPercent = 0;
+      currentStatus.activeCueStart = null;
+      currentStatus.activeCueEnd = null;
+      currentStatus.playbackMode = "waiting";
+      clearRenderedSubtitle();
+      setStatus("Episode changed — waiting for its subtitle track…", true);
+      handleFallbackRenderedSubtitle();
       requestAnimationFrame(playbackLoop);
       return;
     }
@@ -1495,6 +1729,19 @@
     }
 
     currentStatus.videoTime = video.currentTime;
+    const netflixText = findNetflixRenderedSubtitle();
+    if (!validateTimedTrackAgainstNetflix(video, netflixText)) {
+      currentStatus.activeCueStart = null;
+      currentStatus.activeCueEnd = null;
+      currentStatus.playbackMode = netflixText
+        ? "DOM fallback (unverified timed track)"
+        : "waiting for subtitle sync";
+      updateDebugPanel();
+      if (netflixText) handleFallbackRenderedSubtitle();
+      requestAnimationFrame(playbackLoop);
+      return;
+    }
+
     const lookupTime = subtitleLookupTime(video.currentTime);
     const match = findCueAt(lookupTime);
 
@@ -1518,7 +1765,6 @@
     }
 
     noTimedCueSince = 0;
-    lastTimedCueMatchAt = Date.now();
     currentStatus.activeCueStart = match.cue.start;
     currentStatus.activeCueEnd = match.cue.end;
     updateDebugPanel();
@@ -1531,7 +1777,10 @@
       beginRenderedSubtitle({
         key,
         original: match.cue.text,
-        naturalEndVideoTime: match.cue.end + timingOffsetSeconds,
+        naturalEndVideoTime:
+          match.cue.end -
+          automaticCueTimeOffsetSeconds +
+          timingOffsetSeconds,
         videoTime: video.currentTime,
         source: "timed",
       });
@@ -1584,20 +1833,10 @@
     if (text === lastFallbackText) return;
 
     const video = document.querySelector("video");
-    const timedMatch =
-      video && cues.length
-        ? findCueAt(subtitleLookupTime(video.currentTime))
-        : null;
-    const timedText = timedMatch ? normalizeText(timedMatch.cue.text) : "";
-
-    // If the captured timed-text track clearly matches the subtitle Netflix is
-    // displaying, let the time-synced path handle it. Otherwise the DOM is the
-    // source of truth and guarantees that visible subtitles can still translate.
-    if (
-      timedText &&
-      timedText === text &&
-      Date.now() - lastTimedCueMatchAt < 1500
-    ) {
+    // Only let timed text take over after its underlying line has been checked
+    // against Netflix. This also respects a user timing offset, which may make
+    // the intentionally rendered LST cue differ from Netflix's current cue.
+    if (video && validateTimedTrackAgainstNetflix(video, text)) {
       return;
     }
 
@@ -1665,14 +1904,41 @@
     const parsed = parseSubtitleDocument(text);
     if (!parsed.length) return;
 
+    parsed.sort((a, b) => a.start - b.start);
+
     const signature = `${url}|${parsed.length}|${parsed[0]?.start}|${parsed.at(-1)?.end}`;
     const currentSignature = `${cueSourceUrl}|${cues.length}|${cues[0]?.start}|${cues.at(-1)?.end}`;
 
     if (signature === currentSignature) return;
 
-    cues = parsed.sort((a, b) => a.start - b.start);
+    const sameVideo = cueVideoId === getVideoId();
+    if (sameVideo && cues.length) {
+      const netflixText = findNetflixRenderedSubtitle();
+      const currentMatchesNetflix = cueListContainsText(cues, netflixText);
+      const parsedMatchesNetflix = cueListContainsText(parsed, netflixText);
+      const looksLikeFragment =
+        parsed.length < Math.max(10, cues.length * 0.5) &&
+        cueListSpan(parsed) < cueListSpan(cues) * 0.5;
+
+      // Netflix may fetch short timed-text fragments, metadata XML, or another
+      // subtitle representation while an episode is playing. Never let one of
+      // those displace the full/verified track whose cue keys back the cache.
+      if (
+        looksLikeFragment ||
+        (timedTrackSyncState === "verified" && !parsedMatchesNetflix) ||
+        (currentMatchesNetflix && !parsedMatchesNetflix)
+      ) {
+        return;
+      }
+    }
+
+    cues = parsed;
     cueSourceUrl = url || "captured";
     cueVideoId = getVideoId();
+    timedTrackSyncState = "unverified";
+    automaticCueTimeOffsetSeconds = 0;
+    lastNetflixSyncText = "";
+    removeRenderedSubtitlesBySource("timed");
     knownCachedKeys = new Set();
     pausedCacheFailedKeys = new Set();
 
@@ -1684,7 +1950,9 @@
     updateProgress();
 
     setStatus(
-      `Captured ${cues.length} subtitle cues · ${currentStatus.translatedCount}/${cues.length} cached.`,
+      `Captured ${cues.length} subtitle cues · ` +
+        `${currentStatus.remainingTranslatedCount}/` +
+        `${currentStatus.remainingCueCount} remaining cues cached.`,
       true,
     );
   }
@@ -1712,7 +1980,13 @@
       const cached = await getCachedTranslations(cues);
       currentStatus.translatedCount = Object.keys(cached).length;
 
-      const missing = cues.filter(
+      const videoTime = Number(document.querySelector("video")?.currentTime);
+      const precomputeStartTime = Number.isFinite(videoTime)
+        ? subtitleLookupTime(videoTime)
+        : -Infinity;
+      const remainingCues = cues.filter((cue) => cue.end > precomputeStartTime);
+
+      const missing = remainingCues.filter(
         (cue) => !Object.prototype.hasOwnProperty.call(cached, cueKey(cue)),
       );
 
@@ -1723,7 +1997,9 @@
 
       if (!missing.length) {
         setStatus(
-          `Precompute already complete: ${cues.length}/${cues.length} cached.`,
+          currentStatus.translatedCount >= cues.length
+            ? `Precompute already complete: ${cues.length}/${cues.length} cached.`
+            : "All remaining subtitles are already cached from the current position.",
           true,
         );
         return;
@@ -1732,7 +2008,8 @@
       for (let i = 0; i < missing.length; i += batchSize) {
         if (precomputeCancelled) {
           setStatus(
-            `Precompute stopped at ${currentStatus.translatedCount}/${cues.length}.`,
+            `Precompute stopped with ${currentStatus.remainingTranslatedCount}/` +
+              `${currentStatus.remainingCueCount} remaining cues cached.`,
             true,
           );
           return;
@@ -1751,8 +2028,9 @@
         currentStatus.batchStartedAt = Date.now();
 
         setStatus(
-          `Precompute ${currentStatus.progressPercent}% · ` +
-            `${currentStatus.translatedCount}/${cues.length} cached · ` +
+          `Precompute ${currentStatus.progressPercent}% of remaining subtitles · ` +
+            `${currentStatus.remainingTranslatedCount}/` +
+            `${currentStatus.remainingCueCount} ahead cached · ` +
             `batch ${batchNumber}/${currentStatus.totalBatches}\n` +
             `${currentStatus.currentText}`,
           true,
@@ -1760,11 +2038,9 @@
 
         const result = await translateCues(batch);
 
-        const successful = Object.keys(result.entries).filter((key) =>
-          batch.some((cue) => cueKey(cue) === key),
-        ).length;
-
-        currentStatus.translatedCount += successful;
+        // translateCues records successful keys in knownCachedKeys. Recount from
+        // that set so progress cannot double-count the just-finished batch.
+        refreshCacheCoverage(document.querySelector("video")?.currentTime);
         currentStatus.failedCount += result.failures.length;
 
         if (result.failures.length) {
@@ -1794,14 +2070,17 @@
 
       if (currentStatus.failedCount) {
         setStatus(
-          `Precompute finished at ${currentStatus.progressPercent}% · ` +
-            `${currentStatus.translatedCount}/${cues.length} cached · ` +
+          `Precompute finished at ${currentStatus.progressPercent}% of remaining subtitles · ` +
+            `${currentStatus.remainingTranslatedCount}/` +
+            `${currentStatus.remainingCueCount} ahead cached · ` +
             `${currentStatus.failedCount} failed.`,
           true,
         );
       } else {
         setStatus(
-          `Precompute complete: ${cues.length}/${cues.length} cues cached locally.`,
+          currentStatus.translatedCount >= cues.length
+            ? `Precompute complete: ${cues.length}/${cues.length} cues cached locally.`
+            : "Remaining subtitles are cached from the current playback position.",
           true,
         );
       }
@@ -1850,12 +2129,16 @@
   ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       switch (message?.type) {
-        case "GET_PAGE_STATUS":
+        case "GET_PAGE_STATUS": {
+          refreshCacheCoverage(document.querySelector("video")?.currentTime);
+          const metadata = cacheMetadata();
           sendResponse({
             ok: true,
             status: {
               ...currentStatus,
               videoId: getVideoId(),
+              showName: metadata.showName,
+              episodeName: metadata.episodeName,
               sourceUrl: cueSourceUrl,
               enabled: settings.enabled,
               model: settings.model,
@@ -1863,6 +2146,7 @@
             },
           });
           return;
+        }
 
         case "START_PRECOMPUTE":
           sendResponse({ ok: true, ...startPrecomputeDetached() });

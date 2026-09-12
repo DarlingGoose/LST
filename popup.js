@@ -1,25 +1,29 @@
 const ext = globalThis.browser || globalThis.chrome;
+const $ = (id) => document.getElementById(id);
+const hasExtensionApi = Boolean(ext?.runtime?.sendMessage && ext?.tabs?.query);
 
-const modelEl = document.getElementById("model");
-const targetEl = document.getElementById("target");
-const trackEl = document.getElementById("track");
-const playbackEl = document.getElementById("playback");
-const progressBarEl = document.getElementById("progressBar");
-const progressTextEl = document.getElementById("progressText");
-const currentTextEl = document.getElementById("currentText");
-const messageEl = document.getElementById("message");
-const precomputeButton = document.getElementById("precompute");
-const cancelButton = document.getElementById("cancel");
-const settingsButton = document.getElementById("settings");
-const statePillEl = document.getElementById("statePill");
+const state = {
+  settings: {
+    showTranslated: true,
+    showOriginal: false,
+    hideNetflixSubtitles: true,
+    subtitleTimingOffsetMs: 0,
+    model: "",
+    targetLanguage: "English",
+    ollamaUrl: "http://localhost:11434"
+  },
+  pollTimer: null
+};
 
-let pollTimer = null;
+async function runtimeMessage(message) {
+  const response = await ext.runtime.sendMessage(message);
+  if (!response?.ok) throw new Error(response?.error || "Request failed.");
+  return response;
+}
 
 async function tabMessage(tabId, message) {
   const response = await ext.tabs.sendMessage(tabId, message);
-  if (!response?.ok) {
-    throw new Error(response?.error || "Request failed.");
-  }
+  if (!response?.ok) throw new Error(response?.error || "Request failed.");
   return response;
 }
 
@@ -38,73 +42,202 @@ function formatElapsed(startedAt) {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+function formatTiming(value = state.settings.subtitleTimingOffsetMs) {
+  const timing = Number(value) || 0;
+  return `${timing > 0 ? "+" : ""}${timing} ms`;
+}
+
+function resetPopupScroll() {
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+}
+
+function activatePopupTab(tabName, focus = false) {
+  const controls = tabName === "controls";
+  document.body.dataset.activeTab = controls ? "controls" : "status";
+  $("statusPanel").hidden = controls;
+  $("controlsPanel").hidden = !controls;
+  $("statusTab").setAttribute("aria-selected", String(!controls));
+  $("controlsTab").setAttribute("aria-selected", String(controls));
+  $("statusTab").tabIndex = controls ? -1 : 0;
+  $("controlsTab").tabIndex = controls ? 0 : -1;
+  if (focus) $(controls ? "controlsTab" : "statusTab").focus();
+  resetPopupScroll();
+  requestAnimationFrame(resetPopupScroll);
+}
+
+function syncSettingsControls() {
+  $("statusTranslated").checked = state.settings.showTranslated !== false;
+  $("controlTranslated").checked = state.settings.showTranslated !== false;
+  $("controlOriginal").checked = state.settings.showOriginal === true;
+  $("controlNetflix").checked = state.settings.hideNetflixSubtitles === false;
+  $("timingValue").textContent = formatTiming();
+  $("timingSummary").textContent = formatTiming();
+  $("modelSummary").textContent = state.settings.model || "Not selected";
+  $("targetSummary").textContent = state.settings.targetLanguage || "English";
+  $("targetLanguage").value = state.settings.targetLanguage || "English";
+  if ([...$("modelSelect").options].some((option) => option.value === state.settings.model)) {
+    $("modelSelect").value = state.settings.model;
+  }
+}
+
+async function notifyNetflixTabs() {
+  try {
+    const tabs = await ext.tabs.query({ url: "https://www.netflix.com/*" });
+    await Promise.all(tabs.map((tab) => tab.id
+      ? ext.tabs.sendMessage(tab.id, { type: "RELOAD_SETTINGS" }).catch(() => {})
+      : Promise.resolve()));
+  } catch {}
+}
+
+async function saveQuickSettings(patch, message = "Saved") {
+  try {
+    const response = await runtimeMessage({ type: "SAVE_SETTINGS", settings: patch });
+    state.settings = { ...state.settings, ...response.settings };
+    syncSettingsControls();
+    await notifyNetflixTabs();
+    $("controlsMessage").textContent = message;
+  } catch (error) {
+    syncSettingsControls();
+    $("controlsMessage").textContent = `Could not save: ${error.message}`;
+  }
+}
+
+async function refreshModels() {
+  const select = $("modelSelect");
+  try {
+    const response = await runtimeMessage({
+      type: "GET_MODELS",
+      ollamaUrl: state.settings.ollamaUrl
+    });
+    select.replaceChildren();
+    if (!response.models.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No installed models found";
+      select.appendChild(option);
+    } else {
+      for (const model of response.models) {
+        const option = document.createElement("option");
+        option.value = model.name;
+        option.textContent = model.name;
+        select.appendChild(option);
+      }
+    }
+    if (state.settings.model && ![...select.options].some((option) => option.value === state.settings.model)) {
+      const option = document.createElement("option");
+      option.value = state.settings.model;
+      option.textContent = `${state.settings.model} — unavailable`;
+      select.prepend(option);
+    }
+    select.value = state.settings.model || "";
+  } catch (error) {
+    select.replaceChildren();
+    const option = document.createElement("option");
+    option.value = state.settings.model || "";
+    option.textContent = state.settings.model || "Could not load models";
+    select.appendChild(option);
+    $("controlsMessage").textContent = error.message;
+  }
+}
+
+async function loadSettings() {
+  const response = await runtimeMessage({ type: "GET_SETTINGS" });
+  state.settings = { ...state.settings, ...response.settings };
+  syncSettingsControls();
+  await refreshModels();
+}
+
 function renderStatus(status) {
-  const completed = Boolean(
+  const episodeCompleted = Boolean(
     status.captured &&
     status.cueCount > 0 &&
     status.translatedCount >= status.cueCount
   );
+  const remainingCueCount = Math.max(
+    0,
+    Number(status.remainingCueCount ?? status.cueCount) || 0
+  );
+  const remainingTranslatedCount = Math.max(
+    0,
+    Number(status.remainingTranslatedCount ?? status.translatedCount) || 0
+  );
+  const readyFromHere = Boolean(
+    status.captured &&
+    remainingTranslatedCount >= remainingCueCount
+  );
+  const percent = Math.max(0, Math.min(100, Number(status.progressPercent || 0)));
 
-  modelEl.textContent = status.model || "not selected";
-  targetEl.textContent = status.targetLanguage || "English";
-  trackEl.textContent = status.captured
-    ? `${status.cueCount} cues`
-    : "waiting for full track";
-  playbackEl.textContent = status.playbackMode || "waiting";
+  $("showName").textContent = status.showName || "Netflix";
+  $("episodeName").textContent = status.episodeName || `Episode ${status.videoId || "unknown"}`;
+  $("cueCount").textContent =
+    `${remainingTranslatedCount} / ${remainingCueCount} cues ahead`;
+  $("progressBar").style.width = `${percent}%`;
+  $("progressPercent").textContent = `${percent.toFixed(percent % 1 ? 1 : 0)}%`;
 
-  const percent = Number(status.progressPercent || 0);
-  progressBarEl.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  if (status.precomputing) {
+    $("progressState").textContent = "Working…";
+    const batchAge = status.batchStartedAt
+      ? `\nCurrent batch: ${formatElapsed(status.batchStartedAt)}`
+      : "";
+    $("currentText").textContent = (status.currentText || "Preparing next batch…") + batchAge;
+  } else if (episodeCompleted) {
+    $("progressState").textContent = "Completed";
+    $("currentText").textContent = status.lastTranslatedText
+      ? `Last translation:\n${status.lastTranslatedText}`
+      : "Episode translation is cached and ready.";
+  } else {
+    $("progressState").textContent = readyFromHere
+      ? "Ready from here"
+      : status.captured ? "Caching ahead…" : "Waiting…";
+    $("currentText").textContent = status.lastTranslatedText
+      ? `Last translation:\n${status.lastTranslatedText}`
+      : "Waiting for subtitle work…";
+  }
 
   const batchText = status.precomputing && status.totalBatches
-    ? ` · batch ${status.currentBatch}/${status.totalBatches}`
+    ? `Batch ${status.currentBatch}/${status.totalBatches}`
     : "";
-  const failedText = status.failedCount
-    ? ` · ${status.failedCount} failed`
-    : "";
+  const failedText = status.failedCount ? `${status.failedCount} failed` : "";
   const elapsedText = status.precomputing && status.jobStartedAt
-    ? ` · ${formatElapsed(status.jobStartedAt)} elapsed`
+    ? `${formatElapsed(status.jobStartedAt)} elapsed`
     : "";
-
-  progressTextEl.textContent =
-    `${status.translatedCount || 0}/${status.cueCount || 0} · ` +
-    `${percent.toFixed(1)}%${batchText}${failedText}${elapsedText}`;
-
-  if (status.precomputing) {
-    const batchAge = status.batchStartedAt
-      ? `\nCurrent batch running: ${formatElapsed(status.batchStartedAt)}`
-      : "";
-    currentTextEl.textContent =
-      (status.currentText || "Preparing next batch…") + batchAge;
-  } else if (status.lastTranslatedText) {
-    currentTextEl.textContent =
-      `Last translation:\n${status.lastTranslatedText}`;
-  } else {
-    currentTextEl.textContent = "Waiting for subtitle work…";
-  }
-
-  const error = status.lastError ? `\nLast error: ${status.lastError}` : "";
-  messageEl.textContent = `${status.message || ""}${error}`;
+  const errorText = status.lastError ? `Last error: ${status.lastError}` : "";
+  $("message").textContent = [status.message, batchText, failedText, elapsedText, errorText]
+    .filter(Boolean)
+    .join(" · ");
 
   if (status.precomputing) {
-    statePillEl.textContent = "Working";
-    statePillEl.dataset.state = "working";
-  } else if (completed) {
-    statePillEl.textContent = "Completed";
-    statePillEl.dataset.state = "completed";
+    $("statePill").textContent = "Working";
+    $("statePill").dataset.state = "working";
+  } else if (episodeCompleted) {
+    $("statePill").textContent = "Completed";
+    $("statePill").dataset.state = "completed";
+  } else if (readyFromHere) {
+    $("statePill").textContent = "Ready from here";
+    $("statePill").dataset.state = "ready";
   } else if (status.lastError) {
-    statePillEl.textContent = "Needs attention";
-    statePillEl.dataset.state = "error";
+    $("statePill").textContent = "Needs attention";
+    $("statePill").dataset.state = "error";
   } else if (status.captured) {
-    statePillEl.textContent = "Ready";
-    statePillEl.dataset.state = "ready";
+    $("statePill").textContent = "Connected";
+    $("statePill").dataset.state = "ready";
   } else {
-    statePillEl.textContent = "Waiting";
-    statePillEl.dataset.state = "";
+    $("statePill").textContent = "Waiting";
+    $("statePill").dataset.state = "";
   }
 
-  precomputeButton.disabled =
-    !status.captured || !status.model || status.precomputing || completed;
-  cancelButton.disabled = !status.precomputing;
+  if (status.model) {
+    state.settings.model = status.model;
+    $("modelSummary").textContent = status.model;
+  }
+  if (status.targetLanguage) {
+    state.settings.targetLanguage = status.targetLanguage;
+    $("targetSummary").textContent = status.targetLanguage;
+  }
+  $("precompute").disabled =
+    !status.captured || !status.model || status.precomputing || episodeCompleted;
+  $("cancel").disabled = !status.precomputing;
 }
 
 async function refresh() {
@@ -113,39 +246,119 @@ async function refresh() {
     const response = await tabMessage(tab.id, { type: "GET_PAGE_STATUS" });
     renderStatus(response.status);
   } catch (error) {
-    messageEl.textContent = error.message;
-    statePillEl.textContent = "Not connected";
-    statePillEl.dataset.state = "error";
-    precomputeButton.disabled = true;
-    cancelButton.disabled = true;
+    $("showName").textContent = "Netflix";
+    $("episodeName").textContent = "Open a watch page";
+    $("message").textContent = error.message;
+    $("statePill").textContent = "Not connected";
+    $("statePill").dataset.state = "error";
+    $("precompute").disabled = true;
+    $("cancel").disabled = true;
   }
 }
 
-precomputeButton.addEventListener("click", async () => {
+$("statusTab").addEventListener("click", () => activatePopupTab("status"));
+$("controlsTab").addEventListener("click", () => activatePopupTab("controls"));
+document.querySelector(".popup-tabs").addEventListener("keydown", (event) => {
+  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  event.preventDefault();
+  activatePopupTab(event.target.id === "statusTab" ? "controls" : "status", true);
+});
+
+$("openTimingControls").addEventListener("click", () => {
+  activatePopupTab("controls");
+  $("timingEarlier").focus({ preventScroll: true });
+});
+$("openModelControls").addEventListener("click", () => {
+  activatePopupTab("controls");
+  $("modelSelect").focus({ preventScroll: true });
+});
+
+$("statusTranslated").addEventListener("change", async (event) => {
+  await saveQuickSettings({ showTranslated: event.target.checked }, "Subtitle visibility saved.");
+});
+$("controlTranslated").addEventListener("change", async (event) => {
+  await saveQuickSettings({ showTranslated: event.target.checked }, "Subtitle visibility saved.");
+});
+$("controlOriginal").addEventListener("change", async (event) => {
+  await saveQuickSettings({ showOriginal: event.target.checked }, "Original-text setting saved.");
+});
+$("controlNetflix").addEventListener("change", async (event) => {
+  await saveQuickSettings({ hideNetflixSubtitles: !event.target.checked }, "Netflix-caption setting saved.");
+});
+
+async function changeTiming(delta) {
+  const current = Number(state.settings.subtitleTimingOffsetMs) || 0;
+  const next = delta === null ? 0 : Math.max(-2000, Math.min(2000, current + delta));
+  await saveQuickSettings({ subtitleTimingOffsetMs: next }, `Timing set to ${formatTiming(next)}.`);
+}
+$("timingEarlier").addEventListener("click", () => changeTiming(-100));
+$("timingReset").addEventListener("click", () => changeTiming(null));
+$("timingLater").addEventListener("click", () => changeTiming(100));
+
+$("modelSelect").addEventListener("change", async (event) => {
+  await saveQuickSettings({ model: event.target.value }, "Model changed for Netflix playback.");
+});
+$("targetLanguage").addEventListener("change", async () => {
+  const targetLanguage = $("targetLanguage").value.trim() || "English";
+  await saveQuickSettings({ targetLanguage }, `Target language set to ${targetLanguage}.`);
+});
+
+$("precompute").addEventListener("click", async () => {
   try {
     const tab = await activeNetflixTab();
     await tabMessage(tab.id, { type: "START_PRECOMPUTE" });
     await refresh();
   } catch (error) {
-    messageEl.textContent = `Could not start precompute:\n${error.message}`;
+    $("message").textContent = `Could not start precompute: ${error.message}`;
   }
 });
 
-cancelButton.addEventListener("click", async () => {
+$("cancel").addEventListener("click", async () => {
   try {
     const tab = await activeNetflixTab();
     await tabMessage(tab.id, { type: "CANCEL_PRECOMPUTE" });
-    messageEl.textContent = "Stopping after the current Ollama request finishes…";
+    $("message").textContent = "Stopping after the current Ollama request finishes…";
   } catch (error) {
-    messageEl.textContent = `Could not stop precompute:\n${error.message}`;
+    $("message").textContent = `Could not stop precompute: ${error.message}`;
   }
 });
 
-settingsButton.addEventListener("click", () => ext.runtime.openOptionsPage());
+$("settings").addEventListener("click", () => ext?.runtime?.openOptionsPage());
 
-refresh();
-pollTimer = setInterval(refresh, 750);
-
+activatePopupTab(new URLSearchParams(location.search).get("tab") === "controls" ? "controls" : "status");
+if (hasExtensionApi) {
+  Promise.all([loadSettings(), refresh()]).catch((error) => {
+    $("message").textContent = error.message;
+  });
+  state.pollTimer = setInterval(refresh, 750);
+} else {
+  state.settings = {
+    ...state.settings,
+    model: "translategemma:4b",
+    targetLanguage: "English",
+    showTranslated: true,
+    showOriginal: false,
+    hideNetflixSubtitles: true
+  };
+  $("modelSelect").replaceChildren(new Option("translategemma:4b", "translategemma:4b"));
+  syncSettingsControls();
+  renderStatus({
+    captured: true,
+    cueCount: 382,
+    translatedCount: 127,
+    remainingCueCount: 382,
+    remainingTranslatedCount: 127,
+    progressPercent: 33,
+    precomputing: true,
+    currentText: "Translating subtitles…",
+    showName: "The Night Agent",
+    episodeName: "Season 1 · Episode 1 — Pilot",
+    model: "translategemma:4b",
+    targetLanguage: "English",
+    message: "Precompute continues in the Netflix tab."
+  });
+  setTimeout(resetPopupScroll, 0);
+}
 window.addEventListener("unload", () => {
-  if (pollTimer) clearInterval(pollTimer);
+  if (state.pollTimer) clearInterval(state.pollTimer);
 });

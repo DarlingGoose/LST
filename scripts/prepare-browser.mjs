@@ -8,6 +8,7 @@ const sourceFiles = [
   "options.js",
   "page-hook.js",
   "popup.html",
+  "popup.css",
   "popup.js",
   "styles.css"
 ];
