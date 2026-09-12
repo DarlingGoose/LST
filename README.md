@@ -171,7 +171,7 @@ Useful files:
 
 ## v0.5.2 episode metadata
 
-Cached translations record and display the Netflix show name and episode name separately when the player exposes them. LST checks several player-title structures and falls back to the page title or Netflix video ID. Existing caches remain usable and gain richer names the next time new translations are stored for them.
+Cached translations record and display the Netflix show name and episode name separately. LST checks several player-title structures, recognizes episode markers such as `E50`, `Episode 50`, and `S1:E50`, and falls back to the current title's Netflix metadata page when the player hides its title UI. That fallback is a same-origin Netflix request and does not send subtitle text anywhere. Existing caches remain usable and gain richer names the next time their episode is revisited.
 
 ## Subtitle synchronization
 

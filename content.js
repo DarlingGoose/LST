@@ -34,6 +34,7 @@
   let cueSourceUrl = "";
   let cueVideoId = "";
   const titleMetadataByVideoId = new Map();
+  const titleMetadataRequestsByVideoId = new Map();
   const storedTitleSignaturesByCacheId = new Map();
 
   let overlay;
@@ -58,6 +59,7 @@
   let lastNetflixSyncText = "";
   let noTimedCueSince = 0;
   let lastTitleMetadataRefreshAt = 0;
+  let titleMetadataRefreshTimer = null;
 
   let translationInFlight = new Map();
   let knownCachedKeys = new Set();
@@ -184,16 +186,26 @@
     return values;
   }
 
-  function firstMetadataText(selectors, attribute = "") {
-    return metadataTexts(selectors, attribute)[0] || "";
-  }
-
   function isGenericNetflixTitle(value) {
     return (
       !value ||
       /^(?:Netflix(?:\s*[-–—|:].*)?|Netflix episode \S+|Unknown Netflix episode)$/i.test(
         value,
       )
+    );
+  }
+
+  function fallbackEpisodeName(videoId) {
+    return videoId && videoId !== "unknown"
+      ? `Video ${videoId}`
+      : "Episode details unavailable";
+  }
+
+  function isFallbackEpisodeName(value, videoId) {
+    return (
+      !value ||
+      value === `Episode ${videoId}` ||
+      value === fallbackEpisodeName(videoId)
     );
   }
 
@@ -209,17 +221,87 @@
     return episode ? `Episode ${Number(episode[1])}` : "";
   }
 
+  function decodeEmbeddedMetadataText(value) {
+    return normalizeText(value)
+      .replace(/\\x20/g, " ")
+      .replace(/\\n/g, " ")
+      .replace(/\\'/g, "'")
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, "\\");
+  }
+
+  function episodeMetadataFromHtml(html, videoId) {
+    const normalizedHtml = String(html || "").replace(/\\"/g, '"');
+    const match = normalizedHtml.match(
+      new RegExp(
+        `"videoId":${videoId},"title":"((?:\\\\.|[^"\\\\])*)"` +
+          `[^}]{0,3000}?"number":(\\d+)`,
+      ),
+    );
+    if (!match) return null;
+
+    const parsed = new DOMParser().parseFromString(String(html), "text/html");
+    const showName = cleanNetflixPageTitle(
+      parsed.title || parsed.querySelector('meta[property="og:title"]')?.content,
+    );
+    const number = Number(match[2]);
+    const title = decodeEmbeddedMetadataText(match[1]);
+    return {
+      showName: isGenericNetflixTitle(showName) ? "" : showName,
+      episodeName: [`Episode ${number}`, title].filter(Boolean).join(" · "),
+    };
+  }
+
+  function requestNetflixTitleMetadata(videoId) {
+    if (
+      !videoId ||
+      videoId === "unknown" ||
+      titleMetadataRequestsByVideoId.has(videoId)
+    ) {
+      return;
+    }
+
+    const request = fetch(`/title/${encodeURIComponent(videoId)}`, {
+      credentials: "same-origin",
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Netflix returned ${response.status}`);
+        return response.text();
+      })
+      .then((html) => {
+        const metadata = episodeMetadataFromHtml(html, videoId);
+        if (!metadata?.episodeName) return;
+        const previous = titleMetadataByVideoId.get(videoId) || {};
+        titleMetadataByVideoId.set(videoId, {
+          showName: metadata.showName || previous.showName || "Netflix",
+          episodeName: metadata.episodeName,
+        });
+        persistImprovedCacheMetadata();
+      })
+      .catch((error) => {
+        console.warn("[LST] Could not load Netflix episode details:", error);
+      });
+    titleMetadataRequestsByVideoId.set(videoId, request);
+  }
+
   function netflixTitleMetadata() {
     const titleContainers = document.querySelectorAll(
       '[data-uia="video-title"], [data-uia="player-title"], ' +
-        ".watch-video--player-view .video-title, .player-status",
+        '[data-uia*="video-title"], .watch-video--player-view .video-title, ' +
+        ".player-status",
     );
     const explicitShowCandidates = [
       ...metadataTexts([
         '[data-uia="video-title"] [data-uia="series-title"]',
         '[data-uia="series-title"]',
+        '[data-uia*="video-title"] [data-uia*="series-title"]',
+        '[data-uia*="series-title"]',
         '[data-uia="video-title"] h4',
         '[data-uia="player-title"] h4',
+        '[data-uia*="video-title"] h1',
+        '[data-uia*="video-title"] h2',
+        '[data-uia*="video-title"] h3',
+        '[data-uia*="video-title"] h4',
         ".watch-video--player-view .video-title h4",
         ".ellipsize-text h4",
         ".player-status-main-title",
@@ -235,9 +317,26 @@
     const explicitEpisodeCandidates = metadataTexts([
       '[data-uia="video-title"] [data-uia="episode-title"]',
       '[data-uia="episode-title"]',
+      '[data-uia*="video-title"] [data-uia*="episode-title"]',
+      '[data-uia*="episode-title"]',
       ".watch-video--player-view .video-title .episode-title",
       ".player-status-subtitle",
+      '[data-uia*="episode"][aria-label*="Episode"]',
+      '[data-uia*="episode"][aria-label*="episode"]',
     ]);
+    explicitEpisodeCandidates.push(
+      ...metadataTexts(
+        [
+          '[data-uia*="episode"][aria-label*="Episode"]',
+          '[data-uia*="episode"][aria-label*="episode"]',
+        ],
+        "aria-label",
+      ),
+      ...metadataTexts(
+        ['[aria-label^="Episode "]', '[aria-label^="episode "]'],
+        "aria-label",
+      ),
+    );
     const pageTitleCandidates = [
       document.title,
       ...metadataTexts(
@@ -305,12 +404,23 @@
     ].join(" · ");
     const videoId = getVideoId();
     const previous = titleMetadataByVideoId.get(videoId) || {};
+    const previousEpisodeName = isFallbackEpisodeName(
+      previous.episodeName,
+      videoId,
+    )
+      ? ""
+      : previous.episodeName;
     const discovered = {
       showName: showName || previous.showName || "Netflix",
-      episodeName: episodeName || previous.episodeName || `Episode ${videoId}`,
+      episodeName:
+        episodeName || previousEpisodeName || fallbackEpisodeName(videoId),
     };
 
-    const hasSpecificEpisode = discovered.episodeName !== `Episode ${videoId}`;
+    const hasSpecificEpisode = !isFallbackEpisodeName(
+      discovered.episodeName,
+      videoId,
+    );
+    if (!hasSpecificEpisode) requestNetflixTitleMetadata(videoId);
     if (
       !isGenericNetflixTitle(discovered.showName) ||
       !previous.showName ||
@@ -337,7 +447,8 @@
         ? netflixTitleMetadata()
         : {
             showName: remembered?.showName || "Netflix",
-            episodeName: remembered?.episodeName || `Episode ${videoId}`,
+            episodeName:
+              remembered?.episodeName || fallbackEpisodeName(videoId),
             title:
               [remembered?.showName, remembered?.episodeName]
                 .filter(Boolean)
@@ -373,6 +484,39 @@
     }).catch((error) => {
       storedTitleSignaturesByCacheId.delete(currentCacheId);
       console.warn("[LST] Could not refresh cached episode title:", error);
+    });
+  }
+
+  function startTitleMetadataObserver() {
+    const titleSelector =
+      'title, [data-uia="video-title"], [data-uia="player-title"], ' +
+      '[data-uia*="video-title"], [data-uia*="series-title"], ' +
+      '[data-uia*="episode-title"], .video-title, .player-status';
+    const observer = new MutationObserver((mutations) => {
+      const titleChanged = mutations.some((mutation) => {
+        const target =
+          mutation.target.nodeType === Node.ELEMENT_NODE
+            ? mutation.target
+            : mutation.target.parentElement;
+        if (target?.closest?.(titleSelector)) return true;
+        return [...mutation.addedNodes].some(
+          (node) =>
+            node.nodeType === Node.ELEMENT_NODE &&
+            (node.matches?.(titleSelector) || node.querySelector?.(titleSelector)),
+        );
+      });
+      if (!titleChanged) return;
+
+      clearTimeout(titleMetadataRefreshTimer);
+      titleMetadataRefreshTimer = setTimeout(() => {
+        netflixTitleMetadata();
+        persistImprovedCacheMetadata();
+      }, 50);
+    });
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      characterData: true,
     });
   }
 
@@ -2187,6 +2331,7 @@
     await loadSettings();
     ensureOverlay();
     setStatus("Waiting for Netflix subtitles…", true);
+    startTitleMetadataObserver();
     startFallbackObserver();
     requestAnimationFrame(playbackLoop);
   }

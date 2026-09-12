@@ -169,7 +169,12 @@ function renderStatus(status) {
   const percent = Math.max(0, Math.min(100, Number(status.progressPercent || 0)));
 
   $("showName").textContent = status.showName || "Netflix";
-  $("episodeName").textContent = status.episodeName || `Episode ${status.videoId || "unknown"}`;
+  const genericEpisodeName = /^(?:Episode|Video) \d{6,}$/.test(
+    status.episodeName || "",
+  );
+  $("episodeName").textContent = genericEpisodeName
+    ? "Finding episode details…"
+    : status.episodeName || "Finding episode details…";
   $("cueCount").textContent =
     `${remainingTranslatedCount} / ${remainingCueCount} cues ahead`;
   $("progressBar").style.width = `${percent}%`;
