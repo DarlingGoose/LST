@@ -18,6 +18,7 @@
     showDebugPanel: false,
     debugPanelAlwaysOnTop: false,
     showSubtitleControls: false,
+    subtitleControlsMinimized: false,
     showQuickPills: true,
     subtitleHorizontalPosition: "center",
     subtitleVerticalPosition: 9,
@@ -444,12 +445,14 @@
       debugPanel.innerHTML = `
         <div id="lst-debug-header">
           <strong>LST</strong>
-          <span>v0.5.2</span>
+          <span id="lst-debug-version"></span>
         </div>
         <pre id="lst-debug-body"></pre>
       `;
       document.documentElement.appendChild(debugPanel);
       debugPanelBody = debugPanel.querySelector("#lst-debug-body");
+      debugPanel.querySelector("#lst-debug-version").textContent =
+        `v${ext.runtime.getManifest().version}`;
     }
 
     if (!subtitleControlsPanel?.isConnected) {
@@ -458,8 +461,12 @@
       subtitleControlsPanel.innerHTML = `
         <div id="lst-controls-header">
           <strong>Subtitle controls</strong>
-          <button type="button" data-action="hide">Hide</button>
+          <div class="lst-controls-header-actions">
+            <button type="button" data-action="minimize" aria-expanded="true" aria-controls="lst-controls-body">Minimize</button>
+            <button type="button" data-action="hide">Hide</button>
+          </div>
         </div>
+        <div id="lst-controls-body">
         <label class="lst-control-field">
           <span>Alignment</span>
           <select data-setting="subtitleHorizontalPosition">
@@ -511,6 +518,7 @@
         <div id="lst-controls-footer">
           <span id="lst-controls-status" role="status"></span>
           <button type="button" data-action="settings">All settings</button>
+        </div>
         </div>
       `;
       document.documentElement.appendChild(subtitleControlsPanel);
@@ -622,7 +630,20 @@
 
     subtitleControlsPanel.addEventListener("click", async (event) => {
       const action = event.target.closest("[data-action]")?.dataset.action;
-      if (action === "hide") {
+      if (action === "minimize") {
+        settings.subtitleControlsMinimized = !settings.subtitleControlsMinimized;
+        syncSubtitleControlsMinimized();
+        requestAnimationFrame(positionDebugPanel);
+        try {
+          await runtimeMessage({
+            type: "SAVE_SETTINGS",
+            settings: { subtitleControlsMinimized: settings.subtitleControlsMinimized }
+          });
+        } catch (error) {
+          showSubtitleControlsStatus("Could not save panel state", true);
+          console.warn("[LST] Could not save subtitle controls state:", error);
+        }
+      } else if (action === "hide") {
         settings.showSubtitleControls = false;
         updateOverlayPanelVisibility();
         try {
@@ -734,6 +755,7 @@
 
   function syncSubtitleControls() {
     if (!subtitleControlsPanel) return;
+    syncSubtitleControlsMinimized();
     for (const control of subtitleControlsPanel.querySelectorAll("[data-setting]")) {
       const value = settings[control.dataset.setting];
       if (control.type === "checkbox") control.checked = value !== false;
@@ -751,6 +773,24 @@
     for (const output of subtitleControlsPanel.querySelectorAll("[data-output-for]")) {
       const key = output.dataset.outputFor;
       output.textContent = formats[key]?.(settings[key]) || "";
+    }
+  }
+
+  function syncSubtitleControlsMinimized() {
+    if (!subtitleControlsPanel) return;
+    const minimized = settings.subtitleControlsMinimized === true;
+    const body = subtitleControlsPanel.querySelector("#lst-controls-body");
+    const button = subtitleControlsPanel.querySelector('[data-action="minimize"]');
+
+    subtitleControlsPanel.dataset.minimized = String(minimized);
+    if (body) body.hidden = minimized;
+    if (button) {
+      button.textContent = minimized ? "Expand" : "Minimize";
+      button.setAttribute("aria-expanded", String(!minimized));
+      button.setAttribute(
+        "aria-label",
+        minimized ? "Expand subtitle controls" : "Minimize subtitle controls"
+      );
     }
   }
 

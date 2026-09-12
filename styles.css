@@ -219,6 +219,15 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 
 #lst-subtitle-controls * { box-sizing: border-box; }
 
+#lst-subtitle-controls[data-minimized="true"] {
+  width: min(300px, calc(100vw - 24px));
+  max-height: none;
+  overflow: hidden;
+  padding: 9px 10px;
+}
+
+#lst-controls-body[hidden] { display: none !important; }
+
 #lst-controls-header,
 #lst-controls-footer,
 .lst-control-field > span {
@@ -233,6 +242,18 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
   padding-bottom: 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.13);
   font-size: 13px;
+}
+
+.lst-controls-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#lst-subtitle-controls[data-minimized="true"] #lst-controls-header {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 #lst-subtitle-controls button,

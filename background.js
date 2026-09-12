@@ -17,6 +17,7 @@ const DEFAULTS = {
   showDebugPanel: false,
   debugPanelAlwaysOnTop: false,
   showSubtitleControls: false,
+  subtitleControlsMinimized: false,
   showQuickPills: true,
   subtitleHorizontalPosition: "center",
   subtitleVerticalPosition: 9,

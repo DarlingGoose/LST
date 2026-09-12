@@ -10,6 +10,8 @@
     "build:chrome": "npm run prepare:chrome && web-ext build --source-dir=.chrome-build --artifacts-dir=web-ext-artifacts --overwrite-dest --filename=lst-chrome-{version}.zip",
     "verify:chrome": "node scripts/verify-package.mjs chrome",
     "package:chrome": "npm run check && npm run build:chrome && npm run verify:chrome",
+    "dev:firefox": "npm run prepare:firefox && web-ext run --source-dir=.firefox-build",
+    "dev:chrome": "npm run prepare:chrome",
     "test:cache": "node scripts/test-cache.mjs",
     "check:release": "node scripts/check-release.mjs",
     "prepare:firefox": "node scripts/prepare-firefox.mjs",
