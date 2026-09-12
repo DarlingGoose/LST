@@ -4,6 +4,7 @@ import vm from "node:vm";
 
 const values = {};
 let messageHandler;
+let installedHandler;
 
 const storage = {
   async get(query) {
@@ -36,7 +37,7 @@ const context = vm.createContext({
   URL,
   chrome: {
     runtime: {
-      onInstalled: { addListener() {} },
+      onInstalled: { addListener(handler) { installedHandler = handler; } },
       onMessage: { addListener(handler) { messageHandler = handler; } },
       sendMessage: async () => {},
       openOptionsPage: async () => {}
@@ -47,6 +48,10 @@ const context = vm.createContext({
 
 const source = await fs.readFile(new URL("../background.js", import.meta.url), "utf8");
 vm.runInContext(source, context, { filename: "background.js" });
+
+await installedHandler();
+assert.equal(values.model, "translategemma:4b");
+assert.equal(values.showQuickPills, true);
 
 function send(message) {
   return new Promise((resolve, reject) => {
@@ -66,6 +71,8 @@ await send({
   metadata: {
     videoId: "8123",
     title: "Example Show: Episode 1",
+    showName: "Example Show",
+    episodeName: "S1:E1 The Beginning",
     model: "qwen3:8b",
     targetLanguage: "English",
     sourceCueCount: 24
@@ -76,11 +83,23 @@ let response = await send({ type: "LIST_TRANSLATION_CACHES" });
 assert.equal(response.ok, true);
 assert.equal(response.caches.length, 1);
 assert.equal(response.caches[0].title, "Example Show: Episode 1");
+assert.equal(response.caches[0].showName, "Example Show");
+assert.equal(response.caches[0].episodeName, "S1:E1 The Beginning");
 assert.equal(response.caches[0].cueCount, 1);
 assert.equal(response.caches[0].sourceCueCount, 24);
 assert.equal(response.caches[0].model, "qwen3:8b");
 assert.ok(response.caches[0].bytes > 0);
 assert.equal(response.totalBytes, response.caches[0].bytes);
+
+await send({
+  type: "CACHE_SET",
+  cacheId,
+  entries: { "1000:2000:世界": "World" },
+  metadata: { showName: "Example Show", episodeName: "" }
+});
+response = await send({ type: "LIST_TRANSLATION_CACHES" });
+assert.equal(response.caches[0].episodeName, "S1:E1 The Beginning");
+assert.equal(response.caches[0].cueCount, 2);
 
 response = await send({ type: "DELETE_TRANSLATION_CACHE", cacheId });
 assert.equal(response.removed, true);

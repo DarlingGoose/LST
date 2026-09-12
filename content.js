@@ -4,7 +4,7 @@
 
   const DEFAULTS = {
     enabled: true,
-    model: "",
+    model: "translategemma:4b",
     targetLanguage: "English",
     hideNetflixSubtitles: true,
     showOriginal: false,
@@ -12,17 +12,20 @@
     showStatusMessages: true,
     autoTranslateAhead: true,
     lookAheadSeconds: 30,
+    cacheWhilePaused: true,
     batchSize: 8,
     requestTimeoutSeconds: 75,
     showDebugPanel: false,
     debugPanelAlwaysOnTop: false,
     showSubtitleControls: false,
+    showQuickPills: true,
     subtitleHorizontalPosition: "center",
     subtitleVerticalPosition: 9,
     subtitleMaxWidth: 92,
     translatedFontSize: 36,
     originalFontSize: 30,
-    subtitleBackgroundOpacity: 58
+    subtitleBackgroundOpacity: 58,
+    subtitleTimingOffsetMs: 0
   };
 
   let settings = { ...DEFAULTS };
@@ -33,6 +36,10 @@
   let originalLine;
   let translatedLine;
   let statusLine;
+  let hud;
+  let quickPillsPanel;
+  let quickPillsMenu;
+  let quickPillsState;
   let debugPanel;
   let debugPanelBody;
   let subtitleControlsPanel;
@@ -44,19 +51,26 @@
   let lastFallbackText = "";
   let fallbackTimer = null;
   let lastTimedCueMatchAt = 0;
+  let noTimedCueSince = 0;
 
   let translationInFlight = new Map();
+  let knownCachedKeys = new Set();
   let lookAheadQueued = new Set();
   let lookAheadNoticeShown = false;
   let lookAheadReadyNoticeShown = false;
   let precomputeInProgress = false;
   let precomputePromise = null;
   let precomputeCancelled = false;
+  let pausedCachingPromise = null;
+  let pausedCacheNoticeShown = false;
+  let pausedCacheCompleteNoticeShown = false;
+  let pausedCacheFailedKeys = new Set();
 
   let currentStatus = {
     captured: false,
     cueCount: 0,
     translatedCount: 0,
+    cachedAheadSeconds: 0,
     failedCount: 0,
     precomputing: false,
     progressPercent: 0,
@@ -125,13 +139,76 @@
     return `${getVideoId()}:${model}:${language}`;
   }
 
-  function cacheMetadata() {
-    const title = document.title
-      .replace(/\s*[|–—-]\s*Netflix\s*$/i, "")
+  function cleanPageTitle() {
+    return normalizeText(document.title)
+      .replace(/^Watch\s+/i, "")
+      .replace(/\s*(?:\||-|–|—)\s*Netflix.*$/i, "")
       .trim();
+  }
+
+  function firstMetadataText(selectors, attribute = "") {
+    for (const selector of selectors) {
+      const element = document.querySelector(selector);
+      const value = normalizeText(
+        attribute ? element?.getAttribute(attribute) : element?.textContent
+      );
+      if (value) return value;
+    }
+    return "";
+  }
+
+  function netflixTitleMetadata() {
+    const titleContainer = document.querySelector(
+      '[data-uia="video-title"], .watch-video--player-view .video-title'
+    );
+    const explicitShow = firstMetadataText([
+      '[data-uia="video-title"] [data-uia="series-title"]',
+      '[data-uia="series-title"]'
+    ]) || firstMetadataText([
+      '[data-uia="video-title"] img[alt]',
+      '.watch-video--player-view .video-title img[alt]'
+    ], "alt");
+    const explicitEpisode = firstMetadataText([
+      '[data-uia="video-title"] [data-uia="episode-title"]',
+      '[data-uia="episode-title"]',
+      '.watch-video--player-view .video-title .episode-title',
+      '.watch-video--player-view .video-title h4'
+    ]);
+    const pageTitle = cleanPageTitle();
+    const parts = titleContainer
+      ? [...titleContainer.querySelectorAll("h1, h2, h3, h4, span")]
+        .map((element) => normalizeText(element.textContent))
+        .filter((value, index, values) =>
+          value &&
+          values.indexOf(value) === index &&
+          !/^\d+(?::\d+)+$/.test(value) &&
+          !/^(?:HD|4K|HDR|UHD|AD|CC)$/i.test(value)
+        )
+      : [];
+
+    const usableExplicitShow = /^Netflix$/i.test(explicitShow) ? "" : explicitShow;
+    const showName = usableExplicitShow || pageTitle || parts[0] || "";
+    const markedEpisode = parts.find((value) =>
+      /^(?:S\d+\s*:\s*E\d+|Episode\s+\d+)/i.test(value)
+    );
+    let episodeName = explicitEpisode || markedEpisode || parts.find((value) =>
+      value !== showName && value !== pageTitle && value.length > 1
+    ) || "";
+    if (episodeName === showName) episodeName = "";
+
+    return {
+      showName,
+      episodeName,
+      title: [showName, episodeName].filter(Boolean).join(" — ") ||
+        `Netflix episode ${getVideoId()}`
+    };
+  }
+
+  function cacheMetadata() {
+    const titleMetadata = netflixTitleMetadata();
     return {
       videoId: getVideoId(),
-      title: title || `Netflix episode ${getVideoId()}`,
+      ...titleMetadata,
       url: location.href,
       model: settings.model || "Unknown model",
       targetLanguage: settings.targetLanguage || "English",
@@ -313,12 +390,50 @@
       translatedLine = overlay.querySelector("#not-translated");
     }
 
+    if (!hud?.isConnected) {
+      hud = document.createElement("div");
+      hud.id = "lst-hud";
+      document.documentElement.appendChild(hud);
+    }
+
     if (!statusLine?.isConnected) {
       statusLine = document.createElement("div");
       statusLine.id = "not-status";
       statusLine.setAttribute("role", "status");
       statusLine.setAttribute("aria-live", "polite");
-      document.documentElement.appendChild(statusLine);
+      hud.appendChild(statusLine);
+    }
+
+    if (!quickPillsPanel?.isConnected) {
+      quickPillsPanel = document.createElement("div");
+      quickPillsPanel.id = "lst-quick-pills";
+      quickPillsPanel.innerHTML = `
+        <button id="lst-pill-trigger" type="button" data-pill-action="toggle" aria-expanded="false" aria-haspopup="true" aria-controls="lst-pill-menu">
+          <span class="lst-pill-dot" aria-hidden="true"></span>
+          <strong>LST</strong>
+          <span id="lst-pill-state">Waiting</span>
+          <span aria-hidden="true">⌄</span>
+        </button>
+        <div id="lst-pill-menu" hidden>
+          <div class="lst-pill-menu-title">Quick subtitles</div>
+          <label><span>LST translation</span><input data-pill-setting="showTranslated" type="checkbox"></label>
+          <label><span>LST original</span><input data-pill-setting="showOriginal" type="checkbox"></label>
+          <label><span>Hide Netflix subtitles</span><input data-pill-setting="hideNetflixSubtitles" type="checkbox"></label>
+          <div class="lst-pill-timing">
+            <span>Timing <output id="lst-pill-timing-value">0 ms</output></span>
+            <div>
+              <button type="button" data-pill-action="earlier" aria-label="Show subtitles 100 milliseconds earlier">−100</button>
+              <button type="button" data-pill-action="timing-reset">Reset</button>
+              <button type="button" data-pill-action="later" aria-label="Show subtitles 100 milliseconds later">+100</button>
+            </div>
+          </div>
+          <button type="button" data-pill-action="settings">Open all settings</button>
+        </div>
+      `;
+      hud.appendChild(quickPillsPanel);
+      quickPillsMenu = quickPillsPanel.querySelector("#lst-pill-menu");
+      quickPillsState = quickPillsPanel.querySelector("#lst-pill-state");
+      bindQuickPills();
     }
 
     if (!debugPanel?.isConnected) {
@@ -327,7 +442,7 @@
       debugPanel.innerHTML = `
         <div id="lst-debug-header">
           <strong>LST</strong>
-          <span>v0.4.4</span>
+          <span>v0.5.2</span>
         </div>
         <pre id="lst-debug-body"></pre>
       `;
@@ -370,6 +485,10 @@
         <label class="lst-control-field">
           <span>Background <output data-output-for="subtitleBackgroundOpacity"></output></span>
           <input data-setting="subtitleBackgroundOpacity" data-number type="range" min="0" max="90" step="1">
+        </label>
+        <label class="lst-control-field">
+          <span>Timing <output data-output-for="subtitleTimingOffsetMs"></output></span>
+          <input data-setting="subtitleTimingOffsetMs" data-number type="range" min="-2000" max="2000" step="50">
         </label>
         <label class="lst-control-check">
           <input data-setting="hideNetflixSubtitles" type="checkbox">
@@ -447,6 +566,7 @@
         : "none";
 
     syncSubtitleControls();
+    updateQuickPills();
   }
 
   function quickControlValue(control) {
@@ -520,6 +640,88 @@
     });
   }
 
+  function quickPillStatus() {
+    if (currentStatus.precomputing) return { label: "Precomputing", state: "buffering" };
+    if (currentStatus.requestState === "running" || lookAheadQueued.size) {
+      return { label: "Buffering", state: "buffering" };
+    }
+    if (currentStatus.requestState === "error") return { label: "Error", state: "error" };
+    if (String(currentStatus.playbackMode).includes("realtime")) {
+      return { label: "Realtime", state: "realtime" };
+    }
+    if (String(currentStatus.playbackMode).includes("cache")) {
+      return { label: "Cached", state: "cached" };
+    }
+    if (currentStatus.captured) return { label: "Ready", state: "ready" };
+    return { label: "Waiting", state: "waiting" };
+  }
+
+  function updateQuickPills() {
+    if (!quickPillsPanel || !quickPillsState) return;
+    quickPillsPanel.style.display = settings.showQuickPills ? "block" : "none";
+    const status = quickPillStatus();
+    quickPillsPanel.dataset.state = status.state;
+    quickPillsState.textContent = status.label;
+    for (const control of quickPillsPanel.querySelectorAll("[data-pill-setting]")) {
+      control.checked = settings[control.dataset.pillSetting] !== false;
+    }
+    const timing = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0);
+    const timingOutput = quickPillsPanel.querySelector("#lst-pill-timing-value");
+    if (timingOutput) timingOutput.textContent = `${timing > 0 ? "+" : ""}${timing} ms`;
+  }
+
+  function bindQuickPills() {
+    quickPillsPanel.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-pill-action]")?.dataset.pillAction;
+      if (action === "toggle") {
+        setQuickPillsMenu(quickPillsMenu.hidden);
+      } else if (["earlier", "timing-reset", "later"].includes(action)) {
+        const current = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0);
+        settings.subtitleTimingOffsetMs = action === "timing-reset"
+          ? 0
+          : clamp(current + (action === "later" ? 100 : -100), -2000, 2000, 0);
+        applySubtitleAppearance();
+        runtimeMessage({
+          type: "SAVE_SETTINGS",
+          settings: { subtitleTimingOffsetMs: settings.subtitleTimingOffsetMs }
+        }).catch((error) => setStatus(`Could not save subtitle timing: ${error.message}`, true));
+      } else if (action === "settings") {
+        setQuickPillsMenu(false);
+        runtimeMessage({ type: "OPEN_OPTIONS" }).catch((error) => {
+          setStatus(`Could not open settings: ${error.message}`, true);
+        });
+      }
+    });
+
+    quickPillsPanel.addEventListener("change", (event) => {
+      const control = event.target.closest("[data-pill-setting]");
+      if (!control) return;
+      const key = control.dataset.pillSetting;
+      settings[key] = control.checked;
+      applySubtitleAppearance();
+      runtimeMessage({ type: "SAVE_SETTINGS", settings: { [key]: settings[key] } })
+        .catch((error) => setStatus(`Could not save quick setting: ${error.message}`, true));
+    });
+
+    document.addEventListener("pointerdown", (event) => {
+      if (!quickPillsMenu.hidden && !quickPillsPanel.contains(event.target)) {
+        setQuickPillsMenu(false);
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !quickPillsMenu.hidden) {
+        setQuickPillsMenu(false);
+        quickPillsPanel.querySelector("#lst-pill-trigger")?.focus();
+      }
+    });
+  }
+
+  function setQuickPillsMenu(open) {
+    quickPillsMenu.hidden = !open;
+    quickPillsPanel.querySelector("#lst-pill-trigger")
+      ?.setAttribute("aria-expanded", String(open));
+  }
+
   function syncSubtitleControls() {
     if (!subtitleControlsPanel) return;
     for (const control of subtitleControlsPanel.querySelectorAll("[data-setting]")) {
@@ -533,7 +735,8 @@
       translatedFontSize: (value) => `${value}px`,
       originalFontSize: (value) => `${value}px`,
       subtitleMaxWidth: (value) => `${value}%`,
-      subtitleBackgroundOpacity: (value) => `${value}%`
+      subtitleBackgroundOpacity: (value) => `${value}%`,
+      subtitleTimingOffsetMs: (value) => `${Number(value) > 0 ? "+" : ""}${value}ms`
     };
     for (const output of subtitleControlsPanel.querySelectorAll("[data-output-for]")) {
       const key = output.dataset.outputFor;
@@ -575,6 +778,7 @@
   }
 
   function updateDebugPanel() {
+    updateQuickPills();
     if (!debugPanel || !debugPanelBody) return;
 
     const shouldShow =
@@ -601,6 +805,7 @@
       `ollama      ${currentStatus.lastOllamaMode || "—"}`,
       `playback    ${currentStatus.playbackMode || "waiting"}`,
       `video       ${Number(currentStatus.videoTime || 0).toFixed(2)}s`,
+      `sync offset ${clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0)}ms`,
       `cue         ${currentStatus.activeCueStart == null ? "—" : `${Number(currentStatus.activeCueStart).toFixed(2)}–${Number(currentStatus.activeCueEnd).toFixed(2)}s`}`,
       `in-flight   ${translationInFlight.size}`,
       `source      ${shortUrl(cueSourceUrl)}`
@@ -683,6 +888,18 @@
     }
 
     return null;
+  }
+
+  function subtitleLookupTime(videoTime) {
+    // Positive values delay LST subtitles; negative values show them earlier.
+    return Number(videoTime) - clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000;
+  }
+
+  function isTimedCueStillCurrent(key) {
+    const video = document.querySelector("video");
+    if (!video || lastRenderedCueKey !== key) return false;
+    const match = findCueAt(subtitleLookupTime(video.currentTime));
+    return Boolean(match && cueKey(match.cue) === key);
   }
 
   async function getCachedTranslations(selectedCues) {
@@ -814,13 +1031,13 @@
     if (cached[key]) {
       currentStatus.playbackMode = "timed-text cache";
       currentStatus.lastTranslatedText = truncate(cached[key]);
-      render(cue.text, cached[key]);
+      if (isTimedCueStillCurrent(key)) render(cue.text, cached[key]);
     } else {
       const currentResult = await translateCues([cue]);
       if (currentResult.entries[key]) {
         currentStatus.playbackMode = "timed-text realtime";
         currentStatus.lastTranslatedText = truncate(currentResult.entries[key]);
-        render(cue.text, currentResult.entries[key]);
+        if (isTimedCueStillCurrent(key)) render(cue.text, currentResult.entries[key]);
       }
     }
 
@@ -873,6 +1090,7 @@
       }
     } finally {
       for (const cue of ahead) lookAheadQueued.delete(cueKey(cue));
+      updateQuickPills();
     }
   }
 
@@ -891,18 +1109,27 @@
     }
 
     currentStatus.videoTime = video.currentTime;
-    const match = findCueAt(video.currentTime);
+    const match = findCueAt(subtitleLookupTime(video.currentTime));
 
     if (!match) {
+      if (!noTimedCueSince) noTimedCueSince = performance.now();
       currentStatus.activeCueStart = null;
       currentStatus.activeCueEnd = null;
       updateDebugPanel();
-      // Do not clear immediately. Netflix's rendered subtitle observer is allowed
-      // to take over if the captured timed-text track does not line up with playback.
+      // Give the DOM fallback a short handoff window, then clear a stale line
+      // when Netflix is also between subtitles.
+      if (
+        lastRenderedCueKey &&
+        performance.now() - noTimedCueSince > 220 &&
+        !findNetflixRenderedSubtitle()
+      ) {
+        clearRenderedSubtitle();
+      }
       requestAnimationFrame(playbackLoop);
       return;
     }
 
+    noTimedCueSince = 0;
     lastTimedCueMatchAt = Date.now();
     currentStatus.activeCueStart = match.cue.start;
     currentStatus.activeCueEnd = match.cue.end;
@@ -911,6 +1138,7 @@
 
     if (key !== lastRenderedCueKey) {
       lastRenderedCueKey = key;
+      currentStatus.playbackMode = "timed-text pending";
       render(match.cue.text, "");
 
       ensureCueTranslated(match.cue, match.index).catch((error) => {
@@ -941,10 +1169,19 @@
     if (!settings.enabled || !settings.model) return;
 
     const text = findNetflixRenderedSubtitle();
-    if (!text || text === lastFallbackText) return;
+    if (!text) {
+      if (lastFallbackText && String(currentStatus.playbackMode).startsWith("DOM")) {
+        lastFallbackText = "";
+        clearRenderedSubtitle();
+      }
+      return;
+    }
+    if (text === lastFallbackText) return;
 
     const video = document.querySelector("video");
-    const timedMatch = video && cues.length ? findCueAt(video.currentTime) : null;
+    const timedMatch = video && cues.length
+      ? findCueAt(subtitleLookupTime(video.currentTime))
+      : null;
     const timedText = timedMatch ? normalizeText(timedMatch.cue.text) : "";
 
     // If the captured timed-text track clearly matches the subtitle Netflix is
@@ -962,7 +1199,7 @@
       const result = await translateCues([fallbackCue]);
       const translated = result.entries[key] || "";
 
-      if (translated) {
+      if (translated && lastFallbackText === text) {
         currentStatus.playbackMode =
           cues.length ? "DOM fallback (timing mismatch)" : "DOM realtime";
         currentStatus.lastTranslatedText = truncate(translated);

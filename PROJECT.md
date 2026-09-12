@@ -26,4 +26,4 @@ Netflix is the first supported streaming site. The architecture is intentionally
 
 ## Current version
 
-v0.4.4 adds a time-based translation buffer with an enforced 30-second minimum and on-screen readiness notices, alongside the translated-episode cache library and subtitle customization controls.
+v0.5.2 enriches cached episode records with separate Netflix show and episode names while retaining compatibility with older caches.

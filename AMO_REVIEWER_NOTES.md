@@ -7,7 +7,7 @@ LST translates Netflix subtitle text using an Ollama instance operated by the us
 1. Install Ollama from <https://ollama.com/>.
 2. Start Ollama at `http://localhost:11434`.
 3. Configure `OLLAMA_ORIGINS` to allow the Firefox extension origin.
-4. Install a translation-capable model, for example with `ollama pull qwen3:8b`, or use the model download field in LST Settings.
+4. Install the default model with `ollama pull translategemma:4b`, or use the model download field in LST Settings.
 5. Open a Netflix watch page using a test account and enable a subtitle track.
 6. Open LST Settings, refresh the model list, select the installed model, and save.
 

@@ -1,18 +1,19 @@
 {
   "name": "lst-local-subtitle-translate",
-  "version": "0.4.4",
+  "version": "0.5.2",
   "private": true,
   "description": "Release tooling for the LST Firefox extension.",
   "scripts": {
     "check:syntax": "node --check background.js && node --check content.js && node --check options.js && node --check page-hook.js && node --check popup.js",
     "test:cache": "node scripts/test-cache.mjs",
     "check:release": "node scripts/check-release.mjs",
-    "lint": "web-ext lint",
+    "prepare:firefox": "node scripts/prepare-firefox.mjs",
+    "lint": "npm run prepare:firefox && web-ext lint --source-dir=.firefox-build",
     "check": "npm run check:syntax && npm run test:cache && npm run check:release && npm run lint",
-    "build": "web-ext build --overwrite-dest --filename=lst-firefox-{version}.zip",
+    "build": "npm run prepare:firefox && web-ext build --source-dir=.firefox-build --artifacts-dir=web-ext-artifacts --overwrite-dest --filename=lst-firefox-{version}.zip",
     "verify:package": "node scripts/verify-package.mjs",
     "package": "npm run check && npm run build && npm run verify:package",
-    "sign:amo": "web-ext sign --channel=listed --amo-metadata=amo-metadata.json --approval-timeout=0"
+    "sign:amo": "npm run prepare:firefox && web-ext sign --source-dir=.firefox-build --artifacts-dir=web-ext-artifacts --channel=listed --amo-metadata=amo-metadata.json --approval-timeout=0"
   },
   "engines": {
     "node": ">=22"

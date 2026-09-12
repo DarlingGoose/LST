@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LST — Local Subtitle Translate",
-  "version": "0.4.4",
+  "version": "0.5.2",
   "description": "Translate Netflix subtitles locally with Ollama, with customizable subtitle placement, sizing, realtime translation, and precompute.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -71,6 +71,9 @@
           "websiteContent"
         ]
       }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
     }
   },
   "short_name": "LST"

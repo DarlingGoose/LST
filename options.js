@@ -1,6 +1,8 @@
 const ext = globalThis.browser || globalThis.chrome;
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
+const DEFAULT_MODEL = "translategemma:4b";
+const SETTINGS_TABS = ["general", "subtitles", "storage", "advanced"];
 
 const APPEARANCE_DEFAULTS = {
   subtitleHorizontalPosition: "center",
@@ -8,7 +10,8 @@ const APPEARANCE_DEFAULTS = {
   subtitleMaxWidth: 92,
   translatedFontSize: 36,
   originalFontSize: 30,
-  subtitleBackgroundOpacity: 58
+  subtitleBackgroundOpacity: 58,
+  subtitleTimingOffsetMs: 0
 };
 
 const RANGE_FORMATTERS = {
@@ -16,7 +19,8 @@ const RANGE_FORMATTERS = {
   subtitleMaxWidth: (value) => `${value}%`,
   translatedFontSize: (value) => `${value} px`,
   originalFontSize: (value) => `${value} px`,
-  subtitleBackgroundOpacity: (value) => `${value}%`
+  subtitleBackgroundOpacity: (value) => `${value}%`,
+  subtitleTimingOffsetMs: (value) => `${Number(value) > 0 ? "+" : ""}${value} ms`
 };
 
 async function runtimeMessage(message) {
@@ -28,6 +32,21 @@ async function runtimeMessage(message) {
 function setStatus(message, tone = "") {
   statusEl.textContent = message;
   statusEl.dataset.tone = tone;
+}
+
+function activateSettingsTab(tab, focus = false) {
+  const active = SETTINGS_TABS.includes(tab) ? tab : "general";
+  document.querySelector(".layout").dataset.activeTab = active;
+  for (const button of document.querySelectorAll("[data-settings-tab]")) {
+    const selected = button.dataset.settingsTab === active;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    if (selected && focus) button.focus();
+  }
+  for (const panel of document.querySelectorAll("[data-settings-panel]")) {
+    panel.hidden = panel.dataset.settingsPanel !== active;
+  }
+  history.replaceState(null, "", `#${active}`);
 }
 
 function formatBytes(bytes) {
@@ -69,8 +88,12 @@ function renderCacheLibrary(caches, totalBytes) {
     const details = document.createElement("div");
     const title = document.createElement("div");
     title.className = "cache-title";
-    title.textContent = cache.title || `Netflix episode ${cache.videoId || "unknown"}`;
+    title.textContent = cache.showName || cache.title || `Netflix episode ${cache.videoId || "unknown"}`;
     title.title = title.textContent;
+    const episode = document.createElement("div");
+    episode.className = "cache-episode";
+    episode.textContent = cache.episodeName || "";
+    episode.hidden = !episode.textContent;
 
     const meta = document.createElement("div");
     meta.className = "cache-meta";
@@ -96,9 +119,12 @@ function renderCacheLibrary(caches, totalBytes) {
     remove.type = "button";
     remove.dataset.cacheId = cache.cacheId;
     remove.textContent = "Remove";
-    remove.setAttribute("aria-label", `Remove cached translations for ${title.textContent}`);
+    remove.setAttribute(
+      "aria-label",
+      `Remove cached translations for ${[title.textContent, episode.textContent].filter(Boolean).join(", ")}`
+    );
 
-    details.append(title, meta);
+    details.append(title, episode, meta);
     item.append(details, remove);
     list.appendChild(item);
   }
@@ -176,11 +202,13 @@ async function load() {
   $("showDebugPanel").checked = s.showDebugPanel === true;
   $("debugPanelAlwaysOnTop").checked = s.debugPanelAlwaysOnTop === true;
   $("showSubtitleControls").checked = s.showSubtitleControls === true;
+  $("showQuickPills").checked = s.showQuickPills !== false;
   $("lookAheadSeconds").value = Math.max(30, Number(s.lookAheadSeconds) || 30);
   $("batchSize").value = s.batchSize ?? 8;
   $("requestTimeoutSeconds").value = s.requestTimeoutSeconds ?? 75;
   applyAppearance(s);
   await loadCacheLibrary();
+  $("pullModelName").value = s.model || DEFAULT_MODEL;
 
   try {
     await refreshModels(s.model || "");
@@ -218,7 +246,13 @@ async function refreshModels(selected = $("model").value) {
       option.textContent = meta ? `${model.name} — ${meta}` : model.name;
       select.appendChild(option);
     }
-    if (selected && [...select.options].some((option) => option.value === selected)) {
+    if (selected) {
+      if (![...select.options].some((option) => option.value === selected)) {
+        const option = document.createElement("option");
+        option.value = selected;
+        option.textContent = `${selected} — not installed`;
+        select.prepend(option);
+      }
       select.value = selected;
     }
   }
@@ -254,6 +288,7 @@ function collectSettings() {
     showDebugPanel: $("showDebugPanel").checked,
     debugPanelAlwaysOnTop: $("debugPanelAlwaysOnTop").checked,
     showSubtitleControls: $("showSubtitleControls").checked,
+    showQuickPills: $("showQuickPills").checked,
     lookAheadSeconds: clampNumber("lookAheadSeconds", 30),
     batchSize: clampNumber("batchSize", 8),
     requestTimeoutSeconds: clampNumber("requestTimeoutSeconds", 75),
@@ -262,7 +297,8 @@ function collectSettings() {
     subtitleMaxWidth: clampNumber("subtitleMaxWidth", 92),
     translatedFontSize: clampNumber("translatedFontSize", 36),
     originalFontSize: clampNumber("originalFontSize", 30),
-    subtitleBackgroundOpacity: clampNumber("subtitleBackgroundOpacity", 58)
+    subtitleBackgroundOpacity: clampNumber("subtitleBackgroundOpacity", 58),
+    subtitleTimingOffsetMs: clampNumber("subtitleTimingOffsetMs", 0)
   };
 }
 
@@ -363,8 +399,27 @@ document.querySelectorAll("input:not([data-transient]), select").forEach((contro
   control.addEventListener(control.type === "range" ? "input" : "change", markUnsaved);
 });
 
+document.querySelector(".settings-tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-settings-tab]")?.dataset.settingsTab;
+  if (tab) activateSettingsTab(tab);
+});
+
+document.querySelector(".settings-tabs").addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const current = SETTINGS_TABS.indexOf(event.target.dataset.settingsTab);
+  if (current < 0) return;
+  event.preventDefault();
+  const next = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? SETTINGS_TABS.length - 1
+      : (current + (event.key === "ArrowRight" ? 1 : -1) + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+  activateSettingsTab(SETTINGS_TABS[next], true);
+});
+
 ext.runtime.onMessage.addListener((message) => {
   if (message?.type === "MODEL_PULL_PROGRESS") renderPullProgress(message);
 });
 
+activateSettingsTab(location.hash.slice(1));
 load().catch((error) => setStatus(`Startup error: ${error.message}`, "error"));

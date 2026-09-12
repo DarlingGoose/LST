@@ -3,7 +3,7 @@ const ext = globalThis.browser || globalThis.chrome;
 const DEFAULTS = {
   enabled: true,
   ollamaUrl: "http://localhost:11434",
-  model: "",
+  model: "translategemma:4b",
   targetLanguage: "English",
   hideNetflixSubtitles: true,
   showOriginal: false,
@@ -11,17 +11,20 @@ const DEFAULTS = {
   showStatusMessages: true,
   autoTranslateAhead: true,
   lookAheadSeconds: 30,
+  cacheWhilePaused: true,
   batchSize: 8,
   requestTimeoutSeconds: 75,
   showDebugPanel: false,
   debugPanelAlwaysOnTop: false,
   showSubtitleControls: false,
+  showQuickPills: true,
   subtitleHorizontalPosition: "center",
   subtitleVerticalPosition: 9,
   subtitleMaxWidth: 92,
   translatedFontSize: 36,
   originalFontSize: 30,
-  subtitleBackgroundOpacity: 58
+  subtitleBackgroundOpacity: 58,
+  subtitleTimingOffsetMs: 0
 };
 
 ext.runtime.onInstalled.addListener(async () => {
@@ -30,6 +33,7 @@ ext.runtime.onInstalled.addListener(async () => {
   for (const [key, value] of Object.entries(DEFAULTS)) {
     if (current[key] === undefined) missing[key] = value;
   }
+  if (!current.model) missing.model = DEFAULTS.model;
   if (Object.keys(missing).length) {
     await ext.storage.local.set(missing);
   }
@@ -543,14 +547,20 @@ async function cacheGet(cacheId, keys) {
 async function cacheSet(cacheId, entries, metadata = {}) {
   const storageKey = cacheStorageKey(cacheId);
   const metadataKey = cacheMetadataKey(cacheId);
-  const existing = (await ext.storage.local.get(storageKey))[storageKey] || {};
+  const stored = await ext.storage.local.get([storageKey, metadataKey]);
+  const existing = stored[storageKey] || {};
+  const existingMetadata = stored[metadataKey] || {};
+  const usefulMetadata = Object.fromEntries(
+    Object.entries(metadata).filter(([, value]) => value !== "" && value != null)
+  );
   Object.assign(existing, entries || {});
   const inferred = inferCacheMetadata(cacheId);
   await ext.storage.local.set({
     [storageKey]: existing,
     [metadataKey]: {
       ...inferred,
-      ...metadata,
+      ...existingMetadata,
+      ...usefulMetadata,
       cacheId,
       cueCount: Object.keys(existing).length,
       updatedAt: new Date().toISOString()
@@ -571,6 +581,8 @@ async function listTranslationCaches() {
     caches.push({
       ...inferred,
       ...metadata,
+      showName: metadata.showName || metadata.title || inferred.title,
+      episodeName: metadata.episodeName || "",
       cacheId,
       cueCount: Object.keys(entries || {}).length,
       bytes: storedByteSize(storageKey, entries) +
