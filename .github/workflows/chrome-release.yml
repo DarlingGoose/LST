@@ -1,0 +1,208 @@
+name: Chrome release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-package:
+    name: Build Chrome package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install release tooling
+        run: npm ci
+
+      - name: Build Chrome package
+        run: npm run package:chrome
+
+      - name: Verify Chrome manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$(find web-ext-artifacts -maxdepth 1 -name 'lst-chrome-*.zip' -print -quit)"
+
+          test -n "$ZIP"
+
+          unzip -p "$ZIP" manifest.json > /tmp/chrome-manifest.json
+
+          echo "Packaged Chrome manifest:"
+          jq . /tmp/chrome-manifest.json
+
+          # Chromium must have service_worker.
+          jq -e '.background.service_worker == "background.js"' \
+            /tmp/chrome-manifest.json >/dev/null
+
+          # Firefox-only fields must be absent.
+          jq -e '.background.scripts == null' \
+            /tmp/chrome-manifest.json >/dev/null
+
+          jq -e '.browser_specific_settings == null' \
+            /tmp/chrome-manifest.json >/dev/null
+
+      - name: Create checksum
+        working-directory: web-ext-artifacts
+        run: sha256sum lst-chrome-*.zip > SHA256SUMS-chrome.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lst-chrome-${{ github.ref_name }}
+          path: |
+            web-ext-artifacts/lst-chrome-*.zip
+            web-ext-artifacts/SHA256SUMS-chrome.txt
+          if-no-files-found: error
+
+  publish-chrome:
+    name: Submit to Chrome Web Store
+    if: github.ref_type == 'tag' && vars.CHROME_PUBLISH == 'true'
+    needs: release-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    environment: chrome-web-store
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install release tooling
+        run: npm ci
+
+      - name: Build Chrome package
+        run: npm run package:chrome
+
+      - name: Authenticate to Google
+        id: google-auth
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.CHROME_SERVICE_ACCOUNT_JSON }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          create_credentials_file: false
+
+      - name: Upload package to Chrome Web Store
+        id: chrome-upload
+        shell: bash
+        env:
+          ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID }}
+        run: |
+          set -euo pipefail
+
+          : "${ACCESS_TOKEN:?Missing Google access token}"
+          : "${CWS_PUBLISHER_ID:?Missing CHROME_PUBLISHER_ID}"
+          : "${CWS_EXTENSION_ID:?Missing CHROME_EXTENSION_ID}"
+
+          ZIP="$(find web-ext-artifacts -maxdepth 1 -name 'lst-chrome-*.zip' -print -quit)"
+
+          if [[ -z "$ZIP" ]]; then
+            echo "Chrome package not found"
+            exit 1
+          fi
+
+          ITEM="publishers/${CWS_PUBLISHER_ID}/items/${CWS_EXTENSION_ID}"
+
+          echo "Uploading: $ZIP"
+
+          RESPONSE="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Content-Type: application/zip" \
+              --upload-file "$ZIP" \
+              "https://chromewebstore.googleapis.com/upload/v2/${ITEM}:upload"
+          )"
+
+          echo "$RESPONSE" | jq .
+
+          STATE="$(echo "$RESPONSE" | jq -r '.uploadState')"
+
+          if [[ "$STATE" == "IN_PROGRESS" ]]; then
+            echo "Upload is still being processed..."
+
+            for attempt in $(seq 1 30); do
+              sleep 2
+
+              STATUS="$(
+                curl \
+                  --fail-with-body \
+                  --silent \
+                  --show-error \
+                  --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                  "https://chromewebstore.googleapis.com/v2/${ITEM}:fetchStatus"
+              )"
+
+              STATE="$(echo "$STATUS" | jq -r '.lastAsyncUploadState // empty')"
+
+              echo "Upload status: $STATE"
+
+              if [[ "$STATE" != "IN_PROGRESS" ]]; then
+                echo "$STATUS" | jq .
+                break
+              fi
+            done
+          fi
+
+          if [[ "$STATE" != "SUCCEEDED" ]]; then
+            echo "Chrome Web Store upload failed or timed out: $STATE"
+            exit 1
+          fi
+
+          echo "Upload succeeded."
+
+      - name: Submit Chrome extension for review
+        shell: bash
+        env:
+          ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID }}
+        run: |
+          set -euo pipefail
+
+          ITEM="publishers/${CWS_PUBLISHER_ID}/items/${CWS_EXTENSION_ID}"
+
+          RESPONSE="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data '{}' \
+              "https://chromewebstore.googleapis.com/v2/${ITEM}:publish"
+          )"
+
+          echo "$RESPONSE" | jq .
+
+          echo "Chrome Web Store submission complete."
