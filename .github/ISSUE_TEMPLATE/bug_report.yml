@@ -1,0 +1,91 @@
+name: Bug report
+description: Report something that is not working correctly in LST
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve LST. Please remove any cookies, tokens, account information, or other sensitive data from logs before submitting.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Netflix...
+        2. Enable...
+        3. Start...
+        4. See error...
+    validations:
+      required: true
+
+  - type: input
+    id: lst-version
+    attributes:
+      label: LST version
+      placeholder: "0.5.2"
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: "Firefox 155 / Chrome 140"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Arch Linux / macOS / Windows"
+    validations:
+      required: true
+
+  - type: input
+    id: ollama
+    attributes:
+      label: Ollama version
+      placeholder: "ollama --version"
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: "translategemma:4b / qwen3.5:latest"
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Translation mode
+      options:
+        - Realtime
+        - Look-ahead / buffering
+        - Precomputed episode
+        - Cached translation playback
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or LST debug output
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, recordings, or other context can help.
