@@ -5,6 +5,9 @@
   "description": "Release tooling for the LST Firefox extension.",
   "scripts": {
     "check:syntax": "node --check background.js && node --check content.js && node --check options.js && node --check page-hook.js && node --check popup.js",
+    "prepare:chrome": "node scripts/prepare-chrome.mjs",
+    "build:chrome": "npm run prepare:chrome && web-ext build --source-dir=.chrome-build --artifacts-dir=web-ext-artifacts --overwrite-dest --filename=lst-chrome-{version}.zip",
+    "package:chrome": "npm run check && npm run build:chrome",
     "test:cache": "node scripts/test-cache.mjs",
     "check:release": "node scripts/check-release.mjs",
     "prepare:firefox": "node scripts/prepare-firefox.mjs",
