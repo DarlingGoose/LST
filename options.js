@@ -3,6 +3,24 @@ const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
 const DEFAULT_MODEL = "translategemma:4b";
 const SETTINGS_TABS = ["general", "subtitles", "storage", "advanced"];
+const TAB_DETAILS = {
+  general: {
+    title: "Translation control center",
+    description: "Connection, model, and playback behavior at a glance."
+  },
+  subtitles: {
+    title: "Subtitle studio",
+    description: "Preview the exact hierarchy viewers will see on Netflix."
+  },
+  storage: {
+    title: "Translation library",
+    description: "Browse cached shows, inspect episodes, and export complete translations."
+  },
+  advanced: {
+    title: "Advanced and diagnostics",
+    description: "Troubleshooting controls with privacy boundaries kept explicit."
+  }
+};
 
 const APPEARANCE_DEFAULTS = {
   subtitleHorizontalPosition: "center",
@@ -36,7 +54,11 @@ function setStatus(message, tone = "") {
 
 function activateSettingsTab(tab, focus = false) {
   const active = SETTINGS_TABS.includes(tab) ? tab : "general";
-  document.querySelector(".layout").dataset.activeTab = active;
+  document.querySelector(".settings-content").dataset.activeTab = active;
+  $("pageEyebrow").textContent = `Settings / ${active}`;
+  $("pageTitle").textContent = TAB_DETAILS[active].title;
+  $("pageDescription").textContent = TAB_DETAILS[active].description;
+  document.title = `${TAB_DETAILS[active].title} · LST Settings`;
   for (const button of document.querySelectorAll("[data-settings-tab]")) {
     const selected = button.dataset.settingsTab === active;
     button.setAttribute("aria-selected", String(selected));
@@ -98,9 +120,14 @@ function createCacheItem(cache) {
   meta.className = "cache-meta";
   const translatedCues = Number(cache.cueCount) || 0;
   const sourceCues = Number(cache.sourceCueCount) || 0;
+  const complete = sourceCues > 0 && translatedCues >= sourceCues;
   const cueLabel = sourceCues >= translatedCues && sourceCues > 0
     ? `${translatedCues}/${sourceCues} translated cues`
     : `${translatedCues} translated cues`;
+  const cacheState = document.createElement("span");
+  cacheState.className = "cache-complete";
+  cacheState.textContent = complete ? "Completed" : "Cached";
+  meta.appendChild(cacheState);
   for (const value of [
     cueLabel,
     formatBytes(cache.bytes),
@@ -141,6 +168,18 @@ function createCacheItem(cache) {
 function renderCacheLibrary(caches, totalBytes) {
   const list = $("cacheList");
   list.replaceChildren();
+  const showNames = new Set(caches.map((cache) => cache.showName || "Netflix"));
+  const episodeLabel = `${caches.length} ready`;
+  const byteLabel = `${formatBytes(totalBytes)} used`;
+  $("cacheShowCount").textContent = `${showNames.size} cached`;
+  $("cacheEpisodeCount").textContent = episodeLabel;
+  $("cacheByteCount").textContent = byteLabel;
+  $("cacheStorageSummary").textContent = caches.length
+    ? `${caches.length} episode${caches.length === 1 ? "" : "s"} · ${formatBytes(totalBytes)}`
+    : "No episodes";
+  const storageBadge = $("storageBadge");
+  storageBadge.textContent = String(caches.length);
+  storageBadge.hidden = caches.length === 0;
   $("cacheSummary").textContent = caches.length
     ? `${caches.length} cached episode${caches.length === 1 ? "" : "s"} · ${formatBytes(totalBytes)}`
     : "No translated episodes are cached yet.";
@@ -165,7 +204,12 @@ function renderCacheLibrary(caches, totalBytes) {
     group.className = "cache-show";
     const heading = document.createElement("h3");
     heading.className = "cache-show-title";
-    heading.textContent = showName;
+    const headingName = document.createElement("span");
+    headingName.textContent = showName;
+    const headingCount = document.createElement("span");
+    headingCount.className = "cache-show-count";
+    headingCount.textContent = `${episodes.length} episode${episodes.length === 1 ? "" : "s"}`;
+    heading.append(headingName, headingCount);
     const episodeList = document.createElement("div");
     episodeList.className = "cache-episodes";
     for (const cache of episodes) episodeList.appendChild(createCacheItem(cache));
@@ -307,6 +351,8 @@ async function load() {
   const response = await runtimeMessage({ type: "GET_SETTINGS" });
   const s = response.settings;
 
+  $("extensionVersion").textContent = ext.runtime.getManifest().version;
+
   $("ollamaUrl").value = s.ollamaUrl || "http://localhost:11434";
   $("targetLanguage").value = s.targetLanguage || "English";
   $("enabled").checked = s.enabled !== false;
@@ -317,11 +363,13 @@ async function load() {
   $("autoTranslateAhead").checked = s.autoTranslateAhead !== false;
   $("showDebugPanel").checked = s.showDebugPanel === true;
   $("debugPanelAlwaysOnTop").checked = s.debugPanelAlwaysOnTop === true;
-  $("showSubtitleControls").checked = s.showSubtitleControls === true;
   $("showQuickPills").checked = s.showQuickPills !== false;
   $("lookAheadSeconds").value = Math.max(30, Number(s.lookAheadSeconds) || 30);
   $("batchSize").value = s.batchSize ?? 8;
+  $("minimumSubtitleDisplaySeconds").value = s.minimumSubtitleDisplaySeconds ?? 2;
+  $("maximumVisibleSubtitles").value = s.maximumVisibleSubtitles ?? 2;
   $("requestTimeoutSeconds").value = s.requestTimeoutSeconds ?? 75;
+  $("modelSummary").textContent = s.model || DEFAULT_MODEL;
   applyAppearance(s);
   await loadCacheLibrary();
   $("pullModelName").value = s.model || DEFAULT_MODEL;
@@ -329,6 +377,7 @@ async function load() {
   try {
     await refreshModels(s.model || "");
   } catch (error) {
+    $("connectionState").textContent = "Unavailable";
     const select = $("model");
     select.replaceChildren();
     const option = document.createElement("option");
@@ -373,6 +422,8 @@ async function refreshModels(selected = $("model").value) {
     }
   }
 
+  $("connectionState").textContent = "Connected";
+  $("modelSummary").textContent = select.value || "No model selected";
   setStatus(`Found ${response.models.length} installed model${response.models.length === 1 ? "" : "s"}.`, "success");
 }
 
@@ -403,10 +454,11 @@ function collectSettings() {
     autoTranslateAhead: $("autoTranslateAhead").checked,
     showDebugPanel: $("showDebugPanel").checked,
     debugPanelAlwaysOnTop: $("debugPanelAlwaysOnTop").checked,
-    showSubtitleControls: $("showSubtitleControls").checked,
     showQuickPills: $("showQuickPills").checked,
     lookAheadSeconds: clampNumber("lookAheadSeconds", 30),
     batchSize: clampNumber("batchSize", 8),
+    minimumSubtitleDisplaySeconds: clampNumber("minimumSubtitleDisplaySeconds", 2),
+    maximumVisibleSubtitles: Math.round(clampNumber("maximumVisibleSubtitles", 2)),
     requestTimeoutSeconds: clampNumber("requestTimeoutSeconds", 75),
     subtitleHorizontalPosition: $("subtitleHorizontalPosition").value,
     subtitleVerticalPosition: clampNumber("subtitleVerticalPosition", 9),
@@ -467,6 +519,19 @@ $("pullModel").addEventListener("click", async () => {
 $("resetAppearance").addEventListener("click", () => {
   applyAppearance(APPEARANCE_DEFAULTS);
   setStatus("Appearance reset — save to apply it on Netflix.");
+});
+
+$("model").addEventListener("change", () => {
+  $("modelSummary").textContent = $("model").value || "No model selected";
+});
+
+$("copyOllamaCommand").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("ollamaCommand").textContent);
+    setStatus("Ollama command copied.", "success");
+  } catch (error) {
+    setStatus(`Could not copy the command: ${error.message}`, "error");
+  }
 });
 
 $("save").addEventListener("click", async () => {
