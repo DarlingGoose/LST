@@ -17,7 +17,7 @@
     requestTimeoutSeconds: 75,
     showDebugPanel: false,
     debugPanelAlwaysOnTop: false,
-    showSubtitleControls: false,
+    showSubtitleControls: true,
     subtitleControlsMinimized: false,
     showQuickPills: true,
     subtitleHorizontalPosition: "center",
