@@ -1,0 +1,23 @@
+{
+  "name": {
+    "en-US": "LST — Local Subtitle Translate"
+  },
+  "summary": {
+    "en-US": "Translate Netflix subtitles locally using your own Ollama models."
+  },
+  "description": {
+    "en-US": "LST — Local Subtitle Translate adds locally generated translations to Netflix subtitles.\n\nLST connects to an Ollama server running on your computer and lets you choose or download a model. Subtitle translation can happen in real time, or an episode can be precomputed and cached before playback.\n\nFeatures:\n\n• Local Ollama translation\n• Installed-model selection and model downloads\n• Real-time subtitle translation\n• Full-track precomputation\n• Local translation cache with per-episode storage management\n• Independent Netflix, original, and translated subtitle visibility\n• Customizable subtitle placement and sizing\n• In-player subtitle controls\n• Optional status messages and detailed diagnostics\n\nLST does not require a cloud translation service. By default, subtitle text is sent only to Ollama running at http://localhost:11434."
+  },
+  "categories": [
+    "language-support",
+    "photos-music-videos"
+  ],
+  "homepage": {
+    "en-US": "https://github.com/DarlingGoose/LST"
+  },
+  "requires_payment": false,
+  "version": {
+    "license": "all-rights-reserved",
+    "approval_notes": "LST translates Netflix subtitle text with a user-operated Ollama instance. Subtitle text is sent only to the configured Ollama endpoint, which defaults to localhost:11434. The extension observes Netflix timed-text fetch/XHR responses to parse TTML or WebVTT and falls back to the rendered subtitle DOM. There is no telemetry, analytics, advertising, tracking, remote executable code, or developer-operated backend. The submitted source is readable vanilla JavaScript, HTML, and CSS with no build or minification step. Full testing instructions are included in AMO_REVIEWER_NOTES.md in the source repository."
+  }
+}

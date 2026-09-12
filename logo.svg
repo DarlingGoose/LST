@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Local Subtitle Translate app icon</title>
+  <rect width="1024" height="1024" rx="224" fill="#17181C"/>
+  <path fill-rule="evenodd" d="M158 264c0-51 41-92 92-92h426c51 0 92 41 92 92v220c0 51-41 92-92 92H405L278 671l28-95h-56c-51 0-92-41-92-92V264Zm108 67h236v38H266v-38Zm0 76h168v38H266v-38Z" fill="#F4F1EC"/>
+  <path d="M326 463c0-51 41-92 92-92h356c51 0 92 41 92 92v222c0 51-41 92-92 92H585l-127 95 28-95h-68c-51 0-92-41-92-92V463Z" fill="#FF625F"/>
+  <path d="M444 514h154v36H444zm0 72h232v36H444zm268-105 14 32 32 14-32 14-14 32-14-32-32-14 32-14 14-32Z" fill="#17181C"/>
+</svg>

@@ -1,0 +1,86 @@
+name: Firefox release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-package:
+    name: Build release package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install release tooling
+        run: npm ci
+
+      - name: Lint and build Firefox package
+        run: npm run package
+
+      - name: Create checksum
+        working-directory: web-ext-artifacts
+        run: sha256sum lst-firefox-*.zip > SHA256SUMS.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lst-firefox-${{ github.ref_name }}
+          path: |
+            web-ext-artifacts/lst-firefox-*.zip
+            web-ext-artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Create or update GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" web-ext-artifacts/lst-firefox-*.zip web-ext-artifacts/SHA256SUMS.txt --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" web-ext-artifacts/lst-firefox-*.zip web-ext-artifacts/SHA256SUMS.txt --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
+          fi
+
+  publish-amo:
+    name: Submit listed version to AMO
+    if: github.ref_type == 'tag' && vars.AMO_PUBLISH == 'true'
+    needs: release-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: firefox-addons
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install release tooling
+        run: npm ci
+
+      - name: Verify release source
+        run: npm run check
+
+      - name: Submit to addons.mozilla.org
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: npm run sign:amo

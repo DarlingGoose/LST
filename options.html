@@ -1,77 +1,310 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>LST — Local Subtitle Translate Settings</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LST Settings</title>
   <style>
-    body { margin: 0; background: #101010; color: #f5f5f5; font: 14px system-ui, sans-serif; }
-    main { max-width: 720px; margin: 36px auto; padding: 0 22px 60px; }
-    h1 { font-size: 25px; margin-bottom: 8px; }
-    .muted { color: #aaa; line-height: 1.5; }
-    .card { margin-top: 22px; padding: 18px; background: #1b1b1b; border: 1px solid #2e2e2e; border-radius: 12px; }
-    label { display: block; margin: 14px 0 6px; font-weight: 650; }
-    input[type="text"], input[type="number"], select { box-sizing: border-box; width: 100%; padding: 9px 10px; border-radius: 7px; border: 1px solid #444; background: #111; color: #fff; }
-    .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
-    .check { display: flex; gap: 9px; align-items: center; margin-top: 13px; font-weight: 500; }
-    .check input { margin: 0; }
-    button { padding: 9px 13px; border: 0; border-radius: 7px; cursor: pointer; font-weight: 650; }
-    button.primary { background: #e50914; color: white; }
-    button.secondary { background: #333; color: white; }
-    #status { margin-top: 12px; white-space: pre-wrap; color: #bbb; }
-    code { color: #ddd; }
+    :root {
+      color-scheme: dark;
+      --bg: #0b0c0f;
+      --surface: #14161b;
+      --border: #2b2f38;
+      --muted: #9ca3af;
+      --text: #f7f7f8;
+      --accent: #e50914;
+      --accent-hover: #f3232d;
+      --focus: #ff7178;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(circle at 80% -10%, rgba(229, 9, 20, .12), transparent 34rem),
+        var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, input, select { font: inherit; outline: none; }
+    button:focus-visible, input:focus-visible, select:focus-visible {
+      border-color: var(--focus);
+      box-shadow: 0 0 0 3px rgba(255, 113, 120, .28);
+    }
+
+    .shell { max-width: 1040px; margin: 0 auto; padding: 40px 24px 80px; }
+    .hero { display: flex; justify-content: space-between; gap: 28px; align-items: end; margin-bottom: 30px; }
+    .eyebrow { margin: 0 0 8px; color: #ff6b72; font-size: 12px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(27px, 4vw, 38px); line-height: 1.1; letter-spacing: -.025em; }
+    .hero-copy { max-width: 590px; margin: 12px 0 0; color: var(--muted); font-size: 15px; }
+    .privacy-badge { flex: 0 0 auto; padding: 8px 11px; border: 1px solid #34413a; border-radius: 999px; background: #152019; color: #a7e1b9; font-size: 12px; font-weight: 650; }
+
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); gap: 20px; align-items: start; }
+    .stack { display: grid; gap: 16px; }
+    .card { padding: 22px; border: 1px solid var(--border); border-radius: 16px; background: rgba(20, 22, 27, .94); box-shadow: 0 18px 45px rgba(0, 0, 0, .18); }
+    .section-heading { display: flex; justify-content: space-between; gap: 18px; align-items: start; margin-bottom: 18px; }
+    h2 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
+    .section-copy { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .section-tag { padding: 4px 8px; border-radius: 999px; background: #282b33; color: #c5c8cf; font-size: 11px; }
+
+    .field { margin-top: 16px; }
+    .field:first-child { margin-top: 0; }
+    .field-head { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; margin-bottom: 7px; }
+    label, .label { font-weight: 670; }
+    output { color: #f0a2a6; font-size: 12px; font-variant-numeric: tabular-nums; }
+    .help { margin: 6px 0 0; color: #7f8794; font-size: 12px; }
+    input[type="text"], input[type="number"], select {
+      width: 100%; min-height: 42px; padding: 9px 11px;
+      border: 1px solid #3a3f49; border-radius: 9px;
+      background: #0e1014; color: #fff;
+    }
+    input[type="range"] { width: 100%; margin: 4px 0; accent-color: var(--accent); cursor: pointer; }
+    .inline { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: end; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .pull-box { margin-top: 18px; padding: 14px; border: 1px solid #2d3139; border-radius: 11px; background: #101216; }
+    .pull-progress { display: none; height: 6px; margin-top: 11px; overflow: hidden; border-radius: 999px; background: #292c33; }
+    #pullProgressBar { width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #ff626a); transition: width .2s ease; }
+    #pullProgressText { min-height: 17px; margin-top: 7px; color: var(--muted); font-size: 12px; }
+    .cache-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: center; margin: 14px 0; color: var(--muted); font-size: 12px; }
+    .cache-list { display: grid; gap: 9px; }
+    .cache-empty { padding: 20px; border: 1px dashed #343842; border-radius: 11px; color: var(--muted); text-align: center; }
+    .cache-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 13px; border: 1px solid #2d3139; border-radius: 11px; background: #101216; }
+    .cache-title { overflow: hidden; color: #f5f5f6; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .cache-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .cache-remove { min-height: 34px; padding: 6px 10px; border-color: #543338; background: #29171a; color: #ffb0b4; }
+    .cache-remove:hover { background: #3b1d22; }
+
+    .switch-row { display: flex; justify-content: space-between; gap: 18px; align-items: center; padding: 13px 0; border-top: 1px solid #272a31; }
+    .switch-row:first-of-type { padding-top: 0; border-top: 0; }
+    .switch-row:last-child { padding-bottom: 0; }
+    .switch-copy { min-width: 0; }
+    .switch-copy .help { margin-top: 2px; }
+    .switch { position: relative; flex: 0 0 auto; width: 42px; height: 24px; }
+    .switch input { position: absolute; opacity: 0; pointer-events: none; }
+    .switch-ui { display: block; width: 100%; height: 100%; border-radius: 999px; background: #3b3f48; cursor: pointer; transition: background .16s ease; }
+    .switch-ui::after { content: ""; display: block; width: 18px; height: 18px; margin: 3px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .16s ease; }
+    .switch input:checked + .switch-ui { background: var(--accent); }
+    .switch input:checked + .switch-ui::after { transform: translateX(18px); }
+    .switch input:focus-visible + .switch-ui { box-shadow: 0 0 0 3px rgba(255, 113, 120, .28); }
+
+    .preview-card { position: sticky; top: 20px; overflow: hidden; padding: 0; }
+    .preview-head { padding: 18px 18px 14px; border-bottom: 1px solid var(--border); }
+    .preview { position: relative; height: 290px; overflow: hidden; background: linear-gradient(155deg, #313944 0%, #171a20 48%, #090a0d 100%); }
+    .preview::before { content: "Preview"; position: absolute; top: 12px; left: 14px; color: rgba(255,255,255,.45); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    #subtitlePreview { position: absolute; left: 50%; bottom: 9%; width: 92%; transform: translateX(-50%); text-align: center; font-family: "Helvetica Neue", "Segoe UI", sans-serif; text-shadow: 0 2px 3px #000, 0 0 5px #000; }
+    #previewOriginal, #previewTranslated { width: fit-content; max-width: 100%; margin: 0 auto 4px; padding: .08em .28em; border-radius: .15em; line-height: 1.25; }
+    #previewOriginal { font-size: 21px; opacity: .86; }
+    #previewTranslated { font-size: 28px; font-weight: 650; }
+    .preview-note { padding: 13px 18px 17px; color: var(--muted); font-size: 12px; }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin-top: 18px; }
+    .save-bar { position: sticky; bottom: 12px; z-index: 5; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: rgba(20, 22, 27, .9); box-shadow: 0 14px 35px rgba(0,0,0,.36); backdrop-filter: blur(12px); }
+    button { min-height: 40px; padding: 9px 14px; border: 1px solid transparent; border-radius: 9px; cursor: pointer; font-weight: 700; transition: background .15s ease, border-color .15s ease, transform .15s ease; }
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: .55; cursor: wait; transform: none; }
+    .primary { background: var(--accent); color: #fff; }
+    .primary:hover { background: var(--accent-hover); }
+    .secondary { border-color: #3a3f49; background: #252831; color: #f4f4f5; }
+    .secondary:hover { background: #30343e; }
+    .quiet { border-color: transparent; background: transparent; color: #b9bec8; }
+    .quiet:hover { background: #23262d; color: #fff; }
+    #status { flex: 1 1 230px; min-height: 20px; color: var(--muted); font-size: 12px; text-align: right; white-space: pre-wrap; }
+    #status[data-tone="success"] { color: #9ddeaf; }
+    #status[data-tone="error"] { color: #ff8f95; }
+    code { color: #eceef2; }
+
+    @media (max-width: 780px) {
+      .shell { padding: 28px 16px 60px; }
+      .hero { align-items: start; flex-direction: column; }
+      .layout { grid-template-columns: 1fr; }
+      .preview-card { position: static; grid-row: 1; }
+      .preview { height: 250px; }
+      .save-bar { position: static; }
+    }
+    @media (max-width: 520px) {
+      .card { padding: 18px; border-radius: 13px; }
+      .preview-card { padding: 0; }
+      .two-col, .inline { grid-template-columns: 1fr; }
+      #status { flex-basis: 100%; text-align: left; }
+    }
   </style>
 </head>
 <body>
-<main>
-  <h1>LST — Local Subtitle Translate</h1>
-  <div class="muted">
-    Translation requests stay on your machine when you use a local Ollama model.
-  </div>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Local Subtitle Translate</p>
+        <h1>Make every line feel comfortable.</h1>
+        <p class="hero-copy">Choose how subtitles look and where they sit, then tune translation to match your setup.</p>
+      </div>
+      <div class="privacy-badge">Local-first · Ollama</div>
+    </header>
 
-  <div class="card">
-    <label for="ollamaUrl">Ollama URL</label>
-    <div class="row">
-      <input id="ollamaUrl" type="text" value="http://localhost:11434">
-      <button id="refreshModels" class="secondary">Refresh models</button>
+    <div class="layout">
+      <div class="stack">
+        <section class="card" aria-labelledby="connectionHeading">
+          <div class="section-heading">
+            <div><h2 id="connectionHeading">Translation</h2><p class="section-copy">Connect to Ollama and choose the output language.</p></div>
+            <span class="section-tag">Required</span>
+          </div>
+          <div class="field">
+            <label for="ollamaUrl">Ollama URL</label>
+            <div class="inline">
+              <input id="ollamaUrl" type="text" value="http://localhost:11434" spellcheck="false">
+              <button id="refreshModels" class="secondary" type="button">Refresh models</button>
+            </div>
+          </div>
+          <div class="two-col">
+            <div class="field"><label for="model">Installed model</label><select id="model"></select></div>
+            <div class="field"><label for="targetLanguage">Target language</label><input id="targetLanguage" type="text" value="English"></div>
+          </div>
+          <div class="pull-box">
+            <div class="field-head"><label for="pullModelName">Download another model</label></div>
+            <div class="inline">
+              <input id="pullModelName" data-transient type="text" placeholder="e.g. qwen3:8b" spellcheck="false">
+              <button id="pullModel" class="secondary" type="button">Download</button>
+            </div>
+            <p class="help">Enter an Ollama model name. It will become selectable when the download finishes.</p>
+            <div id="pullProgress" class="pull-progress" aria-hidden="true"><div id="pullProgressBar"></div></div>
+            <div id="pullProgressText" role="status" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="subtitleHeading">
+          <div class="section-heading">
+            <div><h2 id="subtitleHeading">Subtitle appearance</h2><p class="section-copy">Changes are reflected in the preview as you adjust them.</p></div>
+          </div>
+
+          <div class="switch-row">
+            <div class="switch-copy"><div class="label">Show controls on Netflix</div><p class="help">Add a compact top-right overlay for adjusting subtitles while you watch.</p></div>
+            <label class="switch" aria-label="Show subtitle controls on Netflix"><input id="showSubtitleControls" type="checkbox"><span class="switch-ui"></span></label>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><div class="label">Hide Netflix subtitles</div><p class="help">Keep Netflix's subtitle track active for capture, but hide its rendered text.</p></div>
+            <label class="switch" aria-label="Hide Netflix subtitles"><input id="hideNetflixSubtitles" type="checkbox"><span class="switch-ui"></span></label>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><div class="label">Show original text in LST</div><p class="help">Display the source line above the translated subtitle.</p></div>
+            <label class="switch" aria-label="Show original text in LST"><input id="showOriginal" type="checkbox"><span class="switch-ui"></span></label>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><div class="label">Show translated text</div><p class="help">Display LST's translated subtitle line.</p></div>
+            <label class="switch" aria-label="Show translated text"><input id="showTranslated" type="checkbox"><span class="switch-ui"></span></label>
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label for="subtitleHorizontalPosition">Alignment</label>
+              <select id="subtitleHorizontalPosition">
+                <option value="left">Left</option>
+                <option value="center" selected>Center</option>
+                <option value="right">Right</option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="field-head"><label for="subtitleVerticalPosition">Height from bottom</label><output id="subtitleVerticalPositionOutput">9%</output></div>
+              <input id="subtitleVerticalPosition" type="range" min="4" max="82" step="1" value="9">
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-head"><label for="subtitleMaxWidth">Maximum line width</label><output id="subtitleMaxWidthOutput">92%</output></div>
+            <input id="subtitleMaxWidth" type="range" min="40" max="96" step="1" value="92">
+          </div>
+          <div class="two-col">
+            <div class="field">
+              <div class="field-head"><label for="translatedFontSize">Translation size</label><output id="translatedFontSizeOutput">36 px</output></div>
+              <input id="translatedFontSize" type="range" min="18" max="64" step="1" value="36">
+            </div>
+            <div class="field">
+              <div class="field-head"><label for="originalFontSize">Original size</label><output id="originalFontSizeOutput">30 px</output></div>
+              <input id="originalFontSize" type="range" min="14" max="56" step="1" value="30">
+            </div>
+          </div>
+          <div class="field">
+            <div class="field-head"><label for="subtitleBackgroundOpacity">Background strength</label><output id="subtitleBackgroundOpacityOutput">58%</output></div>
+            <input id="subtitleBackgroundOpacity" type="range" min="0" max="90" step="1" value="58">
+          </div>
+
+          <div class="actions">
+            <button id="resetAppearance" class="quiet" type="button">Reset appearance</button>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="behaviorHeading">
+          <div class="section-heading"><div><h2 id="behaviorHeading">Playback behavior</h2><p class="section-copy">Control what appears and how much work happens ahead of playback.</p></div></div>
+
+          <div class="switch-row">
+            <div class="switch-copy"><div class="label">Enable translator</div><p class="help">Show translated subtitles on Netflix.</p></div>
+            <label class="switch" aria-label="Enable translator"><input id="enabled" type="checkbox"><span class="switch-ui"></span></label>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><div class="label">Maintain look-ahead buffer</div><p class="help">Prepare upcoming cues in the background for smoother playback.</p></div>
+            <label class="switch" aria-label="Maintain look-ahead buffer"><input id="autoTranslateAhead" type="checkbox"><span class="switch-ui"></span></label>
+          </div>
+
+          <div class="two-col">
+            <div class="field"><label for="lookAheadSeconds">Look-ahead window</label><input id="lookAheadSeconds" type="number" min="30" max="600" value="30"><p class="help">Seconds of upcoming subtitles to prepare. LST always enforces a 30-second minimum.</p></div>
+            <div class="field"><label for="batchSize">Precompute batch size</label><input id="batchSize" type="number" min="1" max="50" value="8"></div>
+          </div>
+          <div class="field"><label for="requestTimeoutSeconds">Request timeout</label><input id="requestTimeoutSeconds" type="number" min="15" max="300" value="75"><p class="help">Seconds before an unresponsive Ollama request is stopped.</p></div>
+        </section>
+
+        <section class="card" aria-labelledby="diagnosticsHeading">
+          <div class="section-heading"><div><h2 id="diagnosticsHeading">Diagnostics</h2><p class="section-copy">Useful when a subtitle track or model needs troubleshooting.</p></div></div>
+          <div class="switch-row">
+            <div class="switch-copy"><div class="label">Show informational messages</div><p class="help">Show capture, fallback, precompute, and error notices in the top-left of Netflix.</p></div>
+            <label class="switch" aria-label="Show informational messages"><input id="showStatusMessages" type="checkbox"><span class="switch-ui"></span></label>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><div class="label">Show debug panel</div><p class="help">Display detailed LST activity on Netflix.</p></div>
+            <label class="switch" aria-label="Show debug panel"><input id="showDebugPanel" type="checkbox"><span class="switch-ui"></span></label>
+          </div>
+          <div class="switch-row">
+            <div class="switch-copy"><div class="label">Keep debug panel visible</div><p class="help">Pin the panel in the top-right corner.</p></div>
+            <label class="switch" aria-label="Keep debug panel visible"><input id="debugPanelAlwaysOnTop" type="checkbox"><span class="switch-ui"></span></label>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="cacheHeading">
+          <div class="section-heading">
+            <div><h2 id="cacheHeading">Translated episodes</h2><p class="section-copy">Browse locally cached translations and remove episodes you no longer need.</p></div>
+          </div>
+          <div class="cache-summary">
+            <span id="cacheSummary">Loading cached episodes…</span>
+            <button id="refreshCache" class="quiet" type="button">Refresh</button>
+          </div>
+          <div id="cacheList" class="cache-list" aria-live="polite"></div>
+          <div class="actions">
+            <button id="clearCache" class="secondary" type="button">Remove all cached episodes</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Local connection help</h2>
+          <p class="section-copy">If Ollama rejects extension requests, allow your browser extension origin and restart Ollama.</p>
+          <p class="help"><code>OLLAMA_ORIGINS=chrome-extension://*,moz-extension://* ollama serve</code></p>
+        </section>
+      </div>
+
+      <aside class="card preview-card" aria-labelledby="previewHeading">
+        <div class="preview-head"><h2 id="previewHeading">Subtitle preview</h2><p class="section-copy">A rough guide to placement and scale.</p></div>
+        <div class="preview">
+          <div id="subtitlePreview">
+            <div id="previewOriginal">すべては、ここから始まった。</div>
+            <div id="previewTranslated">This is where it all began.</div>
+          </div>
+        </div>
+        <div class="preview-note">The actual video dimensions may make text appear slightly different.</div>
+      </aside>
     </div>
 
-    <label for="model">Installed model</label>
-    <select id="model"></select>
-
-    <label for="targetLanguage">Target language</label>
-    <input id="targetLanguage" type="text" value="English">
-
-    <label class="check"><input id="enabled" type="checkbox"> Enable translator</label>
-    <label class="check"><input id="showOriginal" type="checkbox"> Show original subtitle above translation</label>
-    <label class="check"><input id="autoTranslateAhead" type="checkbox"> Translate upcoming cues in the background</label>
-
-    <label class="check"><input id="showDebugPanel" type="checkbox"> Show detailed LST debug panel on Netflix</label>
-    <label class="check"><input id="debugPanelAlwaysOnTop" type="checkbox"> Keep debug panel pinned in the top-right corner</label>
-
-    <label for="aheadCount">Realtime look-ahead cues</label>
-    <input id="aheadCount" type="number" min="0" max="100" value="12">
-
-    <label for="batchSize">Precompute batch size</label>
-    <input id="batchSize" type="number" min="1" max="50" value="16">
-
-    <label for="requestTimeoutSeconds">Ollama request timeout (seconds)</label>
-    <input id="requestTimeoutSeconds" type="number" min="15" max="300" value="75">
-
-    <div style="display:flex; gap:8px; margin-top:18px;">
-      <button id="save" class="primary">Save settings</button>
-      <button id="clearCache" class="secondary">Clear translation cache</button>
+    <div class="actions save-bar">
+      <button id="save" class="primary" type="button">Save settings</button>
+      <div id="status" role="status" aria-live="polite"></div>
     </div>
-
-    <div id="status"></div>
-  </div>
-
-  <div class="card muted">
-    If Ollama rejects requests from the extension, restart Ollama with an allowed extension origin, for example:
-    <p><code>OLLAMA_ORIGINS=chrome-extension://*,moz-extension://* ollama serve</code></p>
-    On a systemd Linux install, set the environment variable on the Ollama service instead of launching a second server.
-  </div>
-
+  </main>
   <script src="options.js"></script>
-</main>
 </body>
 </html>

@@ -6,13 +6,23 @@
     enabled: true,
     model: "",
     targetLanguage: "English",
-    showOriginal: true,
+    hideNetflixSubtitles: true,
+    showOriginal: false,
+    showTranslated: true,
+    showStatusMessages: true,
     autoTranslateAhead: true,
-    aheadCount: 12,
+    lookAheadSeconds: 30,
     batchSize: 8,
     requestTimeoutSeconds: 75,
-    showDebugPanel: true,
-    debugPanelAlwaysOnTop: true
+    showDebugPanel: false,
+    debugPanelAlwaysOnTop: false,
+    showSubtitleControls: false,
+    subtitleHorizontalPosition: "center",
+    subtitleVerticalPosition: 9,
+    subtitleMaxWidth: 92,
+    translatedFontSize: 36,
+    originalFontSize: 30,
+    subtitleBackgroundOpacity: 58
   };
 
   let settings = { ...DEFAULTS };
@@ -25,6 +35,10 @@
   let statusLine;
   let debugPanel;
   let debugPanelBody;
+  let subtitleControlsPanel;
+  let subtitleControlsStatus;
+  let subtitleControlsStatusTimer;
+  let statusMessageRequestedVisible = false;
 
   let lastRenderedCueKey = "";
   let lastFallbackText = "";
@@ -32,6 +46,9 @@
   let lastTimedCueMatchAt = 0;
 
   let translationInFlight = new Map();
+  let lookAheadQueued = new Set();
+  let lookAheadNoticeShown = false;
+  let lookAheadReadyNoticeShown = false;
   let precomputeInProgress = false;
   let precomputePromise = null;
   let precomputeCancelled = false;
@@ -106,6 +123,20 @@
     const model = encodeURIComponent(settings.model || "none");
     const language = encodeURIComponent(settings.targetLanguage || "English");
     return `${getVideoId()}:${model}:${language}`;
+  }
+
+  function cacheMetadata() {
+    const title = document.title
+      .replace(/\s*[|–—-]\s*Netflix\s*$/i, "")
+      .trim();
+    return {
+      videoId: getVideoId(),
+      title: title || `Netflix episode ${getVideoId()}`,
+      url: location.href,
+      model: settings.model || "Unknown model",
+      targetLanguage: settings.targetLanguage || "English",
+      sourceCueCount: cues.length
+    };
   }
 
   function updateProgress() {
@@ -275,13 +306,19 @@
       overlay.innerHTML = `
         <div id="not-original"></div>
         <div id="not-translated"></div>
-        <div id="not-status"></div>
       `;
       document.documentElement.appendChild(overlay);
 
       originalLine = overlay.querySelector("#not-original");
       translatedLine = overlay.querySelector("#not-translated");
-      statusLine = overlay.querySelector("#not-status");
+    }
+
+    if (!statusLine?.isConnected) {
+      statusLine = document.createElement("div");
+      statusLine.id = "not-status";
+      statusLine.setAttribute("role", "status");
+      statusLine.setAttribute("aria-live", "polite");
+      document.documentElement.appendChild(statusLine);
     }
 
     if (!debugPanel?.isConnected) {
@@ -290,7 +327,7 @@
       debugPanel.innerHTML = `
         <div id="lst-debug-header">
           <strong>LST</strong>
-          <span>v0.3.0</span>
+          <span>v0.4.4</span>
         </div>
         <pre id="lst-debug-body"></pre>
       `;
@@ -298,8 +335,227 @@
       debugPanelBody = debugPanel.querySelector("#lst-debug-body");
     }
 
+    if (!subtitleControlsPanel?.isConnected) {
+      subtitleControlsPanel = document.createElement("div");
+      subtitleControlsPanel.id = "lst-subtitle-controls";
+      subtitleControlsPanel.innerHTML = `
+        <div id="lst-controls-header">
+          <strong>Subtitle controls</strong>
+          <button type="button" data-action="hide">Hide</button>
+        </div>
+        <label class="lst-control-field">
+          <span>Alignment</span>
+          <select data-setting="subtitleHorizontalPosition">
+            <option value="left">Left</option>
+            <option value="center">Center</option>
+            <option value="right">Right</option>
+          </select>
+        </label>
+        <label class="lst-control-field">
+          <span>Height <output data-output-for="subtitleVerticalPosition"></output></span>
+          <input data-setting="subtitleVerticalPosition" data-number type="range" min="4" max="82" step="1">
+        </label>
+        <label class="lst-control-field">
+          <span>Translation size <output data-output-for="translatedFontSize"></output></span>
+          <input data-setting="translatedFontSize" data-number type="range" min="18" max="64" step="1">
+        </label>
+        <label class="lst-control-field">
+          <span>Original size <output data-output-for="originalFontSize"></output></span>
+          <input data-setting="originalFontSize" data-number type="range" min="14" max="56" step="1">
+        </label>
+        <label class="lst-control-field">
+          <span>Line width <output data-output-for="subtitleMaxWidth"></output></span>
+          <input data-setting="subtitleMaxWidth" data-number type="range" min="40" max="96" step="1">
+        </label>
+        <label class="lst-control-field">
+          <span>Background <output data-output-for="subtitleBackgroundOpacity"></output></span>
+          <input data-setting="subtitleBackgroundOpacity" data-number type="range" min="0" max="90" step="1">
+        </label>
+        <label class="lst-control-check">
+          <input data-setting="hideNetflixSubtitles" type="checkbox">
+          <span>Hide Netflix subtitles</span>
+        </label>
+        <label class="lst-control-check">
+          <input data-setting="showOriginal" type="checkbox">
+          <span>Show LST original</span>
+        </label>
+        <label class="lst-control-check">
+          <input data-setting="showTranslated" type="checkbox">
+          <span>Show LST translation</span>
+        </label>
+        <label class="lst-control-check">
+          <input data-setting="showStatusMessages" type="checkbox">
+          <span>Show info messages</span>
+        </label>
+        <div id="lst-controls-footer">
+          <span id="lst-controls-status" role="status"></span>
+          <button type="button" data-action="settings">All settings</button>
+        </div>
+      `;
+      document.documentElement.appendChild(subtitleControlsPanel);
+      subtitleControlsStatus = subtitleControlsPanel.querySelector("#lst-controls-status");
+      bindSubtitleControls();
+    }
+
     updateDebugPanel();
+    applySubtitleAppearance();
+    updateOverlayPanelVisibility();
     return overlay;
+  }
+
+  function clamp(value, min, max, fallback) {
+    const number = Number(value);
+    return Math.min(max, Math.max(min, Number.isFinite(number) ? number : fallback));
+  }
+
+  function applySubtitleAppearance() {
+    if (!overlay || !originalLine || !translatedLine) return;
+
+    document.documentElement.classList.toggle(
+      "lst-hide-netflix-subtitles",
+      settings.enabled && settings.hideNetflixSubtitles
+    );
+
+    const alignment = ["left", "center", "right"].includes(settings.subtitleHorizontalPosition)
+      ? settings.subtitleHorizontalPosition
+      : "center";
+    const opacity = clamp(settings.subtitleBackgroundOpacity, 0, 90, 58) / 100;
+
+    overlay.style.bottom = `${clamp(settings.subtitleVerticalPosition, 4, 82, 9)}%`;
+    overlay.style.width = `min(${clamp(settings.subtitleMaxWidth, 40, 96, 92)}vw, 1100px)`;
+    overlay.style.textAlign = alignment;
+    overlay.style.left = alignment === "center" ? "50%" : alignment === "left" ? "4vw" : "auto";
+    overlay.style.right = alignment === "right" ? "4vw" : "auto";
+    overlay.style.transform = alignment === "center" ? "translateX(-50%)" : "none";
+
+    originalLine.style.fontSize = `${clamp(settings.originalFontSize, 14, 56, 30)}px`;
+    translatedLine.style.fontSize = `${clamp(settings.translatedFontSize, 18, 64, 36)}px`;
+
+    for (const line of [originalLine, translatedLine]) {
+      line.style.backgroundColor = `rgba(0, 0, 0, ${opacity})`;
+      line.style.marginLeft = alignment === "left" ? "0" : "auto";
+      line.style.marginRight = alignment === "right" ? "0" : "auto";
+    }
+
+    originalLine.style.display =
+      settings.enabled && settings.showOriginal && originalLine.textContent ? "block" : "none";
+    translatedLine.style.display =
+      settings.enabled && settings.showTranslated && translatedLine.textContent ? "block" : "none";
+    statusLine.style.display =
+      settings.showStatusMessages && statusMessageRequestedVisible && currentStatus.message
+        ? "block"
+        : "none";
+
+    syncSubtitleControls();
+  }
+
+  function quickControlValue(control) {
+    if (control.type === "checkbox") return control.checked;
+    if (control.hasAttribute("data-number")) return Number(control.value);
+    return control.value;
+  }
+
+  function updateQuickControl(control) {
+    const key = control?.dataset?.setting;
+    if (!key) return;
+    settings[key] = quickControlValue(control);
+    applySubtitleAppearance();
+  }
+
+  async function saveQuickSetting(control) {
+    const key = control?.dataset?.setting;
+    if (!key) return;
+
+    try {
+      await runtimeMessage({ type: "SAVE_SETTINGS", settings: { [key]: settings[key] } });
+      showSubtitleControlsStatus("Saved");
+    } catch (error) {
+      showSubtitleControlsStatus("Could not save", true);
+      console.warn("[LST] Could not save subtitle control:", error);
+    }
+  }
+
+  function showSubtitleControlsStatus(message, isError = false) {
+    if (!subtitleControlsStatus) return;
+    subtitleControlsStatus.textContent = message;
+    subtitleControlsStatus.dataset.error = isError ? "true" : "false";
+    clearTimeout(subtitleControlsStatusTimer);
+    subtitleControlsStatusTimer = setTimeout(() => {
+      if (subtitleControlsStatus) subtitleControlsStatus.textContent = "";
+    }, 1800);
+  }
+
+  function bindSubtitleControls() {
+    subtitleControlsPanel.addEventListener("input", (event) => {
+      const control = event.target.closest("[data-setting]");
+      if (control) updateQuickControl(control);
+    });
+
+    subtitleControlsPanel.addEventListener("change", (event) => {
+      const control = event.target.closest("[data-setting]");
+      if (!control) return;
+      updateQuickControl(control);
+      saveQuickSetting(control);
+    });
+
+    subtitleControlsPanel.addEventListener("click", async (event) => {
+      const action = event.target.closest("[data-action]")?.dataset.action;
+      if (action === "hide") {
+        settings.showSubtitleControls = false;
+        updateOverlayPanelVisibility();
+        try {
+          await runtimeMessage({
+            type: "SAVE_SETTINGS",
+            settings: { showSubtitleControls: false }
+          });
+        } catch (error) {
+          console.warn("[LST] Could not hide subtitle controls:", error);
+        }
+      } else if (action === "settings") {
+        runtimeMessage({ type: "OPEN_OPTIONS" }).catch((error) => {
+          showSubtitleControlsStatus("Could not open settings", true);
+          console.warn("[LST] Could not open settings:", error);
+        });
+      }
+    });
+  }
+
+  function syncSubtitleControls() {
+    if (!subtitleControlsPanel) return;
+    for (const control of subtitleControlsPanel.querySelectorAll("[data-setting]")) {
+      const value = settings[control.dataset.setting];
+      if (control.type === "checkbox") control.checked = value !== false;
+      else control.value = value;
+    }
+
+    const formats = {
+      subtitleVerticalPosition: (value) => `${value}%`,
+      translatedFontSize: (value) => `${value}px`,
+      originalFontSize: (value) => `${value}px`,
+      subtitleMaxWidth: (value) => `${value}%`,
+      subtitleBackgroundOpacity: (value) => `${value}%`
+    };
+    for (const output of subtitleControlsPanel.querySelectorAll("[data-output-for]")) {
+      const key = output.dataset.outputFor;
+      output.textContent = formats[key]?.(settings[key]) || "";
+    }
+  }
+
+  function positionDebugPanel() {
+    if (!debugPanel) return;
+    const controlsVisible = subtitleControlsPanel?.style.display !== "none";
+    const top = controlsVisible
+      ? Math.round(subtitleControlsPanel.getBoundingClientRect().bottom + 12)
+      : 12;
+    debugPanel.style.setProperty("top", `${top}px`, "important");
+    debugPanel.style.maxHeight = `max(120px, calc(100vh - ${top + 12}px))`;
+  }
+
+  function updateOverlayPanelVisibility() {
+    if (!subtitleControlsPanel) return;
+    subtitleControlsPanel.style.display = settings.showSubtitleControls ? "block" : "none";
+    syncSubtitleControls();
+    requestAnimationFrame(positionDebugPanel);
   }
 
   function formatMs(ms) {
@@ -328,6 +584,7 @@
         currentStatus.lastError);
 
     debugPanel.style.display = shouldShow ? "block" : "none";
+    requestAnimationFrame(positionDebugPanel);
     if (!shouldShow) return;
 
     const diagnostics = currentStatus.lastDiagnostics || [];
@@ -379,9 +636,11 @@
 
   function setStatus(message, visible = true) {
     currentStatus.message = message;
+    statusMessageRequestedVisible = Boolean(visible && message);
     ensureOverlay();
     statusLine.textContent = message || "";
-    statusLine.style.display = visible && message ? "block" : "none";
+    statusLine.style.display =
+      settings.showStatusMessages && statusMessageRequestedVisible ? "block" : "none";
     updateDebugPanel();
   }
 
@@ -398,7 +657,8 @@
       settings.showOriginal && original ? "block" : "none";
     originalLine.textContent = original || "";
 
-    translatedLine.style.display = translated ? "block" : "none";
+    translatedLine.style.display =
+      settings.showTranslated && translated ? "block" : "none";
     translatedLine.textContent = translated || "";
   }
 
@@ -517,7 +777,8 @@
         await runtimeMessage({
           type: "CACHE_SET",
           cacheId: cacheId(),
-          entries: newEntries
+          entries: newEntries,
+          metadata: cacheMetadata()
         });
       }
 
@@ -554,26 +815,64 @@
       currentStatus.playbackMode = "timed-text cache";
       currentStatus.lastTranslatedText = truncate(cached[key]);
       render(cue.text, cached[key]);
-      return;
-    }
-
-    const currentResult = await translateCues([cue]);
-    if (currentResult.entries[key]) {
-      currentStatus.playbackMode = "timed-text realtime";
-      currentStatus.lastTranslatedText = truncate(currentResult.entries[key]);
-      render(cue.text, currentResult.entries[key]);
+    } else {
+      const currentResult = await translateCues([cue]);
+      if (currentResult.entries[key]) {
+        currentStatus.playbackMode = "timed-text realtime";
+        currentStatus.lastTranslatedText = truncate(currentResult.entries[key]);
+        render(cue.text, currentResult.entries[key]);
+      }
     }
 
     if (settings.autoTranslateAhead && cues.length) {
-      const count = Math.max(0, Number(settings.aheadCount) || 0);
-      const ahead = cues.slice(index + 1, index + 1 + count);
-      const batchSize = Math.max(1, Number(settings.batchSize) || 16);
+      maintainLookAhead(cue, index).catch((error) => {
+        console.warn("[LST] Look-ahead translation failed:", error);
+        setStatus(`Could not maintain the translation buffer: ${error.message}`, true);
+      });
+    }
+  }
 
-      for (let i = 0; i < ahead.length; i += batchSize) {
-        translateCues(ahead.slice(i, i + batchSize)).catch((error) => {
-          console.warn("[LST] Look-ahead translation failed:", error);
-        });
+  async function maintainLookAhead(currentCue, index) {
+    const seconds = Math.max(30, Number(settings.lookAheadSeconds) || 30);
+    const playbackTime = Number(document.querySelector("video")?.currentTime);
+    const deadline = Math.max(
+      currentCue.start,
+      Number.isFinite(playbackTime) ? playbackTime : currentCue.start
+    ) + seconds;
+    const ahead = [];
+
+    for (const cue of cues.slice(index + 1)) {
+      const key = cueKey(cue);
+      if (!lookAheadQueued.has(key)) {
+        lookAheadQueued.add(key);
+        ahead.push(cue);
       }
+      // Include the first cue beyond the time boundary so a long silent gap
+      // cannot leave the next spoken line untranslated.
+      if (cue.start > deadline) break;
+    }
+
+    if (!ahead.length) return;
+    if (!lookAheadNoticeShown) {
+      lookAheadNoticeShown = true;
+      setStatus(`Preparing translations at least ${seconds} seconds ahead…`, true);
+    }
+
+    const batchSize = Math.max(1, Number(settings.batchSize) || 8);
+    let failed = 0;
+    try {
+      for (let i = 0; i < ahead.length; i += batchSize) {
+        const result = await translateCues(ahead.slice(i, i + batchSize));
+        failed += result.failures.length;
+      }
+      if (failed) {
+        setStatus(`${failed} upcoming subtitle${failed === 1 ? "" : "s"} could not be prepared.`, true);
+      } else if (!lookAheadReadyNoticeShown) {
+        lookAheadReadyNoticeShown = true;
+        setStatus(`Translation buffer ready at least ${seconds} seconds ahead.`, true);
+      }
+    } finally {
+      for (const cue of ahead) lookAheadQueued.delete(cueKey(cue));
     }
   }
 
@@ -914,6 +1213,8 @@
         case "RELOAD_SETTINGS":
           await loadSettings();
           ensureOverlay();
+          applySubtitleAppearance();
+          updateOverlayPanelVisibility();
           updateDebugPanel();
           sendResponse({ ok: true });
           return;

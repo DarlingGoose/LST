@@ -2,16 +2,23 @@
 
 A small cross-browser Manifest V3 extension for Firefox and Chromium browsers that translates Netflix subtitles using a local Ollama model.
 
+[Privacy policy](PRIVACY.md) · [Firefox release guide](FIREFOX_RELEASE.md)
+
 ## Features
 
 - Local Ollama only by default
 - Discovers installed Ollama models with `/api/tags`
+- Downloads Ollama models by name from Settings
 - Select model and target language in the browser
 - Realtime subtitle translation
+- Time-based look-ahead translation with an enforced 30-second minimum
 - Dual subtitle overlay
+- Custom subtitle height, alignment, line width, font sizes, and background strength
+- Independent visibility controls for Netflix subtitles, LST original text, and LST translations
 - Captures Netflix TTML/WebVTT subtitle documents when available
 - Precomputes an entire captured episode subtitle track
 - Caches translations locally per Netflix watch ID + model + target language
+- Browsable translated-episode storage with per-cache size and removal controls
 - Structured JSON output from Ollama to keep batch translations aligned
 
 ## Important limitation
@@ -155,6 +162,25 @@ Useful files:
 - Add Firefox packaging.
 - Add a side panel showing the episode transcript and translation progress.
 - Add model-specific translation prompt presets.
+
+## v0.4.4 subtitle customization, buffering, and cache management
+
+Settings now includes a live preview and controls for:
+
+- subtitle height from the bottom of the video
+- left, center, or right alignment
+- maximum line width
+- separate original and translated font sizes
+- subtitle background strength
+- an optional in-player controls overlay for live adjustments
+- independent switches to hide Netflix subtitles, show LST's original text, and show the translation
+- optional top-left informational messages for capture, fallback, precompute, and errors
+
+Saved appearance changes are pushed to open Netflix tabs immediately. The optional in-player controls overlay saves adjustments as you make them and shares the top-right area with the debug panel without covering it. Settings can also pull an Ollama model by name and show its download progress. The detailed debug panel is off by default for new installs.
+
+The Translated episodes section in Settings lists each locally cached episode/model/language combination, its translated cue count, estimated storage use, and last update time. Individual caches or the entire local translation library can be removed there. Older caches remain readable and are labeled with their Netflix video ID until they are updated with richer episode metadata.
+
+When look-ahead is enabled, LST prepares every subtitle within the configured time window and the first cue after that boundary. The window cannot be set below 30 seconds. Optional top-left notices report when the buffer is being prepared, when it is ready, or when an upcoming cue could not be translated.
 
 
 ## v0.2 progress / reliability changes

@@ -11,6 +11,7 @@ const messageEl = document.getElementById("message");
 const precomputeButton = document.getElementById("precompute");
 const cancelButton = document.getElementById("cancel");
 const settingsButton = document.getElementById("settings");
+const statePillEl = document.getElementById("statePill");
 
 let pollTimer = null;
 
@@ -78,6 +79,20 @@ function renderStatus(status) {
   const error = status.lastError ? `\nLast error: ${status.lastError}` : "";
   messageEl.textContent = `${status.message || ""}${error}`;
 
+  if (status.lastError) {
+    statePillEl.textContent = "Needs attention";
+    statePillEl.dataset.state = "error";
+  } else if (status.precomputing) {
+    statePillEl.textContent = "Working";
+    statePillEl.dataset.state = "working";
+  } else if (status.captured) {
+    statePillEl.textContent = "Ready";
+    statePillEl.dataset.state = "ready";
+  } else {
+    statePillEl.textContent = "Waiting";
+    statePillEl.dataset.state = "";
+  }
+
   precomputeButton.disabled =
     !status.captured || !status.model || status.precomputing;
   cancelButton.disabled = !status.precomputing;
@@ -90,6 +105,8 @@ async function refresh() {
     renderStatus(response.status);
   } catch (error) {
     messageEl.textContent = error.message;
+    statePillEl.textContent = "Not connected";
+    statePillEl.dataset.state = "error";
     precomputeButton.disabled = true;
     cancelButton.disabled = true;
   }
@@ -118,7 +135,7 @@ cancelButton.addEventListener("click", async () => {
 settingsButton.addEventListener("click", () => ext.runtime.openOptionsPage());
 
 refresh();
-pollTimer = setInterval(refresh, 500);
+pollTimer = setInterval(refresh, 750);
 
 window.addEventListener("unload", () => {
   if (pollTimer) clearInterval(pollTimer);

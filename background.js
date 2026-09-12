@@ -5,13 +5,23 @@ const DEFAULTS = {
   ollamaUrl: "http://localhost:11434",
   model: "",
   targetLanguage: "English",
-  showOriginal: true,
+  hideNetflixSubtitles: true,
+  showOriginal: false,
+  showTranslated: true,
+  showStatusMessages: true,
   autoTranslateAhead: true,
-  aheadCount: 12,
+  lookAheadSeconds: 30,
   batchSize: 8,
   requestTimeoutSeconds: 75,
-  showDebugPanel: true,
-  debugPanelAlwaysOnTop: true
+  showDebugPanel: false,
+  debugPanelAlwaysOnTop: false,
+  showSubtitleControls: false,
+  subtitleHorizontalPosition: "center",
+  subtitleVerticalPosition: 9,
+  subtitleMaxWidth: 92,
+  translatedFontSize: 36,
+  originalFontSize: 30,
+  subtitleBackgroundOpacity: 58
 };
 
 ext.runtime.onInstalled.addListener(async () => {
@@ -95,6 +105,85 @@ async function getModels(ollamaUrl) {
     parameterSize: m.details?.parameter_size || "",
     quantization: m.details?.quantization_level || ""
   }));
+}
+
+function broadcastPullProgress(model, payload = {}) {
+  const total = Number(payload.total || 0);
+  const completed = Number(payload.completed || 0);
+  const percent = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+
+  try {
+    const pending = ext.runtime.sendMessage({
+      type: "MODEL_PULL_PROGRESS",
+      model,
+      status: payload.status || "Downloading…",
+      completed,
+      total,
+      percent
+    });
+    if (pending?.catch) pending.catch(() => {});
+  } catch {}
+}
+
+async function pullModel(ollamaUrl, model) {
+  const base = normalizeBaseUrl(ollamaUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30 * 60 * 1000);
+
+  try {
+    const response = await fetch(`${base}/api/pull`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, stream: true }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(
+        `${response.status} ${response.statusText}${body ? `: ${body.slice(0, 300)}` : ""}`
+      );
+    }
+
+    if (!response.body) {
+      const result = await response.json();
+      if (result.error) throw new Error(result.error);
+      broadcastPullProgress(model, { ...result, status: result.status || "success" });
+      return result;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let latest = {};
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = done ? "" : lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const payload = JSON.parse(line);
+        if (payload.error) throw new Error(payload.error);
+        latest = payload;
+        broadcastPullProgress(model, payload);
+      }
+
+      if (done) break;
+    }
+
+    broadcastPullProgress(model, { ...latest, status: "success", completed: 1, total: 1 });
+    return latest;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Model download timed out after 30 minutes.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function translationSchema() {
@@ -413,6 +502,32 @@ function cacheStorageKey(cacheId) {
   return `translationCache:${cacheId}`;
 }
 
+function cacheMetadataKey(cacheId) {
+  return `translationCacheMeta:${cacheId}`;
+}
+
+function decodeCachePart(value, fallback = "") {
+  try {
+    return decodeURIComponent(value || "") || fallback;
+  } catch {
+    return value || fallback;
+  }
+}
+
+function inferCacheMetadata(cacheId) {
+  const [videoId = "unknown", model = "", targetLanguage = ""] = String(cacheId).split(":");
+  return {
+    videoId,
+    title: videoId === "unknown" ? "Unknown Netflix episode" : `Netflix episode ${videoId}`,
+    model: decodeCachePart(model, "Unknown model"),
+    targetLanguage: decodeCachePart(targetLanguage, "Unknown language")
+  };
+}
+
+function storedByteSize(key, value) {
+  return new TextEncoder().encode(JSON.stringify({ [key]: value })).byteLength;
+}
+
 async function cacheGet(cacheId, keys) {
   const storageKey = cacheStorageKey(cacheId);
   const value = (await ext.storage.local.get(storageKey))[storageKey] || {};
@@ -425,18 +540,64 @@ async function cacheGet(cacheId, keys) {
   return found;
 }
 
-async function cacheSet(cacheId, entries) {
+async function cacheSet(cacheId, entries, metadata = {}) {
   const storageKey = cacheStorageKey(cacheId);
+  const metadataKey = cacheMetadataKey(cacheId);
   const existing = (await ext.storage.local.get(storageKey))[storageKey] || {};
   Object.assign(existing, entries || {});
-  await ext.storage.local.set({ [storageKey]: existing });
+  const inferred = inferCacheMetadata(cacheId);
+  await ext.storage.local.set({
+    [storageKey]: existing,
+    [metadataKey]: {
+      ...inferred,
+      ...metadata,
+      cacheId,
+      cueCount: Object.keys(existing).length,
+      updatedAt: new Date().toISOString()
+    }
+  });
+}
+
+async function listTranslationCaches() {
+  const all = await ext.storage.local.get(null);
+  const caches = [];
+
+  for (const [storageKey, entries] of Object.entries(all)) {
+    if (!storageKey.startsWith("translationCache:")) continue;
+    const cacheId = storageKey.slice("translationCache:".length);
+    const metadataKey = cacheMetadataKey(cacheId);
+    const metadata = all[metadataKey] || {};
+    const inferred = inferCacheMetadata(cacheId);
+    caches.push({
+      ...inferred,
+      ...metadata,
+      cacheId,
+      cueCount: Object.keys(entries || {}).length,
+      bytes: storedByteSize(storageKey, entries) +
+        (all[metadataKey] ? storedByteSize(metadataKey, all[metadataKey]) : 0)
+    });
+  }
+
+  caches.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  return caches;
+}
+
+async function deleteTranslationCache(cacheId) {
+  if (!cacheId) return false;
+  const storageKey = cacheStorageKey(cacheId);
+  const exists = (await ext.storage.local.get(storageKey))[storageKey] !== undefined;
+  await ext.storage.local.remove([storageKey, cacheMetadataKey(cacheId)]);
+  return exists;
 }
 
 async function clearTranslationCache() {
   const all = await ext.storage.local.get(null);
-  const keys = Object.keys(all).filter((key) => key.startsWith("translationCache:"));
+  const cacheKeys = Object.keys(all).filter((key) => key.startsWith("translationCache:"));
+  const keys = Object.keys(all).filter((key) =>
+    key.startsWith("translationCache:") || key.startsWith("translationCacheMeta:")
+  );
   if (keys.length) await ext.storage.local.remove(keys);
-  return keys.length;
+  return cacheKeys.length;
 }
 
 ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -457,6 +618,21 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const settings = await getSettings();
         const models = await getModels(message.ollamaUrl || settings.ollamaUrl);
         sendResponse({ ok: true, models });
+        return;
+      }
+
+      case "PULL_MODEL": {
+        const settings = await getSettings();
+        const model = String(message.model || "").trim();
+        if (!model) throw new Error("Enter a model name to download.");
+        await pullModel(message.ollamaUrl || settings.ollamaUrl, model);
+        sendResponse({ ok: true, model });
+        return;
+      }
+
+      case "OPEN_OPTIONS": {
+        await ext.runtime.openOptionsPage();
+        sendResponse({ ok: true });
         return;
       }
 
@@ -499,8 +675,23 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       case "CACHE_SET": {
-        await cacheSet(message.cacheId, message.entries || {});
+        await cacheSet(message.cacheId, message.entries || {}, message.metadata || {});
         sendResponse({ ok: true });
+        return;
+      }
+
+      case "LIST_TRANSLATION_CACHES": {
+        const caches = await listTranslationCaches();
+        sendResponse({
+          ok: true,
+          caches,
+          totalBytes: caches.reduce((total, cache) => total + cache.bytes, 0)
+        });
+        return;
+      }
+
+      case "DELETE_TRANSLATION_CACHE": {
+        sendResponse({ ok: true, removed: await deleteTranslationCache(message.cacheId) });
         return;
       }
 

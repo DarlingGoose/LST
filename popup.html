@@ -1,88 +1,56 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LST — Local Subtitle Translate</title>
   <style>
+    :root { color-scheme: dark; --accent: #e50914; --muted: #9ca3af; --border: #30333b; }
+    * { box-sizing: border-box; }
     body {
-      width: 370px;
-      margin: 0;
-      padding: 14px;
-      font: 13px system-ui, sans-serif;
-      background: #151515;
-      color: #f5f5f5;
+      width: 390px; margin: 0; padding: 16px;
+      font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at 85% -20%, rgba(229,9,20,.16), transparent 15rem), #0c0d10;
+      color: #f7f7f8;
     }
-    h1 { margin: 0 0 12px; font-size: 16px; }
-    .card {
-      padding: 11px;
-      border-radius: 9px;
-      background: #242424;
-    }
-    .meta {
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 4px 9px;
-      line-height: 1.4;
-    }
-    .label { color: #999; }
-    .value { overflow-wrap: anywhere; }
-    .progress-wrap {
-      margin-top: 11px;
-      height: 10px;
-      overflow: hidden;
-      border-radius: 999px;
-      background: #111;
-    }
-    #progressBar {
-      height: 100%;
-      width: 0%;
-      background: #e50914;
-      transition: width .2s ease;
-    }
-    #progressText {
-      margin-top: 6px;
-      font-size: 12px;
-      color: #ccc;
-    }
-    #currentText {
-      margin-top: 10px;
-      padding: 9px;
-      border-radius: 7px;
-      background: #181818;
-      line-height: 1.4;
-      white-space: pre-wrap;
-      max-height: 92px;
-      overflow: auto;
-    }
-    #message {
-      margin-top: 9px;
-      color: #bbb;
-      white-space: pre-wrap;
-      line-height: 1.4;
-    }
-    .buttons {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-top: 10px;
-    }
-    button {
-      padding: 9px 10px;
-      border: 0;
-      border-radius: 7px;
-      cursor: pointer;
-      font-weight: 650;
-    }
-    button.primary { background: #e50914; color: white; }
-    button.secondary { background: #333; color: white; }
-    button:disabled { opacity: .5; cursor: default; }
-    .small { opacity: .68; margin-top: 9px; font-size: 12px; line-height: 1.4; }
+    button { font: inherit; }
+    button:focus-visible { outline: 3px solid rgba(255,113,120,.35); outline-offset: 1px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .brand { display: flex; align-items: center; gap: 9px; }
+    h1 { margin: 0; font-size: 15px; line-height: 1.2; }
+    .subtitle { color: var(--muted); font-size: 11px; }
+    #statePill { padding: 5px 8px; border-radius: 999px; background: #292c33; color: #c9cbd1; font-size: 11px; font-weight: 700; }
+    #statePill[data-state="working"] { background: #362b13; color: #f2cf7a; }
+    #statePill[data-state="ready"] { background: #17291d; color: #9ddeaf; }
+    #statePill[data-state="error"] { background: #371b1d; color: #ff9da2; }
+    .card { padding: 14px; border: 1px solid var(--border); border-radius: 13px; background: rgba(25,27,32,.96); box-shadow: 0 16px 35px rgba(0,0,0,.22); }
+    .meta { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; line-height: 1.35; }
+    .label { color: #858b95; }
+    .value { overflow-wrap: anywhere; font-weight: 620; }
+    .progress-wrap { margin-top: 14px; height: 7px; overflow: hidden; border-radius: 999px; background: #08090b; }
+    #progressBar { height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #e50914, #ff5962); transition: width .2s ease; }
+    #progressText { margin-top: 7px; color: #c8cad0; font-size: 11px; font-variant-numeric: tabular-nums; }
+    .current-label { margin-top: 13px; color: #777e89; font-size: 10px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    #currentText { margin-top: 5px; padding: 10px; border: 1px solid #272a31; border-radius: 8px; background: #101115; line-height: 1.45; white-space: pre-wrap; max-height: 94px; overflow: auto; }
+    #message { min-height: 18px; margin-top: 10px; color: #aeb2ba; white-space: pre-wrap; line-height: 1.4; }
+    .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    button { min-height: 40px; padding: 9px 11px; border: 1px solid transparent; border-radius: 9px; cursor: pointer; font-weight: 720; }
+    .primary { background: var(--accent); color: white; }
+    .primary:hover { background: #f0222c; }
+    .secondary { border-color: #373b44; background: #252830; color: white; }
+    .secondary:hover { background: #30343d; }
+    button:disabled { opacity: .42; cursor: default; }
+    .settings { width: 100%; margin-top: 8px; }
+    .small { margin: 11px 2px 0; color: #777e89; font-size: 11px; line-height: 1.4; }
   </style>
 </head>
 <body>
-  <h1>LST — Local Subtitle Translate</h1>
+  <header class="topbar">
+    <div class="brand"><div><h1>Local Subtitle Translate</h1><div class="subtitle">Private translation with Ollama</div></div></div>
+    <div id="statePill">Checking</div>
+  </header>
 
-  <div class="card">
+  <main class="card">
     <div class="meta">
       <div class="label">Model</div><div id="model" class="value">—</div>
       <div class="label">Target</div><div id="target" class="value">—</div>
@@ -90,21 +58,19 @@
       <div class="label">Playback</div><div id="playback" class="value">—</div>
     </div>
 
-    <div class="progress-wrap"><div id="progressBar"></div></div>
+    <div class="progress-wrap" aria-hidden="true"><div id="progressBar"></div></div>
     <div id="progressText">0%</div>
+    <div class="current-label">Current activity</div>
     <div id="currentText">Waiting for subtitle work…</div>
-    <div id="message"></div>
-  </div>
+    <div id="message" role="status" aria-live="polite"></div>
+  </main>
 
   <div class="buttons">
-    <button id="precompute" class="primary">Precompute</button>
-    <button id="cancel" class="secondary">Stop</button>
+    <button id="precompute" class="primary" type="button">Precompute episode</button>
+    <button id="cancel" class="secondary" type="button">Stop</button>
   </div>
-  <button id="settings" class="secondary" style="width:100%; margin-top:8px;">Settings</button>
-
-  <div class="small">
-    Precompute runs in the Netflix tab, not in this popup. You can close this popup and reopen it without stopping the job.
-  </div>
+  <button id="settings" class="secondary settings" type="button">Customize subtitles</button>
+  <p class="small">Precompute continues in the Netflix tab after this popup closes.</p>
 
   <script src="popup.js"></script>
 </body>
