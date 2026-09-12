@@ -10,15 +10,18 @@ A small cross-browser Manifest V3 extension for Firefox and Chromium browsers th
 - Discovers installed Ollama models with `/api/tags`
 - Downloads Ollama models by name from Settings
 - Select model and target language in the browser
+- Uses `translategemma:4b` as the default model for new and previously unconfigured installs
 - Realtime subtitle translation
 - Time-based look-ahead translation with an enforced 30-second minimum
 - Dual subtitle overlay
 - Custom subtitle height, alignment, line width, font sizes, and background strength
 - Independent visibility controls for Netflix subtitles, LST original text, and LST translations
+- Adjustable ±2-second subtitle timing offset in Settings and the in-player pill
 - Captures Netflix TTML/WebVTT subtitle documents when available
 - Precomputes an entire captured episode subtitle track
 - Caches translations locally per Netflix watch ID + model + target language
 - Browsable translated-episode storage with per-cache size and removal controls
+- Separate Netflix show and episode names for newly cached or refreshed entries
 - Structured JSON output from Ollama to keep batch translations aligned
 
 ## Important limitation
@@ -43,7 +46,7 @@ curl http://localhost:11434/api/tags
 Pull a translation-capable model if needed, for example:
 
 ```bash
-ollama pull qwen3:8b
+ollama pull translategemma:4b
 ```
 
 Ollama requires browser extension origins to be allowed. For a manually launched Ollama server:
@@ -138,11 +141,13 @@ If a model breaks the batch contract, the extension recursively splits the batch
 
 ## Good model choices
 
-For Japanese → English, start with a multilingual instruction model that fits comfortably in VRAM. Smaller models reduce subtitle latency; larger models generally improve nuance. The extension deliberately does not hard-code model names because it reads your installed list directly from Ollama.
+For Japanese → English, `translategemma:4b` is the initial default and a good lightweight starting point. LST still discovers every installed Ollama model dynamically, so you can choose a larger or different model whenever you prefer.
 
 ## Development notes
 
 There is no build step. Reload the unpacked extension after editing files.
+
+Firefox release packaging generates `.firefox-build` from the shared Chromium/Firefox source manifest. This removes Chromium-only manifest fields before Mozilla linting and AMO submission without changing unpacked Chromium development.
 
 Useful files:
 
@@ -163,7 +168,23 @@ Useful files:
 - Add a side panel showing the episode transcript and translation progress.
 - Add model-specific translation prompt presets.
 
-## v0.4.4 subtitle customization, buffering, and cache management
+## v0.5.2 episode metadata
+
+Cached translations record and display the Netflix show name and episode name separately when the player exposes them. LST checks several player-title structures and falls back to the page title or Netflix video ID. Existing caches remain usable and gain richer names the next time new translations are stored for them.
+
+## Subtitle synchronization
+
+LST checks that an asynchronously translated cue is still active before rendering it, preventing a slow response from replacing a newer subtitle. It also clears lingering lines during real subtitle gaps after a short grace period for Netflix's rendered-text fallback.
+
+The Subtitles tab provides a −2000 ms to +2000 ms timing offset in 50 ms steps. Negative values show LST subtitles earlier and positive values delay them. The persistent Netflix pill offers quick −100 ms, reset, and +100 ms adjustments.
+
+## Navigation and in-player controls
+
+Settings is organized into General, Subtitles, Storage, and Advanced tabs so model setup, appearance, cached episodes, and diagnostics no longer compete in one long page.
+
+An optional persistent LST pill sits in a coordinated top-left HUD. It shows Waiting, Ready, Realtime, Buffering, Cached, Precomputing, or Error status and opens a compact menu for toggling the LST translation, LST original text, and Netflix subtitles. Informational notices stack below the pill rather than overlapping it.
+
+## Subtitle customization, buffering, and cache management
 
 Settings now includes a live preview and controls for:
 

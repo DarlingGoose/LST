@@ -29,14 +29,9 @@ The verified upload archive is written to:
 web-ext-artifacts/lst-firefox-<version>.zip
 ```
 
-`npm run package` checks JavaScript syntax, confirms release metadata and icon declarations, runs Mozilla's linter, builds the archive, and verifies that `manifest.json` and the extension files are at its root.
+`npm run package` checks JavaScript syntax, confirms release metadata and icon declarations, generates a Firefox-specific source tree in `.firefox-build`, runs Mozilla's linter against that tree, builds the archive, and verifies that `manifest.json` and the extension files are at its root.
 
-Mozilla's linter currently reports two expected compatibility warnings for the unified Firefox/Chromium manifest:
-
-- Firefox ignores `background.service_worker` and uses `background.scripts`.
-- Firefox Android introduced the built-in consent manifest key in version 142; LST currently targets Firefox desktop 140 and is not being submitted as an Android add-on.
-
-Both warnings are non-blocking. The package must have zero lint errors.
+The generated Firefox manifest removes Chromium's `background.service_worker`, retains Firefox's `background.scripts`, and declares Firefox Android 142 as its Android minimum because that release introduced built-in data consent. The shared source manifest retains both background declarations so unpacked Chromium development continues to work. A release build must have zero lint errors and zero warnings.
 
 ## First AMO submission
 
@@ -59,8 +54,8 @@ For the first release, use the Developer Hub so the privacy policy and listing c
 Before tagging, update the version in both `manifest.json` and `package.json`. Then create and push a matching tag:
 
 ```bash
-git tag v0.4.4
-git push origin v0.4.4
+git tag v0.5.2
+git push origin v0.5.2
 ```
 
 `.github/workflows/firefox-release.yml` rejects mismatched tags, builds and verifies the ZIP, creates a SHA-256 checksum, uploads both as workflow artifacts, and creates or updates the matching GitHub release.

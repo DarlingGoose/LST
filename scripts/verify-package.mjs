@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import process from "node:process";
 
 const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
+const firefoxManifest = JSON.parse(await readFile(".firefox-build/manifest.json", "utf8"));
 const archive = `web-ext-artifacts/lst-firefox-${manifest.version}.zip`;
 
 await stat(archive).catch(() => {
@@ -64,6 +65,19 @@ const forbidden = [
   "PRIVACY.md"
 ];
 const errors = [];
+
+if (firefoxManifest.background?.service_worker) {
+  errors.push("Firefox package manifest still contains background.service_worker");
+}
+if (!firefoxManifest.background?.scripts?.includes("background.js")) {
+  errors.push("Firefox package manifest is missing background.scripts");
+}
+if (Number.parseInt(
+  firefoxManifest.browser_specific_settings?.gecko_android?.strict_min_version,
+  10
+) < 142) {
+  errors.push("Firefox package manifest must require Firefox Android 142 or newer");
+}
 
 if (!entries.includes("manifest.json")) {
   errors.push("manifest.json is not at the archive root");

@@ -43,26 +43,106 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
   font-weight: 600;
 }
 
-#not-status {
-  display: none;
+#lst-hud {
   position: fixed;
   left: 18px;
-  right: auto;
-  top: 18px;
+  top: 72px;
   z-index: 2147483646;
+  display: flex;
+  width: min(460px, calc(100vw - 36px));
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   pointer-events: none;
-  max-width: min(460px, 75vw);
+  color: #f5f5f5;
+  font-family: Netflix Sans, Helvetica Neue, Segoe UI, sans-serif;
+  text-align: left;
+  text-shadow: none;
+}
+
+#not-status {
+  display: none;
+  order: 2;
+  max-width: 100%;
   padding: 8px 11px;
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.72);
   color: #f5f5f5;
-  font-family: Netflix Sans, Helvetica Neue, Segoe UI, sans-serif;
   font-size: 13px;
   font-weight: 500;
   line-height: 1.35;
-  text-align: left;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
   opacity: 0.8;
+}
+
+#lst-quick-pills {
+  display: none;
+  order: 1;
+  position: relative;
+  pointer-events: auto;
+  color: #f5f5f5;
+  font: 12px/1.3 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#lst-pill-trigger {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(12, 13, 16, 0.9);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+}
+
+.lst-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8c939f;
+  box-shadow: 0 0 0 3px rgba(140, 147, 159, 0.16);
+}
+
+#lst-quick-pills[data-state="realtime"] .lst-pill-dot { background: #64d88a; box-shadow: 0 0 0 3px rgba(100, 216, 138, 0.18); }
+#lst-quick-pills[data-state="cached"] .lst-pill-dot,
+#lst-quick-pills[data-state="ready"] .lst-pill-dot { background: #6aaeff; box-shadow: 0 0 0 3px rgba(106, 174, 255, 0.18); }
+#lst-quick-pills[data-state="buffering"] .lst-pill-dot { background: #ffc866; box-shadow: 0 0 0 3px rgba(255, 200, 102, 0.18); animation: lst-pill-pulse 1.1s ease-in-out infinite; }
+#lst-quick-pills[data-state="error"] .lst-pill-dot { background: #ff7078; box-shadow: 0 0 0 3px rgba(255, 112, 120, 0.18); }
+
+@keyframes lst-pill-pulse { 50% { opacity: 0.45; } }
+
+#lst-pill-menu {
+  width: 245px;
+  margin-top: 7px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(12, 13, 16, 0.96);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(12px);
+}
+
+#lst-pill-menu[hidden] { display: none !important; }
+.lst-pill-menu-title { padding: 2px 3px 7px; color: #aeb4bf; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+#lst-pill-menu label { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 4px; cursor: pointer; }
+#lst-pill-menu input { margin: 0; accent-color: #e50914; }
+.lst-pill-timing { margin-top: 5px; padding: 9px 4px 4px; border-top: 1px solid rgba(255, 255, 255, 0.12); }
+.lst-pill-timing > span { display: flex; justify-content: space-between; gap: 12px; color: #d8dadd; }
+.lst-pill-timing output { color: #ffabb0; font-variant-numeric: tabular-nums; }
+.lst-pill-timing > div { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin-top: 7px; }
+.lst-pill-timing button { min-height: 28px; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 6px; background: #25272d; color: inherit; font: inherit; cursor: pointer; }
+#lst-pill-menu > button { width: 100%; margin-top: 7px; padding: 7px 9px; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 7px; background: #292c33; color: inherit; font: inherit; cursor: pointer; }
+#lst-pill-trigger:focus-visible,
+#lst-pill-menu input:focus-visible,
+#lst-pill-menu button:focus-visible { outline: 2px solid #ff747b; outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  #lst-quick-pills[data-state="buffering"] .lst-pill-dot { animation: none; }
 }
 
 

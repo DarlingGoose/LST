@@ -30,6 +30,18 @@ if (!transmitted.includes("websiteContent")) {
   errors.push("manifest must declare websiteContent transmission for subtitle text");
 }
 
+const geckoAndroid = manifest.browser_specific_settings?.gecko_android || {};
+if (Number.parseInt(geckoAndroid.strict_min_version, 10) < 142) {
+  errors.push("Firefox Android strict_min_version must be at least 142 for built-in data consent");
+}
+
+if (!manifest.background?.service_worker) {
+  errors.push("shared manifest must retain background.service_worker for Chromium");
+}
+if (!manifest.background?.scripts?.includes("background.js")) {
+  errors.push("shared manifest must retain background.scripts for Firefox");
+}
+
 for (const size of [16, 32, 48, 64, 96, 128]) {
   if (!manifest.icons?.[size]) errors.push(`manifest icon ${size}px is missing`);
 }
