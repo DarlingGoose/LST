@@ -26,7 +26,7 @@
     translatedFontSize: 36,
     originalFontSize: 30,
     subtitleBackgroundOpacity: 58,
-    subtitleTimingOffsetMs: 0
+    subtitleTimingOffsetMs: 0,
   };
 
   let settings = { ...DEFAULTS };
@@ -100,7 +100,7 @@
     lastOllamaMode: "",
     lastOllamaRaw: "",
     lastDiagnostics: [],
-    message: "Waiting for Netflix subtitles…"
+    message: "Waiting for Netflix subtitles…",
   };
 
   async function runtimeMessage(message) {
@@ -126,7 +126,9 @@
 
   function truncate(text, max = 160) {
     const normalized = normalizeText(text);
-    return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`;
+    return normalized.length <= max
+      ? normalized
+      : `${normalized.slice(0, max - 1)}…`;
   }
 
   function cueKey(cue) {
@@ -155,7 +157,7 @@
     for (const selector of selectors) {
       const element = document.querySelector(selector);
       const value = normalizeText(
-        attribute ? element?.getAttribute(attribute) : element?.textContent
+        attribute ? element?.getAttribute(attribute) : element?.textContent,
       );
       if (value) return value;
     }
@@ -165,74 +167,100 @@
   function netflixTitleMetadata() {
     const titleContainer = document.querySelector(
       '[data-uia="video-title"], [data-uia="player-title"], ' +
-      '.watch-video--player-view .video-title, .ellipsize-text'
+        ".watch-video--player-view .video-title, .ellipsize-text",
     );
-    const explicitShow = firstMetadataText([
-      '[data-uia="video-title"] [data-uia="series-title"]',
-      '[data-uia="series-title"]',
-      '[data-uia="video-title"] h4',
-      '[data-uia="player-title"] h4',
-      '.watch-video--player-view .video-title h4',
-      '.ellipsize-text h4',
-      '.player-status-main-title'
-    ]) || firstMetadataText([
-      '[data-uia="video-title"] img[alt]',
-      '.watch-video--player-view .video-title img[alt]'
-    ], "alt");
+    const explicitShow =
+      firstMetadataText([
+        '[data-uia="video-title"] [data-uia="series-title"]',
+        '[data-uia="series-title"]',
+        '[data-uia="video-title"] h4',
+        '[data-uia="player-title"] h4',
+        ".watch-video--player-view .video-title h4",
+        ".ellipsize-text h4",
+        ".player-status-main-title",
+      ]) ||
+      firstMetadataText(
+        [
+          '[data-uia="video-title"] img[alt]',
+          ".watch-video--player-view .video-title img[alt]",
+        ],
+        "alt",
+      );
     const explicitEpisode = firstMetadataText([
       '[data-uia="video-title"] [data-uia="episode-title"]',
       '[data-uia="episode-title"]',
-      '.watch-video--player-view .video-title .episode-title',
+      ".watch-video--player-view .video-title .episode-title",
       '[data-uia="video-title"] span',
       '[data-uia="player-title"] span',
-      '.ellipsize-text span',
-      '.player-status-subtitle'
+      ".ellipsize-text span",
+      ".player-status-subtitle",
     ]);
     const pageTitle = cleanPageTitle();
     const parts = titleContainer
       ? [...titleContainer.querySelectorAll("h1, h2, h3, h4, span")]
-        .map((element) => normalizeText(element.textContent))
-        .filter((value, index, values) =>
-          value &&
-          values.indexOf(value) === index &&
-          !/^\d+(?::\d+)+$/.test(value) &&
-          !/^(?:HD|4K|HDR|UHD|AD|CC)$/i.test(value)
-        )
+          .map((element) => normalizeText(element.textContent))
+          .filter(
+            (value, index, values) =>
+              value &&
+              values.indexOf(value) === index &&
+              !/^\d+(?::\d+)+$/.test(value) &&
+              !/^(?:HD|4K|HDR|UHD|AD|CC)$/i.test(value),
+          )
       : [];
 
     const genericTitle = (value) =>
-      !value || /^(?:Netflix|Netflix episode \S+|Unknown Netflix episode)$/i.test(value);
+      !value ||
+      /^(?:Netflix|Netflix episode \S+|Unknown Netflix episode)$/i.test(value);
     const usableExplicitShow = genericTitle(explicitShow) ? "" : explicitShow;
     const usablePageTitle = genericTitle(pageTitle) ? "" : pageTitle;
     const episodeMarker = parts.find((value) =>
-      /^(?:S(?:eason)?\s*\d+\s*[:·-]?\s*E(?:pisode)?\s*\d+|Episode\s+\d+)/i.test(value)
+      /^(?:S(?:eason)?\s*\d+\s*[:·-]?\s*E(?:pisode)?\s*\d+|Episode\s+\d+)/i.test(
+        value,
+      ),
     );
-    const showName = usableExplicitShow || usablePageTitle || parts.find((value) =>
-      value !== explicitEpisode && value !== episodeMarker
-    ) || "";
-    const episodeTitle = explicitEpisode && explicitEpisode !== showName &&
+    const showName =
+      usableExplicitShow ||
+      usablePageTitle ||
+      parts.find(
+        (value) => value !== explicitEpisode && value !== episodeMarker,
+      ) ||
+      "";
+    const episodeTitle =
+      explicitEpisode &&
+      explicitEpisode !== showName &&
       explicitEpisode !== episodeMarker
-      ? explicitEpisode
-      : parts.find((value) =>
-        value !== showName && value !== usablePageTitle && value !== episodeMarker
-      ) || "";
-    const episodeName = [...new Set([episodeMarker, episodeTitle].filter(Boolean))].join(" · ");
+        ? explicitEpisode
+        : parts.find(
+            (value) =>
+              value !== showName &&
+              value !== usablePageTitle &&
+              value !== episodeMarker,
+          ) || "";
+    const episodeName = [
+      ...new Set([episodeMarker, episodeTitle].filter(Boolean)),
+    ].join(" · ");
     const videoId = getVideoId();
     const previous = titleMetadataByVideoId.get(videoId) || {};
     const discovered = {
       showName: showName || previous.showName || "Netflix",
-      episodeName: episodeName || previous.episodeName || `Episode ${videoId}`
+      episodeName: episodeName || previous.episodeName || `Episode ${videoId}`,
     };
 
     const hasSpecificEpisode = discovered.episodeName !== `Episode ${videoId}`;
-    if (!genericTitle(discovered.showName) || !previous.showName || hasSpecificEpisode) {
+    if (
+      !genericTitle(discovered.showName) ||
+      !previous.showName ||
+      hasSpecificEpisode
+    ) {
       titleMetadataByVideoId.set(videoId, discovered);
     }
     const remembered = titleMetadataByVideoId.get(videoId) || discovered;
 
     return {
       ...remembered,
-      title: [remembered.showName, remembered.episodeName].filter(Boolean).join(" — ")
+      title: [remembered.showName, remembered.episodeName]
+        .filter(Boolean)
+        .join(" — "),
     };
   }
 
@@ -240,39 +268,44 @@
     const videoId = cueVideoId || getVideoId();
     const currentVideoId = getVideoId();
     const remembered = titleMetadataByVideoId.get(videoId);
-    const titleMetadata = videoId === currentVideoId
-      ? netflixTitleMetadata()
-      : {
-          showName: remembered?.showName || "Netflix",
-          episodeName: remembered?.episodeName || `Episode ${videoId}`,
-          title: [remembered?.showName, remembered?.episodeName].filter(Boolean).join(" — ") ||
-            `Netflix episode ${videoId}`
-        };
+    const titleMetadata =
+      videoId === currentVideoId
+        ? netflixTitleMetadata()
+        : {
+            showName: remembered?.showName || "Netflix",
+            episodeName: remembered?.episodeName || `Episode ${videoId}`,
+            title:
+              [remembered?.showName, remembered?.episodeName]
+                .filter(Boolean)
+                .join(" — ") || `Netflix episode ${videoId}`,
+          };
     return {
       videoId,
       ...titleMetadata,
       url: location.href,
       model: settings.model || "Unknown model",
       targetLanguage: settings.targetLanguage || "English",
-      sourceCueCount: cues.length
+      sourceCueCount: cues.length,
     };
   }
 
   function persistImprovedCacheMetadata() {
-    if (!cues.length || !knownCachedKeys.size || cueVideoId !== getVideoId()) return;
+    if (!cues.length || !knownCachedKeys.size || cueVideoId !== getVideoId())
+      return;
     const metadata = cacheMetadata();
     if (!metadata.showName || metadata.showName === "Netflix") return;
 
     const signature = `${metadata.showName}|${metadata.episodeName}`;
     const currentCacheId = cacheId();
-    if (storedTitleSignaturesByCacheId.get(currentCacheId) === signature) return;
+    if (storedTitleSignaturesByCacheId.get(currentCacheId) === signature)
+      return;
     storedTitleSignaturesByCacheId.set(currentCacheId, signature);
 
     runtimeMessage({
       type: "CACHE_SET",
       cacheId: currentCacheId,
       entries: {},
-      metadata
+      metadata,
     }).catch((error) => {
       storedTitleSignaturesByCacheId.delete(currentCacheId);
       console.warn("[LST] Could not refresh cached episode title:", error);
@@ -310,7 +343,9 @@
     const match = value.match(/^(\d+):(\d{2}):(\d{2})(?:[.,](\d+))?$/);
     if (match) {
       const [, h, m, s, frac = "0"] = match;
-      return Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(`0.${frac}`);
+      return (
+        Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(`0.${frac}`)
+      );
     }
 
     return Number(value);
@@ -332,8 +367,8 @@
     const tt = doc.documentElement;
     const tickRate = Number(
       tt.getAttribute("ttp:tickRate") ||
-      tt.getAttribute("tickRate") ||
-      10_000_000
+        tt.getAttribute("tickRate") ||
+        10_000_000,
     );
 
     const nodes = [...doc.getElementsByTagNameNS("*", "p")];
@@ -343,22 +378,30 @@
         let end = parseClock(node.getAttribute("end"), tickRate);
         const duration = parseClock(node.getAttribute("dur"), tickRate);
 
-        if (!Number.isFinite(end) && Number.isFinite(start) && Number.isFinite(duration)) {
+        if (
+          !Number.isFinite(end) &&
+          Number.isFinite(start) &&
+          Number.isFinite(duration)
+        ) {
           end = start + duration;
         }
 
         return {
-          id: node.getAttribute("xml:id") || node.getAttribute("id") || String(index),
+          id:
+            node.getAttribute("xml:id") ||
+            node.getAttribute("id") ||
+            String(index),
           start,
           end,
-          text: extractNodeText(node)
+          text: extractNodeText(node),
         };
       })
-      .filter((cue) =>
-        Number.isFinite(cue.start) &&
-        Number.isFinite(cue.end) &&
-        cue.end > cue.start &&
-        cue.text
+      .filter(
+        (cue) =>
+          Number.isFinite(cue.start) &&
+          Number.isFinite(cue.end) &&
+          cue.end > cue.start &&
+          cue.text,
       );
   }
 
@@ -384,7 +427,11 @@
       }
 
       let id = "";
-      if (!line.includes("-->") && i + 1 < lines.length && lines[i + 1].includes("-->")) {
+      if (
+        !line.includes("-->") &&
+        i + 1 < lines.length &&
+        lines[i + 1].includes("-->")
+      ) {
         id = line;
         i++;
         line = lines[i].trim();
@@ -413,7 +460,7 @@
           id: id || String(result.length),
           start,
           end,
-          text: cueText
+          text: cueText,
         });
       }
     }
@@ -432,7 +479,7 @@
     try {
       settings = {
         ...DEFAULTS,
-        ...(await runtimeMessage({ type: "GET_SETTINGS" })).settings
+        ...(await runtimeMessage({ type: "GET_SETTINGS" })).settings,
       };
     } catch (error) {
       console.warn("[LST] Could not load settings:", error);
@@ -521,7 +568,7 @@
             <span id="lst-pill-save-status" role="status" aria-live="polite"></span>
             <div>
               <button type="button" data-pill-action="settings">All settings</button>
-              <button type="button" data-pill-action="hide-overlay">Hide overlay</button>
+
             </div>
           </div>
         </div>
@@ -529,7 +576,9 @@
       hud.appendChild(quickPillsPanel);
       quickPillsMenu = quickPillsPanel.querySelector("#lst-pill-menu");
       quickPillsState = quickPillsPanel.querySelector("#lst-pill-state");
-      unifiedControlsStatus = quickPillsPanel.querySelector("#lst-pill-save-status");
+      unifiedControlsStatus = quickPillsPanel.querySelector(
+        "#lst-pill-save-status",
+      );
       bindQuickPills();
     }
 
@@ -557,7 +606,10 @@
 
   function clamp(value, min, max, fallback) {
     const number = Number(value);
-    return Math.min(max, Math.max(min, Number.isFinite(number) ? number : fallback));
+    return Math.min(
+      max,
+      Math.max(min, Number.isFinite(number) ? number : fallback),
+    );
   }
 
   function applySubtitleAppearance() {
@@ -565,10 +617,12 @@
 
     document.documentElement.classList.toggle(
       "lst-hide-netflix-subtitles",
-      settings.enabled && settings.hideNetflixSubtitles
+      settings.enabled && settings.hideNetflixSubtitles,
     );
 
-    const alignment = ["left", "center", "right"].includes(settings.subtitleHorizontalPosition)
+    const alignment = ["left", "center", "right"].includes(
+      settings.subtitleHorizontalPosition,
+    )
       ? settings.subtitleHorizontalPosition
       : "center";
     const opacity = clamp(settings.subtitleBackgroundOpacity, 0, 90, 58) / 100;
@@ -576,25 +630,32 @@
     overlay.style.bottom = `${clamp(settings.subtitleVerticalPosition, 4, 82, 9)}%`;
     overlay.style.width = `min(${clamp(settings.subtitleMaxWidth, 40, 96, 92)}vw, 1100px)`;
     overlay.style.textAlign = alignment;
-    overlay.style.left = alignment === "center" ? "50%" : alignment === "left" ? "4vw" : "auto";
+    overlay.style.left =
+      alignment === "center" ? "50%" : alignment === "left" ? "4vw" : "auto";
     overlay.style.right = alignment === "right" ? "4vw" : "auto";
-    overlay.style.transform = alignment === "center" ? "translateX(-50%)" : "none";
+    overlay.style.transform =
+      alignment === "center" ? "translateX(-50%)" : "none";
 
     overlay.style.setProperty(
       "--lst-original-font-size",
-      `${clamp(settings.originalFontSize, 14, 56, 30)}px`
+      `${clamp(settings.originalFontSize, 14, 56, 30)}px`,
     );
     overlay.style.setProperty(
       "--lst-translated-font-size",
-      `${clamp(settings.translatedFontSize, 18, 64, 36)}px`
+      `${clamp(settings.translatedFontSize, 18, 64, 36)}px`,
     );
-    overlay.style.setProperty("--lst-subtitle-background", `rgba(0, 0, 0, ${opacity})`);
+    overlay.style.setProperty(
+      "--lst-subtitle-background",
+      `rgba(0, 0, 0, ${opacity})`,
+    );
     overlay.dataset.alignment = alignment;
 
     trimRenderedSubtitles();
     renderSubtitleStack();
     statusLine.style.display =
-      settings.showStatusMessages && statusMessageRequestedVisible && currentStatus.message
+      settings.showStatusMessages &&
+      statusMessageRequestedVisible &&
+      currentStatus.message
         ? "block"
         : "none";
 
@@ -613,7 +674,8 @@
 
   function quickPillStatus() {
     if (pausedCachingPromise) return { label: "Caching", state: "buffering" };
-    if (currentStatus.precomputing) return { label: "Precomputing", state: "buffering" };
+    if (currentStatus.precomputing)
+      return { label: "Precomputing", state: "buffering" };
     if (currentStatus.requestState === "running" || lookAheadQueued.size) {
       return { label: "Buffering", state: "buffering" };
     }
@@ -624,7 +686,8 @@
     ) {
       return { label: "Completed", state: "completed" };
     }
-    if (currentStatus.requestState === "error") return { label: "Error", state: "error" };
+    if (currentStatus.requestState === "error")
+      return { label: "Error", state: "error" };
     if (String(currentStatus.playbackMode).includes("realtime")) {
       return { label: "Realtime", state: "realtime" };
     }
@@ -644,46 +707,63 @@
     quickPillsState.textContent = status.label;
     const panelStatus = quickPillsPanel.querySelector("#lst-pill-panel-status");
     const ahead = quickPillsPanel.querySelector("#lst-pill-ahead");
-    const aheadLabel = currentStatus.cachedAheadSeconds > 0
-      ? formatAheadDuration(currentStatus.cachedAheadSeconds)
-      : "";
+    const aheadLabel =
+      currentStatus.cachedAheadSeconds > 0
+        ? formatAheadDuration(currentStatus.cachedAheadSeconds)
+        : "";
     if (ahead) {
       ahead.textContent = aheadLabel ? `· ${aheadLabel} cached` : "";
     }
     if (panelStatus) {
-      panelStatus.textContent = status.state === "completed"
-        ? "Completed · episode cached"
-        : `${status.label}${aheadLabel ? ` · ${aheadLabel} cached ahead` : ""}`;
+      panelStatus.textContent =
+        status.state === "completed"
+          ? "Completed · episode cached"
+          : `${status.label}${aheadLabel ? ` · ${aheadLabel} cached ahead` : ""}`;
       panelStatus.dataset.state = status.state;
     }
-    for (const control of quickPillsPanel.querySelectorAll("[data-pill-setting]")) {
+    for (const control of quickPillsPanel.querySelectorAll(
+      "[data-pill-setting]",
+    )) {
       const value = settings[control.dataset.pillSetting];
       if (control.type === "checkbox") control.checked = value !== false;
       else control.value = String(value);
     }
     const timing = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0);
-    const timingOutput = quickPillsPanel.querySelector("#lst-pill-timing-value");
-    if (timingOutput) timingOutput.textContent = `${timing > 0 ? "+" : ""}${timing} ms`;
+    const timingOutput = quickPillsPanel.querySelector(
+      "#lst-pill-timing-value",
+    );
+    if (timingOutput)
+      timingOutput.textContent = `${timing > 0 ? "+" : ""}${timing} ms`;
   }
 
   function bindQuickPills() {
     quickPillsPanel.addEventListener("click", (event) => {
-      const action = event.target.closest("[data-pill-action]")?.dataset.pillAction;
+      const action =
+        event.target.closest("[data-pill-action]")?.dataset.pillAction;
       if (action === "toggle") {
         setQuickPillsMenu(quickPillsMenu.hidden);
       } else if (action === "collapse") {
         setQuickPillsMenu(false);
       } else if (["earlier", "timing-reset", "later"].includes(action)) {
         const current = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0);
-        settings.subtitleTimingOffsetMs = action === "timing-reset"
-          ? 0
-          : clamp(current + (action === "later" ? 100 : -100), -2000, 2000, 0);
+        settings.subtitleTimingOffsetMs =
+          action === "timing-reset"
+            ? 0
+            : clamp(
+                current + (action === "later" ? 100 : -100),
+                -2000,
+                2000,
+                0,
+              );
         applySubtitleAppearance();
         runtimeMessage({
           type: "SAVE_SETTINGS",
-          settings: { subtitleTimingOffsetMs: settings.subtitleTimingOffsetMs }
-        }).then(() => showUnifiedControlsStatus("Saved"))
-          .catch((error) => showUnifiedControlsStatus(`Could not save: ${error.message}`, true));
+          settings: { subtitleTimingOffsetMs: settings.subtitleTimingOffsetMs },
+        })
+          .then(() => showUnifiedControlsStatus("Saved"))
+          .catch((error) =>
+            showUnifiedControlsStatus(`Could not save: ${error.message}`, true),
+          );
       } else if (action === "settings") {
         setQuickPillsMenu(false);
         runtimeMessage({ type: "OPEN_OPTIONS" }).catch((error) => {
@@ -693,8 +773,12 @@
         settings.showQuickPills = false;
         setQuickPillsMenu(false);
         updateOverlayPanelVisibility();
-        runtimeMessage({ type: "SAVE_SETTINGS", settings: { showQuickPills: false } })
-          .catch((error) => setStatus(`Could not hide LST controls: ${error.message}`, true));
+        runtimeMessage({
+          type: "SAVE_SETTINGS",
+          settings: { showQuickPills: false },
+        }).catch((error) =>
+          setStatus(`Could not hide LST controls: ${error.message}`, true),
+        );
       }
     });
 
@@ -702,11 +786,17 @@
       const control = event.target.closest("[data-pill-setting]");
       if (!control) return;
       const key = control.dataset.pillSetting;
-      settings[key] = control.type === "checkbox" ? control.checked : Number(control.value);
+      settings[key] =
+        control.type === "checkbox" ? control.checked : Number(control.value);
       applySubtitleAppearance();
-      runtimeMessage({ type: "SAVE_SETTINGS", settings: { [key]: settings[key] } })
+      runtimeMessage({
+        type: "SAVE_SETTINGS",
+        settings: { [key]: settings[key] },
+      })
         .then(() => showUnifiedControlsStatus("Saved"))
-        .catch((error) => showUnifiedControlsStatus(`Could not save: ${error.message}`, true));
+        .catch((error) =>
+          showUnifiedControlsStatus(`Could not save: ${error.message}`, true),
+        );
     });
 
     document.addEventListener("pointerdown", (event) => {
@@ -724,7 +814,8 @@
 
   function setQuickPillsMenu(open) {
     quickPillsMenu.hidden = !open;
-    quickPillsPanel.querySelector("#lst-pill-trigger")
+    quickPillsPanel
+      .querySelector("#lst-pill-trigger")
       ?.setAttribute("aria-expanded", String(open));
     requestAnimationFrame(positionDebugPanel);
   }
@@ -748,7 +839,9 @@
   function formatMs(ms) {
     const value = Number(ms);
     if (!Number.isFinite(value) || value <= 0) return "—";
-    return value < 1000 ? `${Math.round(value)}ms` : `${(value / 1000).toFixed(1)}s`;
+    return value < 1000
+      ? `${Math.round(value)}ms`
+      : `${(value / 1000).toFixed(1)}s`;
   }
 
   function formatAheadDuration(seconds) {
@@ -784,7 +877,9 @@
     if (!shouldShow) return;
 
     const diagnostics = currentStatus.lastDiagnostics || [];
-    const latest = diagnostics.length ? diagnostics[diagnostics.length - 1] : null;
+    const latest = diagnostics.length
+      ? diagnostics[diagnostics.length - 1]
+      : null;
 
     const lines = [
       `model       ${settings.model || "—"}`,
@@ -801,14 +896,16 @@
       `sync offset ${clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0)}ms`,
       `cue         ${currentStatus.activeCueStart == null ? "—" : `${Number(currentStatus.activeCueStart).toFixed(2)}–${Number(currentStatus.activeCueEnd).toFixed(2)}s`}`,
       `in-flight   ${translationInFlight.size}`,
-      `source      ${shortUrl(cueSourceUrl)}`
+      `source      ${shortUrl(cueSourceUrl)}`,
     ];
 
     if (currentStatus.currentText) {
       lines.push(`current     ${truncate(currentStatus.currentText, 135)}`);
     }
     if (currentStatus.lastTranslatedText) {
-      lines.push(`translated  ${truncate(currentStatus.lastTranslatedText, 135)}`);
+      lines.push(
+        `translated  ${truncate(currentStatus.lastTranslatedText, 135)}`,
+      );
     }
     if (latest?.stage) {
       lines.push(`diag stage  ${latest.stage}`);
@@ -817,7 +914,9 @@
       lines.push(`id match    ${latest.idRecovery}`);
     }
     if (latest?.returnedIds?.length) {
-      lines.push(`return ids  ${truncate(latest.returnedIds.join(" | "), 150)}`);
+      lines.push(
+        `return ids  ${truncate(latest.returnedIds.join(" | "), 150)}`,
+      );
     }
     if (latest?.error) {
       lines.push(`diag error  ${truncate(latest.error, 170)}`);
@@ -838,7 +937,9 @@
     ensureOverlay();
     statusLine.textContent = message || "";
     statusLine.style.display =
-      settings.showStatusMessages && statusMessageRequestedVisible ? "block" : "none";
+      settings.showStatusMessages && statusMessageRequestedVisible
+        ? "block"
+        : "none";
     updateDebugPanel();
   }
 
@@ -880,9 +981,8 @@
       if (entry.childElementCount) subtitleStack.appendChild(entry);
     }
 
-    overlay.style.display = settings.enabled && subtitleStack.childElementCount
-      ? "block"
-      : "none";
+    overlay.style.display =
+      settings.enabled && subtitleStack.childElementCount ? "block" : "none";
   }
 
   function removeRenderedSubtitle(key) {
@@ -911,18 +1011,20 @@
     translated = "",
     naturalEndVideoTime,
     videoTime,
-    source
+    source,
   }) {
     const now = Number(videoTime);
     const naturalEnd = Number(naturalEndVideoTime);
     if (!Number.isFinite(now)) return;
 
-    renderedSubtitles = renderedSubtitles.filter((entry) => entry.source === source);
+    renderedSubtitles = renderedSubtitles.filter(
+      (entry) => entry.source === source,
+    );
     const existing = renderedSubtitles.find((entry) => entry.key === key);
     const endVideoTime = Number.isFinite(naturalEnd) ? naturalEnd : now;
     const retainUntilVideoTime = Math.max(
       endVideoTime,
-      now + minimumSubtitleDisplaySeconds()
+      now + minimumSubtitleDisplaySeconds(),
     );
 
     if (existing) {
@@ -937,7 +1039,7 @@
         translated: translated || "",
         endVideoTime,
         retainUntilVideoTime,
-        source
+        source,
       });
     }
 
@@ -946,7 +1048,12 @@
     renderSubtitleStack();
   }
 
-  function updateRenderedSubtitleTranslation(key, original, translated, videoTime) {
+  function updateRenderedSubtitleTranslation(
+    key,
+    original,
+    translated,
+    videoTime,
+  ) {
     const now = Number(videoTime);
     const entry = renderedSubtitles.find((subtitle) => subtitle.key === key);
     if (!entry || !Number.isFinite(now)) return false;
@@ -955,7 +1062,7 @@
     entry.translated = translated || entry.translated;
     entry.retainUntilVideoTime = Math.max(
       entry.retainUntilVideoTime,
-      now + minimumSubtitleDisplaySeconds()
+      now + minimumSubtitleDisplaySeconds(),
     );
     renderSubtitleStack();
     return true;
@@ -968,14 +1075,16 @@
       entry &&
       Number.isFinite(now) &&
       now >= entry.endVideoTime &&
-      now < entry.retainUntilVideoTime
+      now < entry.retainUntilVideoTime,
     );
   }
 
   function removeExpiredRenderedSubtitles(videoTime) {
     const now = Number(videoTime);
     if (!Number.isFinite(now)) return;
-    const next = renderedSubtitles.filter((entry) => now < entry.retainUntilVideoTime);
+    const next = renderedSubtitles.filter(
+      (entry) => now < entry.retainUntilVideoTime,
+    );
     if (next.length === renderedSubtitles.length) return;
     renderedSubtitles = next;
     if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
@@ -1004,16 +1113,20 @@
 
   function subtitleLookupTime(videoTime) {
     // Positive values delay LST subtitles; negative values show them earlier.
-    return Number(videoTime) - clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000;
+    return (
+      Number(videoTime) -
+      clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000
+    );
   }
 
   function isTimedCueStillCurrent(key) {
     const video = document.querySelector("video");
-    if (!video || !renderedSubtitles.some((entry) => entry.key === key)) return false;
+    if (!video || !renderedSubtitles.some((entry) => entry.key === key))
+      return false;
     const match = findCueAt(subtitleLookupTime(video.currentTime));
     return Boolean(
       (match && cueKey(match.cue) === key) ||
-      shouldRetainRenderedSubtitle(key, video.currentTime)
+      shouldRetainRenderedSubtitle(key, video.currentTime),
     );
   }
 
@@ -1024,7 +1137,7 @@
     const response = await runtimeMessage({
       type: "CACHE_GET",
       cacheId: cacheId(),
-      keys
+      keys,
     });
 
     const entries = response.entries || {};
@@ -1040,7 +1153,7 @@
   function refreshCacheCoverage(videoTime) {
     currentStatus.translatedCount = cues.reduce(
       (count, cue) => count + (knownCachedKeys.has(cueKey(cue)) ? 1 : 0),
-      0
+      0,
     );
     updateProgress();
 
@@ -1080,7 +1193,7 @@
 
     const cached = await getCachedTranslations(deduped);
     const missing = deduped.filter(
-      (cue) => !Object.prototype.hasOwnProperty.call(cached, cueKey(cue))
+      (cue) => !Object.prototype.hasOwnProperty.call(cached, cueKey(cue)),
     );
 
     if (!missing.length) {
@@ -1106,13 +1219,13 @@
         requestTimeoutSeconds: settings.requestTimeoutSeconds,
         items: missing.map((cue) => ({
           id: cueKey(cue),
-          text: cue.text
-        }))
+          text: cue.text,
+        })),
       });
 
       currentStatus.requestState = "done";
       currentStatus.lastRequestMs =
-        response.summary?.elapsedMs || (Date.now() - requestStartedAt);
+        response.summary?.elapsedMs || Date.now() - requestStartedAt;
       currentStatus.lastRequestRequested =
         response.summary?.requested ?? missing.length;
       currentStatus.lastRequestTranslated =
@@ -1122,13 +1235,14 @@
       currentStatus.lastDiagnostics = response.diagnostics || [];
 
       const latestDiag = currentStatus.lastDiagnostics.length
-        ? currentStatus.lastDiagnostics[currentStatus.lastDiagnostics.length - 1]
+        ? currentStatus.lastDiagnostics[
+            currentStatus.lastDiagnostics.length - 1
+          ]
         : null;
 
-      currentStatus.lastOllamaMode =
-        latestDiag?.idRecovery
-          ? `${latestDiag.mode || "structured"} / ${latestDiag.idRecovery}`
-          : (latestDiag?.mode || latestDiag?.stage || "");
+      currentStatus.lastOllamaMode = latestDiag?.idRecovery
+        ? `${latestDiag.mode || "structured"} / ${latestDiag.idRecovery}`
+        : latestDiag?.mode || latestDiag?.stage || "";
 
       currentStatus.lastOllamaRaw = latestDiag?.rawResponse || "";
       updateDebugPanel();
@@ -1144,22 +1258,24 @@
           type: "CACHE_SET",
           cacheId: cacheId(),
           entries: newEntries,
-          metadata: cacheMetadata()
+          metadata: cacheMetadata(),
         });
       }
 
       return {
         entries: { ...cached, ...newEntries },
-        failures: response.failures || []
+        failures: response.failures || [],
       };
     } catch (error) {
       currentStatus.requestState = "error";
       currentStatus.lastError = error.message;
       if (error?.diagnostics) {
-        currentStatus.lastDiagnostics = [{
-          stage: "extension-request-error",
-          ...error.diagnostics
-        }];
+        currentStatus.lastDiagnostics = [
+          {
+            stage: "extension-request-error",
+            ...error.diagnostics,
+          },
+        ];
       }
       updateDebugPanel();
       throw error;
@@ -1185,7 +1301,7 @@
           key,
           cue.text,
           cached[key],
-          document.querySelector("video")?.currentTime
+          document.querySelector("video")?.currentTime,
         );
       }
     } else {
@@ -1198,7 +1314,7 @@
             key,
             cue.text,
             currentResult.entries[key],
-            document.querySelector("video")?.currentTime
+            document.querySelector("video")?.currentTime,
           );
         }
       }
@@ -1207,7 +1323,10 @@
     if (settings.autoTranslateAhead && cues.length) {
       maintainLookAhead(cue, index).catch((error) => {
         console.warn("[LST] Look-ahead translation failed:", error);
-        setStatus(`Could not maintain the translation buffer: ${error.message}`, true);
+        setStatus(
+          `Could not maintain the translation buffer: ${error.message}`,
+          true,
+        );
       });
     }
   }
@@ -1215,10 +1334,11 @@
   async function maintainLookAhead(currentCue, index) {
     const seconds = Math.max(30, Number(settings.lookAheadSeconds) || 30);
     const playbackTime = Number(document.querySelector("video")?.currentTime);
-    const deadline = Math.max(
-      currentCue.start,
-      Number.isFinite(playbackTime) ? playbackTime : currentCue.start
-    ) + seconds;
+    const deadline =
+      Math.max(
+        currentCue.start,
+        Number.isFinite(playbackTime) ? playbackTime : currentCue.start,
+      ) + seconds;
     const ahead = [];
 
     for (const cue of cues.slice(index + 1)) {
@@ -1235,7 +1355,10 @@
     if (!ahead.length) return;
     if (!lookAheadNoticeShown) {
       lookAheadNoticeShown = true;
-      setStatus(`Preparing translations at least ${seconds} seconds ahead…`, true);
+      setStatus(
+        `Preparing translations at least ${seconds} seconds ahead…`,
+        true,
+      );
     }
 
     const batchSize = Math.max(1, Number(settings.batchSize) || 8);
@@ -1246,10 +1369,16 @@
         failed += result.failures.length;
       }
       if (failed) {
-        setStatus(`${failed} upcoming subtitle${failed === 1 ? "" : "s"} could not be prepared.`, true);
+        setStatus(
+          `${failed} upcoming subtitle${failed === 1 ? "" : "s"} could not be prepared.`,
+          true,
+        );
       } else if (!lookAheadReadyNoticeShown) {
         lookAheadReadyNoticeShown = true;
-        setStatus(`Translation buffer ready at least ${seconds} seconds ahead.`, true);
+        setStatus(
+          `Translation buffer ready at least ${seconds} seconds ahead.`,
+          true,
+        );
       }
     } finally {
       for (const cue of ahead) lookAheadQueued.delete(cueKey(cue));
@@ -1264,7 +1393,8 @@
       !settings.model ||
       !cues.length ||
       precomputeInProgress
-    ) return;
+    )
+      return;
 
     pausedCachingPromise = runPausedCaching(video).finally(() => {
       pausedCachingPromise = null;
@@ -1277,27 +1407,36 @@
   async function runPausedCaching(video) {
     if (!pausedCacheNoticeShown) {
       pausedCacheNoticeShown = true;
-      setStatus("Paused — building more of this episode's translation cache…", true);
+      setStatus(
+        "Paused — building more of this episode's translation cache…",
+        true,
+      );
     }
 
     while (video.paused && settings.cacheWhilePaused && !precomputeInProgress) {
       const playbackTime = subtitleLookupTime(video.currentTime);
-      const remaining = cues.filter((cue) =>
-        cue.end > playbackTime &&
-        !knownCachedKeys.has(cueKey(cue)) &&
-        !pausedCacheFailedKeys.has(cueKey(cue))
+      const remaining = cues.filter(
+        (cue) =>
+          cue.end > playbackTime &&
+          !knownCachedKeys.has(cueKey(cue)) &&
+          !pausedCacheFailedKeys.has(cueKey(cue)),
       );
 
       if (!remaining.length) {
         if (!pausedCacheCompleteNoticeShown) {
           pausedCacheCompleteNoticeShown = true;
-          setStatus("Paused cache complete from the current position to the end.", true);
+          setStatus(
+            "Paused cache complete from the current position to the end.",
+            true,
+          );
         }
         return;
       }
 
-      const available = remaining.filter((cue) =>
-        !translationInFlight.has(cueKey(cue)) && !lookAheadQueued.has(cueKey(cue))
+      const available = remaining.filter(
+        (cue) =>
+          !translationInFlight.has(cueKey(cue)) &&
+          !lookAheadQueued.has(cueKey(cue)),
       );
       if (!available.length) return;
 
@@ -1311,8 +1450,8 @@
       refreshCacheCoverage(video.currentTime);
       setStatus(
         `Paused cache · ${formatAheadDuration(currentStatus.cachedAheadSeconds)} ahead · ` +
-        `${currentStatus.translatedCount}/${cues.length} cues`,
-        true
+          `${currentStatus.translatedCount}/${cues.length} cues`,
+        true,
       );
     }
   }
@@ -1350,7 +1489,7 @@
       if (pausedCacheNoticeShown) {
         setStatus(
           `Playback resumed · ${formatAheadDuration(currentStatus.cachedAheadSeconds)} cached ahead.`,
-          true
+          true,
         );
       }
     }
@@ -1387,13 +1526,14 @@
     removeExpiredRenderedSubtitles(video.currentTime);
 
     if (key !== lastRenderedCueKey) {
-      const timingOffsetSeconds = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000;
+      const timingOffsetSeconds =
+        clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000;
       beginRenderedSubtitle({
         key,
         original: match.cue.text,
         naturalEndVideoTime: match.cue.end + timingOffsetSeconds,
         videoTime: video.currentTime,
-        source: "timed"
+        source: "timed",
       });
       currentStatus.playbackMode = "timed-text pending";
 
@@ -1410,11 +1550,13 @@
     const candidates = [
       document.querySelector(".player-timedtext"),
       document.querySelector('[data-uia="player-subtitle-text"]'),
-      document.querySelector(".player-timedtext-text-container")
+      document.querySelector(".player-timedtext-text-container"),
     ].filter(Boolean);
 
     for (const container of candidates) {
-      const text = normalizeText(container.innerText || container.textContent || "");
+      const text = normalizeText(
+        container.innerText || container.textContent || "",
+      );
       if (text) return text;
     }
 
@@ -1426,10 +1568,14 @@
 
     const text = findNetflixRenderedSubtitle();
     if (!text) {
-      if (lastFallbackText && String(currentStatus.playbackMode).startsWith("DOM")) {
+      if (
+        lastFallbackText &&
+        String(currentStatus.playbackMode).startsWith("DOM")
+      ) {
         const video = document.querySelector("video");
         const fallbackKey = cueKey(fallbackCueForText(lastFallbackText));
-        if (shouldRetainRenderedSubtitle(fallbackKey, video?.currentTime)) return;
+        if (shouldRetainRenderedSubtitle(fallbackKey, video?.currentTime))
+          return;
         lastFallbackText = "";
         removeRenderedSubtitle(fallbackKey);
       }
@@ -1438,15 +1584,20 @@
     if (text === lastFallbackText) return;
 
     const video = document.querySelector("video");
-    const timedMatch = video && cues.length
-      ? findCueAt(subtitleLookupTime(video.currentTime))
-      : null;
+    const timedMatch =
+      video && cues.length
+        ? findCueAt(subtitleLookupTime(video.currentTime))
+        : null;
     const timedText = timedMatch ? normalizeText(timedMatch.cue.text) : "";
 
     // If the captured timed-text track clearly matches the subtitle Netflix is
     // displaying, let the time-synced path handle it. Otherwise the DOM is the
     // source of truth and guarantees that visible subtitles can still translate.
-    if (timedText && timedText === text && Date.now() - lastTimedCueMatchAt < 1500) {
+    if (
+      timedText &&
+      timedText === text &&
+      Date.now() - lastTimedCueMatchAt < 1500
+    ) {
       return;
     }
 
@@ -1459,8 +1610,9 @@
       const translated = result.entries[key] || "";
 
       if (translated && lastFallbackText === text) {
-        currentStatus.playbackMode =
-          cues.length ? "DOM fallback (timing mismatch)" : "DOM realtime";
+        currentStatus.playbackMode = cues.length
+          ? "DOM fallback (timing mismatch)"
+          : "DOM realtime";
         currentStatus.lastTranslatedText = truncate(translated);
         const videoTime = document.querySelector("video")?.currentTime;
         beginRenderedSubtitle({
@@ -1469,7 +1621,7 @@
           translated,
           naturalEndVideoTime: videoTime,
           videoTime,
-          source: "dom"
+          source: "dom",
         });
 
         if (!precomputeInProgress) {
@@ -1477,13 +1629,14 @@
             cues.length
               ? "Using visible-subtitle fallback while the captured track is out of sync."
               : "Realtime DOM mode — waiting to capture a full subtitle track.",
-            true
+            true,
           );
         }
       }
 
       if (result.failures.length) {
-        currentStatus.lastError = result.failures[0].error || "Realtime translation failed";
+        currentStatus.lastError =
+          result.failures[0].error || "Realtime translation failed";
       }
     } catch (error) {
       currentStatus.lastError = error.message;
@@ -1500,7 +1653,7 @@
     observer.observe(document.documentElement, {
       subtree: true,
       childList: true,
-      characterData: true
+      characterData: true,
     });
 
     // Netflix sometimes updates subtitle layout without a useful mutation on the
@@ -1512,10 +1665,8 @@
     const parsed = parseSubtitleDocument(text);
     if (!parsed.length) return;
 
-    const signature =
-      `${url}|${parsed.length}|${parsed[0]?.start}|${parsed.at(-1)?.end}`;
-    const currentSignature =
-      `${cueSourceUrl}|${cues.length}|${cues[0]?.start}|${cues.at(-1)?.end}`;
+    const signature = `${url}|${parsed.length}|${parsed[0]?.start}|${parsed.at(-1)?.end}`;
+    const currentSignature = `${cueSourceUrl}|${cues.length}|${cues[0]?.start}|${cues.at(-1)?.end}`;
 
     if (signature === currentSignature) return;
 
@@ -1534,7 +1685,7 @@
 
     setStatus(
       `Captured ${cues.length} subtitle cues · ${currentStatus.translatedCount}/${cues.length} cached.`,
-      true
+      true,
     );
   }
 
@@ -1545,7 +1696,7 @@
     }
     if (!cues.length) {
       throw new Error(
-        "No full subtitle track captured yet. Turn on a Netflix subtitle track, then retry."
+        "No full subtitle track captured yet. Turn on a Netflix subtitle track, then retry.",
       );
     }
 
@@ -1562,7 +1713,7 @@
       currentStatus.translatedCount = Object.keys(cached).length;
 
       const missing = cues.filter(
-        (cue) => !Object.prototype.hasOwnProperty.call(cached, cueKey(cue))
+        (cue) => !Object.prototype.hasOwnProperty.call(cached, cueKey(cue)),
       );
 
       const batchSize = Math.max(1, Number(settings.batchSize) || 16);
@@ -1571,7 +1722,10 @@
       updateProgress();
 
       if (!missing.length) {
-        setStatus(`Precompute already complete: ${cues.length}/${cues.length} cached.`, true);
+        setStatus(
+          `Precompute already complete: ${cues.length}/${cues.length} cached.`,
+          true,
+        );
         return;
       }
 
@@ -1579,7 +1733,7 @@
         if (precomputeCancelled) {
           setStatus(
             `Precompute stopped at ${currentStatus.translatedCount}/${cues.length}.`,
-            true
+            true,
           );
           return;
         }
@@ -1592,29 +1746,30 @@
         currentStatus.currentRangeEnd = i + batch.length;
         currentStatus.currentText = truncate(
           batch.map((cue) => cue.text).join("  •  "),
-          260
+          260,
         );
         currentStatus.batchStartedAt = Date.now();
 
         setStatus(
           `Precompute ${currentStatus.progressPercent}% · ` +
-          `${currentStatus.translatedCount}/${cues.length} cached · ` +
-          `batch ${batchNumber}/${currentStatus.totalBatches}\n` +
-          `${currentStatus.currentText}`,
-          true
+            `${currentStatus.translatedCount}/${cues.length} cached · ` +
+            `batch ${batchNumber}/${currentStatus.totalBatches}\n` +
+            `${currentStatus.currentText}`,
+          true,
         );
 
         const result = await translateCues(batch);
 
         const successful = Object.keys(result.entries).filter((key) =>
-          batch.some((cue) => cueKey(cue) === key)
+          batch.some((cue) => cueKey(cue) === key),
         ).length;
 
         currentStatus.translatedCount += successful;
         currentStatus.failedCount += result.failures.length;
 
         if (result.failures.length) {
-          currentStatus.lastError = result.failures[0].error || "One or more cues failed";
+          currentStatus.lastError =
+            result.failures[0].error || "One or more cues failed";
         }
 
         const lastSuccess = [...batch]
@@ -1624,7 +1779,7 @@
         if (lastSuccess) {
           currentStatus.lastTranslatedText = truncate(
             result.entries[cueKey(lastSuccess)],
-            180
+            180,
           );
         }
 
@@ -1640,14 +1795,14 @@
       if (currentStatus.failedCount) {
         setStatus(
           `Precompute finished at ${currentStatus.progressPercent}% · ` +
-          `${currentStatus.translatedCount}/${cues.length} cached · ` +
-          `${currentStatus.failedCount} failed.`,
-          true
+            `${currentStatus.translatedCount}/${cues.length} cached · ` +
+            `${currentStatus.failedCount} failed.`,
+          true,
         );
       } else {
         setStatus(
           `Precompute complete: ${cues.length}/${cues.length} cues cached locally.`,
-          true
+          true,
         );
       }
     } catch (error) {
@@ -1704,8 +1859,8 @@
               sourceUrl: cueSourceUrl,
               enabled: settings.enabled,
               model: settings.model,
-              targetLanguage: settings.targetLanguage
-            }
+              targetLanguage: settings.targetLanguage,
+            },
           });
           return;
 
