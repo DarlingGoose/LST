@@ -198,9 +198,7 @@
   }
 
   function simplifiedDiagnosticText(text) {
-    return comparableSubtitleText(text)
-      .toLocaleLowerCase()
-      .replace(/[\p{P}\p{S}\s]+/gu, "");
+    return globalThis.LSTSubtitleSync.simplifySubtitleText(text);
   }
 
   function diagnosticTextId(text) {
@@ -1725,6 +1723,19 @@
     return best;
   }
 
+  function findUniqueCueMatchingSimplifiedText(text) {
+    return globalThis.LSTSubtitleSync.findUniqueSimplifiedCue(cues, text);
+  }
+
+  function isInterCueGapMatch(match, naturalTime, naturalMatch) {
+    return globalThis.LSTSubtitleSync.isInterCueGapMatch(
+      cues,
+      match,
+      naturalTime,
+      naturalMatch,
+    );
+  }
+
   function cueListContainsText(selectedCues, text) {
     return Boolean(
       text && selectedCues.some((cue) => subtitleTextsMatch(cue.text, text)),
@@ -1807,7 +1818,13 @@
     };
   }
 
-  function timedTrackMismatchDiagnostics(video, netflixText, naturalMatch, matchingCue) {
+  function timedTrackMismatchDiagnostics(
+    video,
+    netflixText,
+    naturalMatch,
+    matchingCue,
+    matchQuality,
+  ) {
     const simplifiedNetflix = simplifiedDiagnosticText(netflixText);
     const simplifiedMatches = simplifiedNetflix
       ? cues.filter((cue) => simplifiedDiagnosticText(cue.text) === simplifiedNetflix)
@@ -1846,21 +1863,32 @@
         (value) => value.includes(simplifiedNetflix) || simplifiedNetflix.includes(value),
       ),
     );
+    const naturalTime = naturalSubtitleLookupTime(video.currentTime);
+    const nextMatchedCue = matchingCue ? cues[matchingCue.index + 1] : null;
 
     return {
       ...netflixSubtitleDomDiagnostics(netflixText),
       stableForMs: Math.max(0, Math.round(performance.now() - netflixSubtitleCandidateSince)),
       trackCueCount: cues.length,
-      naturalLookupMs: Math.round(naturalSubtitleLookupTime(video.currentTime) * 1000),
+      naturalLookupMs: Math.round(naturalTime * 1000),
       userTimingOffsetMs: clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0),
       automaticTimingOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
-      exactTrackMatch: Boolean(matchingCue),
+      matchQuality: matchQuality || "none",
+      exactTrackMatch: matchQuality === "exact",
       simplifiedTrackMatchCount: simplifiedMatches.length,
       simplifiedMatchCue: simplifiedMatches.length === 1
         ? diagnosticCue(cueKey(simplifiedMatches[0]))
         : "",
       combinedNearbyMatch,
       partialNearbyMatch,
+      matchedCue: matchingCue ? diagnosticCue(cueKey(matchingCue.cue)) : "",
+      msSinceMatchedCueEnd: matchingCue
+        ? Math.round((naturalTime - matchingCue.cue.end) * 1000)
+        : null,
+      msUntilNextCueStart: nextMatchedCue
+        ? Math.round((nextMatchedCue.start - naturalTime) * 1000)
+        : null,
+      inInterCueGap: isInterCueGapMatch(matchingCue, naturalTime, naturalMatch),
       nearby,
       rendered: renderedSubtitles.map((entry) => ({
         cue: diagnosticCue(entry.key),
@@ -1917,7 +1945,56 @@
       return true;
     }
 
-    const matchingCue = findCueMatchingText(netflixText, naturalTime);
+    const exactMatchingCue = findCueMatchingText(netflixText, naturalTime);
+    const simplifiedMatchingCue = exactMatchingCue
+      ? null
+      : findUniqueCueMatchingSimplifiedText(netflixText);
+    const matchingCue = exactMatchingCue || simplifiedMatchingCue;
+    const matchQuality = exactMatchingCue
+      ? "exact"
+      : simplifiedMatchingCue
+        ? "simplified-unique"
+        : "none";
+
+    if (
+      naturalMatch &&
+      simplifiedMatchingCue &&
+      simplifiedMatchingCue.index === naturalMatch.index
+    ) {
+      if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
+        logDiagnostic("info", "synchronization", "timed-track-mismatch-resolved", {
+          mismatchId: activeTimedTrackMismatchId,
+          outcome: "unique-simplified-current-cue-match",
+          durationMs: timedTrackMismatchSince
+            ? Math.round(performance.now() - timedTrackMismatchSince)
+            : null,
+          previousReason: lastTimedTrackMismatch || "confirmed-mismatch",
+        }, cueKey(naturalMatch.cue));
+      }
+      if (!subtitleTextsMatch(lastNetflixSyncText, netflixText)) {
+        logDiagnostic("info", "synchronization", "formatting-match-accepted", {
+          matchQuality,
+          netflixTextLength: normalizeText(netflixText).length,
+          capturedTextLength: normalizeText(naturalMatch.cue.text).length,
+        }, cueKey(naturalMatch.cue));
+      }
+      timedTrackSyncState = "verified";
+      lastNetflixSyncText = netflixText;
+      timedTrackMismatchSince = 0;
+      lastTimedTrackMismatch = "";
+      activeTimedTrackMismatchId = 0;
+      return true;
+    }
+
+    if (isInterCueGapMatch(matchingCue, naturalTime, naturalMatch)) {
+      timedTrackSyncState = "verified";
+      lastNetflixSyncText = netflixText;
+      timedTrackMismatchSince = 0;
+      lastTimedTrackMismatch = "";
+      activeTimedTrackMismatchId = 0;
+      return true;
+    }
+
     if (
       matchingCue &&
       timedTrackSyncState === "unverified"
@@ -1932,13 +2009,18 @@
       timedTrackMismatchSince = 0;
       lastTimedTrackMismatch = "";
       logDiagnostic("info", "synchronization", "timed-track-anchored", {
+        matchQuality,
         automaticOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
       }, cueKey(matchingCue.cue));
       return true;
     }
 
     if (timedTrackSyncState === "verified") {
-      const mismatch = matchingCue ? "known-cue-boundary" : "unknown-text";
+      const mismatch = exactMatchingCue
+        ? "known-cue-boundary"
+        : simplifiedMatchingCue
+          ? "formatting-cue-boundary"
+          : "unknown-text";
       const now = performance.now();
       if (!timedTrackMismatchSince || lastTimedTrackMismatch !== mismatch) {
         timedTrackMismatchSince = now;
@@ -1953,6 +2035,7 @@
             netflixText,
             naturalMatch,
             matchingCue,
+            matchQuality,
           ),
         }, naturalMatch ? cueKey(naturalMatch.cue) : "");
       }
@@ -1986,6 +2069,7 @@
           durationMs: mismatchDurationMs,
           automaticOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
           cueDistance: Number.isFinite(cueDistance) ? cueDistance : null,
+          matchQuality,
         }, cueKey(matchingCue.cue));
         return true;
       }
@@ -1994,7 +2078,11 @@
     if (timedTrackSyncState !== "mismatch") {
       logDiagnostic("warning", "synchronization", "timed-track-mismatch-confirmed", {
         mismatchId: activeTimedTrackMismatchId,
-        reason: matchingCue ? "known-cue-boundary" : "unknown-text",
+        reason: exactMatchingCue
+          ? "known-cue-boundary"
+          : simplifiedMatchingCue
+            ? "formatting-cue-boundary"
+            : "unknown-text",
         retainedTimedSubtitle: true,
         durationMs: timedTrackMismatchSince
           ? Math.round(performance.now() - timedTrackMismatchSince)
@@ -2004,6 +2092,7 @@
           netflixText,
           naturalMatch,
           matchingCue,
+          matchQuality,
         ),
       }, naturalMatch ? cueKey(naturalMatch.cue) : "");
     }

@@ -11,6 +11,7 @@ const sourceFiles = [
   "popup.css",
   "popup.js",
   "styles.css",
+  "subtitle-sync.js",
   "translation-coordinator.js"
 ];
 
