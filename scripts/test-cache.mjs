@@ -5,6 +5,29 @@ import vm from "node:vm";
 const values = {};
 let messageHandler;
 let installedHandler;
+const fetchRequests = [];
+
+async function mockFetch(url, init = {}) {
+  fetchRequests.push({ url, init });
+  const body = JSON.parse(init.body || "{}");
+  const prompt = JSON.parse(body.prompt || "{}");
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    async json() {
+      return {
+        response: JSON.stringify({
+          translations: (prompt.subtitles || []).map((item) => ({
+            id: item.id,
+            text: `translated:${item.text}`,
+          })),
+        }),
+        done_reason: "stop",
+      };
+    },
+  };
+}
 
 const storage = {
   async get(query) {
@@ -29,7 +52,7 @@ const context = vm.createContext({
   AbortController,
   console,
   Date,
-  fetch,
+  fetch: mockFetch,
   setTimeout,
   clearTimeout,
   TextDecoder,
@@ -52,6 +75,27 @@ vm.runInContext(source, context, { filename: "background.js" });
 await installedHandler();
 assert.equal(values.model, "translategemma:4b");
 assert.equal(values.showQuickPills, true);
+assert.equal(values.showTranscriptSidebar, false);
+assert.equal(values.useTranslationContext, false);
+
+let response = await send({
+  type: "TRANSLATE_BATCH",
+  model: "test-model",
+  targetLanguage: "English",
+  items: [{ id: "target", text: "対象" }],
+  contextItems: [
+    { position: "before", startMs: 1000, text: "前" },
+    { position: "after", startMs: 3000, text: "後" },
+  ],
+});
+assert.equal(response.translations.length, 1);
+assert.equal(response.translations[0].id, "target");
+assert.equal(response.summary.contextCueCount, 2);
+const contextRequestBody = JSON.parse(fetchRequests.at(-1).init.body);
+const contextPrompt = JSON.parse(contextRequestBody.prompt);
+assert.equal(contextPrompt.subtitles.length, 1);
+assert.equal(contextPrompt.contextSubtitles.length, 2);
+assert.match(contextRequestBody.system, /reference only/i);
 
 function send(message) {
   return new Promise((resolve, reject) => {
@@ -79,7 +123,7 @@ await send({
   }
 });
 
-let response = await send({ type: "LIST_TRANSLATION_CACHES" });
+response = await send({ type: "LIST_TRANSLATION_CACHES" });
 assert.equal(response.ok, true);
 assert.equal(response.caches.length, 1);
 assert.equal(response.caches[0].title, "Example Show: Episode 1");
@@ -211,5 +255,55 @@ assert.equal(reconciledCache.fallbackCueCount, 2);
 response = await send({ type: "CLEAR_TRANSLATION_CACHE" });
 assert.equal(response.removed, 2);
 assert.equal((await send({ type: "LIST_TRANSLATION_CACHES" })).caches.length, 0);
+
+await send({
+  type: "APPEND_DEBUG_EVENTS",
+  events: [{
+    timestamp: 123,
+    level: "warning",
+    category: "rendering",
+    event: "subtitle-cleared",
+    videoId: "8123",
+    videoTime: 42.1256,
+    cue: "41000:43000",
+    details: {
+      reason: "test",
+      url: "https://example.invalid/?token=secret",
+      subtitleText: "private subtitle",
+      observations: [{ lengths: [{ length: 12, textId: "text-1" }] }],
+    },
+  }],
+});
+response = await send({ type: "GET_DEBUG_EVENTS" });
+assert.equal(response.events.length, 1);
+assert.equal(response.events[0].videoTime, 42.126);
+assert.equal(response.events[0].details.reason, "test");
+assert.equal(response.events[0].details.url, "[redacted]");
+assert.equal(response.events[0].details.subtitleText, "[redacted]");
+assert.equal(response.events[0].details.observations[0].lengths[0].length, 12);
+assert.equal(response.events[0].details.observations[0].lengths[0].textId, "text-1");
+assert.ok(response.bytes > 0);
+await send({ type: "CLEAR_DEBUG_EVENTS" });
+assert.equal((await send({ type: "GET_DEBUG_EVENTS" })).events.length, 0);
+
+for (let batch = 0; batch < 8; batch++) {
+  await send({
+    type: "APPEND_DEBUG_EVENTS",
+    events: Array.from({ length: 100 }, (_, index) => ({
+      timestamp: batch * 100 + index + 1,
+      level: "info",
+      category: "test",
+      event: "bounded-event",
+    })),
+  });
+}
+response = await send({ type: "GET_DEBUG_EVENTS" });
+assert.equal(response.events.length, 750);
+assert.equal(response.events[0].timestamp, 51);
+values["translationCache:debug-clear-test:model:English"] = { cue: "translation" };
+await send({ type: "CLEAR_DEBUG_EVENTS" });
+assert.deepEqual(values["translationCache:debug-clear-test:model:English"], {
+  cue: "translation",
+});
 
 console.log("Translation cache management checks passed.");

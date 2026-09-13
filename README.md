@@ -183,6 +183,12 @@ The Subtitles tab provides a −2000 ms to +2000 ms timing offset in 50 ms steps
 
 Settings is organized into General, Subtitles, Storage, and Advanced tabs so model setup, appearance, cached episodes, and diagnostics no longer compete in one long page.
 
+The Advanced tab also includes a bounded local subtitle event log. It records cue lifecycle, synchronization, cache, and translation events so brief subtitle clears can be diagnosed after playback. Mismatch events include DOM selector/node counts, anonymous page-session text IDs, text lengths, simplified/combined-line match results, nearby cue timing, offsets, rendered state, and resolution outcomes. The log stays in extension storage, omits subtitle text and complete request URLs, and can be filtered, copied, exported, or cleared independently from translation caches.
+
+An optional in-player transcript sidebar shows the complete captured subtitle track with locally cached translations as they become available. The current cue is highlighted and automatically scrolled into view; the sidebar can be toggled from Subtitle settings or the compact Netflix player controls.
+
+Surrounding subtitle context is also opt-in. When enabled, LST sends up to two nearby source cues before and after each new translation to the same user-configured Ollama endpoint. These lines are marked as reference-only so the model can resolve names, pronouns, and sentence continuity without returning extra translations. Context can use more tokens and add latency, and enabling it does not replace translations that are already cached.
+
 An optional persistent LST pill sits in a coordinated top-left HUD. It shows Waiting, Ready, Realtime, Buffering, Cached, Precomputing, or Error status and opens a compact menu for toggling the LST translation, LST original text, and Netflix subtitles. Informational notices stack below the pill rather than overlapping it.
 
 ## Subtitle customization, buffering, and cache management

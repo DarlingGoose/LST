@@ -21,6 +21,7 @@ const TAB_DETAILS = {
     description: "Troubleshooting controls with privacy boundaries kept explicit."
   }
 };
+let diagnosticLogEvents = [];
 
 const APPEARANCE_DEFAULTS = {
   subtitleHorizontalPosition: "center",
@@ -86,6 +87,76 @@ function formatCacheDate(value) {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(date);
+}
+
+function diagnosticLogJson() {
+  return JSON.stringify(diagnosticLogEvents, null, 2);
+}
+
+function renderDiagnosticLog() {
+  const container = $("diagnosticLog");
+  const level = $("diagnosticLevel").value;
+  const category = $("diagnosticCategory").value;
+  const filtered = diagnosticLogEvents
+    .filter((event) => !level || event.level === level)
+    .filter((event) => !category || event.category === category)
+    .toReversed();
+
+  container.replaceChildren();
+  if (!filtered.length) {
+    const empty = document.createElement("div");
+    empty.className = "diagnostic-log-empty";
+    empty.textContent = diagnosticLogEvents.length
+      ? "No events match these filters."
+      : "No subtitle events have been recorded yet.";
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const event of filtered) {
+    const row = document.createElement("div");
+    row.className = "diagnostic-event";
+    row.dataset.level = event.level;
+    const time = document.createElement("span");
+    time.className = "diagnostic-event-time";
+    time.textContent = new Date(event.timestamp).toLocaleString();
+    const severity = document.createElement("span");
+    severity.className = "diagnostic-event-level";
+    severity.textContent = event.level;
+    const name = document.createElement("span");
+    name.className = "diagnostic-event-name";
+    name.textContent = `${event.category} · ${event.event}`;
+    const context = document.createElement("span");
+    context.className = "diagnostic-event-context";
+    const location = [
+      `video ${event.videoId || "unknown"}`,
+      event.videoTime == null ? "" : `at ${Number(event.videoTime).toFixed(3)}s`,
+      event.cue ? `cue ${event.cue}` : "",
+    ].filter(Boolean).join(" · ");
+    const details = Object.keys(event.details || {}).length
+      ? JSON.stringify(event.details)
+      : "";
+    context.textContent = [location, details].filter(Boolean).join("\n");
+    row.append(time, severity, name, context);
+    container.appendChild(row);
+  }
+}
+
+async function loadDiagnosticLog() {
+  $("diagnosticLogSummary").textContent = "Loading local diagnostic events…";
+  const response = await runtimeMessage({ type: "GET_DEBUG_EVENTS" });
+  diagnosticLogEvents = response.events || [];
+  const categorySelect = $("diagnosticCategory");
+  const selectedCategory = categorySelect.value;
+  const categories = [...new Set(diagnosticLogEvents.map((event) => event.category))]
+    .filter(Boolean)
+    .sort();
+  categorySelect.replaceChildren(new Option("All categories", ""));
+  for (const value of categories) categorySelect.appendChild(new Option(value, value));
+  if (categories.includes(selectedCategory)) categorySelect.value = selectedCategory;
+  $("diagnosticLogSummary").textContent =
+    `${diagnosticLogEvents.length} of ${response.limit} events · ${formatBytes(response.bytes)}`;
+  renderDiagnosticLog();
 }
 
 function formatTimestamp(milliseconds) {
@@ -379,9 +450,11 @@ async function load() {
   $("showTranslated").checked = s.showTranslated !== false;
   $("showStatusMessages").checked = s.showStatusMessages !== false;
   $("autoTranslateAhead").checked = s.autoTranslateAhead !== false;
+  $("useTranslationContext").checked = s.useTranslationContext === true;
   $("showDebugPanel").checked = s.showDebugPanel === true;
   $("debugPanelAlwaysOnTop").checked = s.debugPanelAlwaysOnTop === true;
   $("showQuickPills").checked = s.showQuickPills !== false;
+  $("showTranscriptSidebar").checked = s.showTranscriptSidebar === true;
   $("lookAheadSeconds").value = Math.max(30, Number(s.lookAheadSeconds) || 30);
   $("batchSize").value = s.batchSize ?? 8;
   $("minimumSubtitleDisplaySeconds").value = s.minimumSubtitleDisplaySeconds ?? 2;
@@ -390,6 +463,7 @@ async function load() {
   $("modelSummary").textContent = s.model || DEFAULT_MODEL;
   applyAppearance(s);
   await loadCacheLibrary();
+  await loadDiagnosticLog();
   $("pullModelName").value = s.model || DEFAULT_MODEL;
 
   try {
@@ -470,9 +544,11 @@ function collectSettings() {
     showTranslated: $("showTranslated").checked,
     showStatusMessages: $("showStatusMessages").checked,
     autoTranslateAhead: $("autoTranslateAhead").checked,
+    useTranslationContext: $("useTranslationContext").checked,
     showDebugPanel: $("showDebugPanel").checked,
     debugPanelAlwaysOnTop: $("debugPanelAlwaysOnTop").checked,
     showQuickPills: $("showQuickPills").checked,
+    showTranscriptSidebar: $("showTranscriptSidebar").checked,
     lookAheadSeconds: clampNumber("lookAheadSeconds", 30),
     batchSize: clampNumber("batchSize", 8),
     minimumSubtitleDisplaySeconds: clampNumber("minimumSubtitleDisplaySeconds", 2),
@@ -552,6 +628,49 @@ $("copyOllamaCommand").addEventListener("click", async () => {
   }
 });
 
+$("refreshDiagnosticLog").addEventListener("click", () => {
+  loadDiagnosticLog().catch((error) =>
+    setStatus(`Could not load diagnostic log: ${error.message}`, "error"));
+});
+
+for (const id of ["diagnosticLevel", "diagnosticCategory"]) {
+  $(id).addEventListener("change", renderDiagnosticLog);
+}
+
+$("copyDiagnosticLog").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(diagnosticLogJson());
+    setStatus("Diagnostic log copied as JSON.", "success");
+  } catch (error) {
+    setStatus(`Could not copy diagnostic log: ${error.message}`, "error");
+  }
+});
+
+$("exportDiagnosticLog").addEventListener("click", () => {
+  const url = URL.createObjectURL(new Blob([diagnosticLogJson()], {
+    type: "application/json;charset=utf-8",
+  }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `lst-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  setStatus("Diagnostic log exported.", "success");
+});
+
+$("clearDiagnosticLog").addEventListener("click", async () => {
+  if (!confirm("Clear all locally stored diagnostic events?")) return;
+  try {
+    await runtimeMessage({ type: "CLEAR_DEBUG_EVENTS" });
+    await loadDiagnosticLog();
+    setStatus("Diagnostic log cleared.", "success");
+  } catch (error) {
+    setStatus(`Could not clear diagnostic log: ${error.message}`, "error");
+  }
+});
+
 $("save").addEventListener("click", async () => {
   try {
     await runtimeMessage({ type: "SAVE_SETTINGS", settings: collectSettings() });
@@ -621,7 +740,7 @@ $("cacheList").addEventListener("click", async (event) => {
   }
 });
 
-document.querySelectorAll("input:not([data-transient]), select").forEach((control) => {
+document.querySelectorAll("input:not([data-transient]), select:not([data-transient])").forEach((control) => {
   control.addEventListener(control.type === "range" ? "input" : "change", markUnsaved);
 });
 

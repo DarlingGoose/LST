@@ -1,4 +1,7 @@
 const ext = globalThis.browser || globalThis.chrome;
+const DIAGNOSTIC_LOG_KEY = "diagnosticLog";
+const DIAGNOSTIC_LOG_LIMIT = 750;
+let diagnosticWriteQueue = Promise.resolve();
 
 const DEFAULTS = {
   enabled: true,
@@ -12,6 +15,7 @@ const DEFAULTS = {
   maximumVisibleSubtitles: 2,
   showStatusMessages: true,
   autoTranslateAhead: true,
+  useTranslationContext: false,
   lookAheadSeconds: 30,
   cacheWhilePaused: true,
   batchSize: 8,
@@ -19,6 +23,7 @@ const DEFAULTS = {
   showDebugPanel: false,
   debugPanelAlwaysOnTop: false,
   showQuickPills: true,
+  showTranscriptSidebar: false,
   subtitleHorizontalPosition: "center",
   subtitleVerticalPosition: 9,
   subtitleMaxWidth: 92,
@@ -51,6 +56,73 @@ async function getSettings() {
 function truncate(value, max = 900) {
   value = String(value ?? "");
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+function sanitizeDiagnosticValue(value, depth = 0) {
+  if (depth > 5) return "[truncated]";
+  if (value == null || typeof value === "boolean" || typeof value === "number") {
+    return value;
+  }
+  if (typeof value === "string") return truncate(value, 240);
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => sanitizeDiagnosticValue(item, depth + 1));
+  }
+  if (typeof value !== "object") return String(value);
+
+  const sanitized = {};
+  for (const [key, item] of Object.entries(value).slice(0, 30)) {
+    if (/(cookie|authorization|token|secret|password|api.?key|subtitle.?text|source.?text|translated.?text|url)/i.test(key)) {
+      sanitized[key] = "[redacted]";
+    } else {
+      sanitized[key] = sanitizeDiagnosticValue(item, depth + 1);
+    }
+  }
+  return sanitized;
+}
+
+function appendDiagnosticEvents(events) {
+  const safeEvents = (events || []).slice(0, 100).map((event) => ({
+    timestamp: Number(event?.timestamp) || Date.now(),
+    level: ["info", "warning", "error"].includes(event?.level)
+      ? event.level
+      : "info",
+    category: truncate(event?.category || "general", 40),
+    event: truncate(event?.event || "unknown", 80),
+    videoId: truncate(event?.videoId || "unknown", 40),
+    videoTime: Number.isFinite(Number(event?.videoTime))
+      ? Number(Number(event.videoTime).toFixed(3))
+      : null,
+    cue: truncate(event?.cue || "", 80),
+    details: sanitizeDiagnosticValue(event?.details || {})
+  }));
+  if (!safeEvents.length) return diagnosticWriteQueue;
+
+  diagnosticWriteQueue = diagnosticWriteQueue
+    .catch(() => {})
+    .then(async () => {
+      const stored = await ext.storage.local.get(DIAGNOSTIC_LOG_KEY);
+      const current = Array.isArray(stored[DIAGNOSTIC_LOG_KEY])
+        ? stored[DIAGNOSTIC_LOG_KEY]
+        : [];
+      await ext.storage.local.set({
+        [DIAGNOSTIC_LOG_KEY]: [...current, ...safeEvents].slice(-DIAGNOSTIC_LOG_LIMIT)
+      });
+    });
+  return diagnosticWriteQueue;
+}
+
+async function getDiagnosticEvents() {
+  await diagnosticWriteQueue.catch(() => {});
+  const stored = await ext.storage.local.get(DIAGNOSTIC_LOG_KEY);
+  const events = Array.isArray(stored[DIAGNOSTIC_LOG_KEY])
+    ? stored[DIAGNOSTIC_LOG_KEY]
+    : [];
+  return events;
+}
+
+async function clearDiagnosticEvents() {
+  await diagnosticWriteQueue.catch(() => {});
+  await ext.storage.local.remove(DIAGNOSTIC_LOG_KEY);
 }
 
 async function fetchJson(url, init = {}, timeoutMs = 15000) {
@@ -212,15 +284,22 @@ function translationSchema() {
   };
 }
 
-function systemPrompt(targetLanguage) {
-  return [
+function systemPrompt(targetLanguage, hasContext = false) {
+  const instructions = [
     "You are a subtitle translator.",
-    `Translate every subtitle into ${targetLanguage}.`,
+    `Translate every requested subtitle into ${targetLanguage}.`,
     "Use natural, concise language suitable for subtitles.",
     "Preserve names, honorifics, punctuation, speaker labels, and intent.",
     "Do not add explanations, notes, analysis, or romanization.",
     "Do not merge, split, omit, or reorder items."
-  ].join(" ");
+  ];
+  if (hasContext) {
+    instructions.push(
+      "Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity.",
+      "Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list."
+    );
+  }
+  return instructions.join(" ");
 }
 
 function cleanPlainTranslation(value) {
@@ -244,6 +323,11 @@ async function runStructuredTranslation(items, opts) {
     id: String(item.id ?? index),
     text: String(item.text ?? "")
   }));
+  const contextInput = (opts.contextItems || []).slice(0, 12).map((item) => ({
+    position: String(item.position || "nearby"),
+    startMs: Number.isFinite(Number(item.startMs)) ? Number(item.startMs) : null,
+    text: String(item.text ?? "")
+  }));
 
   const timeoutMs = Math.max(15, Number(opts.requestTimeoutSeconds) || 75) * 1000;
   const base = normalizeBaseUrl(opts.ollamaUrl);
@@ -256,11 +340,12 @@ async function runStructuredTranslation(items, opts) {
       body: JSON.stringify({
         model: opts.model,
         system:
-          `${systemPrompt(opts.targetLanguage)} ` +
+          `${systemPrompt(opts.targetLanguage, contextInput.length > 0)} ` +
           "Return exactly one translation for every input item using the required JSON schema.",
         prompt: JSON.stringify({
           targetLanguage: opts.targetLanguage,
-          subtitles: input
+          subtitles: input,
+          ...(contextInput.length ? { contextSubtitles: contextInput } : {})
         }),
         stream: false,
         format: translationSchema(),
@@ -371,6 +456,11 @@ async function runStructuredTranslation(items, opts) {
 async function runPlainSingleTranslation(item, opts) {
   const timeoutMs = Math.max(15, Number(opts.requestTimeoutSeconds) || 75) * 1000;
   const base = normalizeBaseUrl(opts.ollamaUrl);
+  const contextInput = (opts.contextItems || []).slice(0, 12).map((entry) => ({
+    position: String(entry.position || "nearby"),
+    startMs: Number.isFinite(Number(entry.startMs)) ? Number(entry.startMs) : null,
+    text: String(entry.text ?? "")
+  }));
 
   const result = await fetchJson(
     `${base}/api/generate`,
@@ -380,9 +470,14 @@ async function runPlainSingleTranslation(item, opts) {
       body: JSON.stringify({
         model: opts.model,
         system:
-          `${systemPrompt(opts.targetLanguage)} ` +
+          `${systemPrompt(opts.targetLanguage, contextInput.length > 0)} ` +
           "Return only the translated subtitle text. Do not return JSON or a label.",
-        prompt: String(item.text ?? ""),
+        prompt: contextInput.length
+          ? JSON.stringify({
+              subtitleToTranslate: String(item.text ?? ""),
+              contextSubtitles: contextInput
+            })
+          : String(item.text ?? ""),
         stream: false,
         think: false,
         keep_alive: "15m",
@@ -854,7 +949,10 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
           model: message.model || settings.model,
           targetLanguage: message.targetLanguage || settings.targetLanguage,
           requestTimeoutSeconds:
-            message.requestTimeoutSeconds || settings.requestTimeoutSeconds
+            message.requestTimeoutSeconds || settings.requestTimeoutSeconds,
+          contextItems: Array.isArray(message.contextItems)
+            ? message.contextItems
+            : []
         };
 
         if (!opts.model) throw new Error("No Ollama model selected.");
@@ -871,7 +969,8 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
             failed: result.failures.length,
             elapsedMs: Date.now() - startedAt,
             model: opts.model,
-            targetLanguage: opts.targetLanguage
+            targetLanguage: opts.targetLanguage,
+            contextCueCount: opts.contextItems.length
           }
         });
         return;
@@ -925,6 +1024,29 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "CLEAR_TRANSLATION_CACHE": {
         sendResponse({ ok: true, removed: await clearTranslationCache() });
+        return;
+      }
+
+      case "APPEND_DEBUG_EVENTS": {
+        await appendDiagnosticEvents(message.events || []);
+        sendResponse({ ok: true });
+        return;
+      }
+
+      case "GET_DEBUG_EVENTS": {
+        const events = await getDiagnosticEvents();
+        sendResponse({
+          ok: true,
+          events,
+          limit: DIAGNOSTIC_LOG_LIMIT,
+          bytes: storedByteSize(DIAGNOSTIC_LOG_KEY, events)
+        });
+        return;
+      }
+
+      case "CLEAR_DEBUG_EVENTS": {
+        await clearDiagnosticEvents();
+        sendResponse({ ok: true });
         return;
       }
 

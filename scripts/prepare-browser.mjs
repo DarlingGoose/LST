@@ -10,7 +10,8 @@ const sourceFiles = [
   "popup.html",
   "popup.css",
   "popup.js",
-  "styles.css"
+  "styles.css",
+  "translation-coordinator.js"
 ];
 
 export async function prepareBrowser(browser) {
