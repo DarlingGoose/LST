@@ -175,7 +175,7 @@ Cached translations record and display the Netflix show name and episode name se
 
 ## Subtitle synchronization
 
-LST checks that an asynchronously translated cue is still active before rendering it, preventing a slow response from replacing a newer subtitle. It also clears lingering lines during real subtitle gaps after a short grace period for Netflix's rendered-text fallback.
+LST checks that an asynchronously translated cue is still active before rendering it, preventing a slow response from replacing a newer subtitle. Cached translations are kept in the content-script session so a new cue can render synchronously, while Netflix's rendered-text fallback must remain stable briefly before it can replace the timed track. This prevents outgoing or transitional Netflix text from flashing before the current translation. LST also clears lingering lines during real subtitle gaps after a short grace period.
 
 The Subtitles tab provides a −2000 ms to +2000 ms timing offset in 50 ms steps. Negative values show LST subtitles earlier and positive values delay them. The persistent Netflix pill offers quick −100 ms, reset, and +100 ms adjustments.
 
@@ -199,6 +199,8 @@ Settings now includes a live preview and controls for:
 - optional top-left informational messages for capture, fallback, precompute, and errors
 
 Saved appearance changes are pushed to open Netflix tabs immediately. The optional in-player controls overlay saves adjustments as you make them and shares the top-right area with the debug panel without covering it. Settings can also pull an Ollama model by name and show its download progress. The detailed debug panel is off by default for new installs.
+
+When Netflix enters browser fullscreen, LST moves its subtitle overlay and optional player controls into the active fullscreen container. They return to the page root when fullscreen closes, preserving the same subtitle state and appearance in both modes.
 
 The Translated episodes section in Settings groups locally cached episodes under their Netflix show, then lists each model/language combination with its translated cue count, estimated storage use, and last update time. Each episode can be previewed as timestamp, original text, and translated text, or exported as a UTF-8 TSV file. Individual caches or the entire local translation library can be removed there. Older caches remain readable and are grouped under Netflix with their video ID until revisiting the episode provides richer metadata.
 
