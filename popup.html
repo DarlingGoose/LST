@@ -4,11 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LST — Local Subtitle Translate</title>
+  <link rel="icon" type="image/x-icon" href="favicons/favicon.ico">
+  <link rel="icon" type="image/png" sizes="16x16" href="favicons/favicon-16x16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="favicons/favicon-32x32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="favicons/apple-touch-icon.png">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><strong>LST</strong><div><h1>Local Subtitle Translate</h1><p>Private translation with Ollama</p></div></div>
+    <div class="brand"><img class="brand-icon" src="favicons/favicon-32x32.png" alt=""><div><h1>Local Subtitle Translate</h1><p>Private translation with Ollama</p></div></div>
     <div id="statePill">Checking</div>
   </header>
 
@@ -56,6 +60,8 @@
         <div class="control-row"><div><span>Translation</span><small>Show translated subtitles</small></div><label class="switch" aria-label="Show translated subtitles"><input id="controlTranslated" type="checkbox"><span class="switch-ui"></span></label></div>
         <div class="control-row"><div><span>Original text</span><small>Show the captured source line</small></div><label class="switch" aria-label="Show original subtitle text"><input id="controlOriginal" type="checkbox"><span class="switch-ui"></span></label></div>
         <div class="control-row"><div><span>Netflix captions</span><small>Keep the source track active</small></div><label class="switch" aria-label="Show Netflix captions"><input id="controlNetflix" type="checkbox"><span class="switch-ui"></span></label></div>
+        <div class="control-row"><div><span>In-player controls</span><small>Show the LST subtitle control button on Netflix</small></div><label class="switch" aria-label="Show LST subtitle controls on Netflix"><input id="controlQuickPills" type="checkbox"><span class="switch-ui"></span></label></div>
+        <div class="control-row"><div><span>Transcript sidebar</span><small>Show the full transcript and follow the current line</small></div><label class="switch" aria-label="Show transcript sidebar on Netflix"><input id="controlTranscript" type="checkbox"><span class="switch-ui"></span></label></div>
       </section>
 
       <section id="timingSection" class="panel control-section">
@@ -74,7 +80,11 @@
     </section>
   </main>
 
-  <button id="settings" class="settings-button" type="button">Full settings</button>
+  <nav class="popup-footer-actions" aria-label="Extension shortcuts">
+    <button id="subtitleControls" class="settings-button" type="button">Subtitle controls</button>
+    <button id="toggleTranscript" class="settings-button toggle-shortcut" type="button" aria-pressed="false">Transcript: Off</button>
+    <button id="settings" class="settings-button" type="button">All settings</button>
+  </nav>
   <script src="popup.js"></script>
 </body>
 </html>

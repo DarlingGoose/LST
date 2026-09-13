@@ -35,7 +35,7 @@ button:disabled { opacity: .55; cursor: wait; transform: none; }
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 246px minmax(0, 1fr); }
 .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 28px 22px; border-right: 1px solid var(--border); background: var(--sidebar); }
 .brand { display: flex; align-items: center; gap: 14px; }
-.brand-mark { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 12px; background: var(--accent); color: #fff; font-size: 22px; font-weight: 800; }
+.brand-mark { width: 40px; height: 40px; display: block; border-radius: 12px; object-fit: cover; }
 .brand strong, .brand span { display: block; }
 .brand strong { font-size: 18px; line-height: 1.2; }
 .brand span { margin-top: 2px; color: var(--muted); font-size: 11px; }
