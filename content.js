@@ -28,6 +28,7 @@
     subtitleBackgroundOpacity: 58,
     subtitleTimingOffsetMs: 0,
   };
+  const NETFLIX_SUBTITLE_STABILITY_MS = 90;
 
   let settings = { ...DEFAULTS };
   let cues = [];
@@ -54,6 +55,8 @@
   let renderedSubtitles = [];
   let lastFallbackText = "";
   let fallbackTimer = null;
+  let netflixSubtitleCandidate = "";
+  let netflixSubtitleCandidateSince = 0;
   let timedTrackSyncState = "unverified";
   let automaticCueTimeOffsetSeconds = 0;
   let lastNetflixSyncText = "";
@@ -63,6 +66,7 @@
 
   let translationInFlight = new Map();
   let knownCachedKeys = new Set();
+  let knownCachedTranslations = new Map();
   let lookAheadQueued = new Set();
   let lookAheadNoticeShown = false;
   let lookAheadReadyNoticeShown = false;
@@ -720,6 +724,55 @@
     }
   }
 
+  function activeFullscreenElement() {
+    return (
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
+      document.mozFullScreenElement ||
+      document.msFullscreenElement ||
+      null
+    );
+  }
+
+  function overlayHost() {
+    const fullscreen = activeFullscreenElement();
+    // Netflix normally fullscreens a player container. A native fullscreen
+    // <video> cannot render arbitrary child overlays, so retain the regular
+    // host in that uncommon browser-controlled mode.
+    return fullscreen?.tagName !== "VIDEO"
+      ? fullscreen || document.documentElement
+      : document.documentElement;
+  }
+
+  function syncOverlayHost() {
+    const host = overlayHost();
+    for (const element of [overlay, hud, debugPanel]) {
+      if (element?.isConnected && element.parentElement !== host) {
+        host.appendChild(element);
+      }
+    }
+  }
+
+  function startFullscreenObserver() {
+    const handleFullscreenChange = () => {
+      requestAnimationFrame(() => {
+        ensureOverlay();
+        syncOverlayHost();
+        applySubtitleAppearance();
+        renderSubtitleStack();
+        positionDebugPanel();
+      });
+    };
+    for (const eventName of [
+      "fullscreenchange",
+      "webkitfullscreenchange",
+      "mozfullscreenchange",
+      "MSFullscreenChange",
+    ]) {
+      document.addEventListener(eventName, handleFullscreenChange);
+    }
+  }
+
   function ensureOverlay() {
     if (!overlay?.isConnected) {
       overlay = document.createElement("div");
@@ -832,6 +885,7 @@
         `v${ext.runtime.getManifest().version}`;
     }
 
+    syncOverlayHost();
     updateDebugPanel();
     applySubtitleAppearance();
     updateOverlayPanelVisibility();
@@ -1273,7 +1327,9 @@
     if (!Number.isFinite(now)) return;
 
     renderedSubtitles = renderedSubtitles.filter(
-      (entry) => entry.source === source,
+      (entry) =>
+        entry.source === source &&
+        (entry.key === key || entry.endVideoTime > now),
     );
     const existing = renderedSubtitles.find((entry) => entry.key === key);
     const endVideoTime = Number.isFinite(naturalEnd) ? naturalEnd : now;
@@ -1490,7 +1546,10 @@
   }
 
   function rememberCachedEntries(entries) {
-    for (const key of Object.keys(entries || {})) knownCachedKeys.add(key);
+    for (const [key, translation] of Object.entries(entries || {})) {
+      knownCachedKeys.add(key);
+      if (translation) knownCachedTranslations.set(key, translation);
+    }
     refreshCacheCoverage();
   }
 
@@ -1827,11 +1886,14 @@
       cueSourceUrl = "";
       cueVideoId = getVideoId();
       knownCachedKeys = new Set();
+      knownCachedTranslations = new Map();
       pausedCacheFailedKeys = new Set();
       timedTrackSyncState = "unverified";
       automaticCueTimeOffsetSeconds = 0;
       lastNetflixSyncText = "";
       lastFallbackText = "";
+      netflixSubtitleCandidate = "";
+      netflixSubtitleCandidateSince = 0;
       currentStatus.captured = false;
       currentStatus.cueCount = 0;
       currentStatus.translatedCount = 0;
@@ -1873,8 +1935,21 @@
     }
 
     currentStatus.videoTime = video.currentTime;
-    const netflixText = findNetflixRenderedSubtitle();
-    if (!validateTimedTrackAgainstNetflix(video, netflixText)) {
+    const netflixObservation = observeNetflixRenderedSubtitle();
+    const netflixText = netflixObservation.text;
+    if (
+      !netflixObservation.stable &&
+      timedTrackSyncState !== "verified"
+    ) {
+      currentStatus.playbackMode = "waiting for stable Netflix subtitle";
+      updateDebugPanel();
+      requestAnimationFrame(playbackLoop);
+      return;
+    }
+    if (
+      netflixObservation.stable &&
+      !validateTimedTrackAgainstNetflix(video, netflixText)
+    ) {
       currentStatus.activeCueStart = null;
       currentStatus.activeCueEnd = null;
       currentStatus.playbackMode = netflixText
@@ -1918,9 +1993,11 @@
     if (key !== lastRenderedCueKey) {
       const timingOffsetSeconds =
         clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000;
+      const cachedTranslation = knownCachedTranslations.get(key) || "";
       beginRenderedSubtitle({
         key,
         original: match.cue.text,
+        translated: cachedTranslation,
         naturalEndVideoTime:
           match.cue.end -
           automaticCueTimeOffsetSeconds +
@@ -1928,7 +2005,12 @@
         videoTime: video.currentTime,
         source: "timed",
       });
-      currentStatus.playbackMode = "timed-text pending";
+      currentStatus.playbackMode = cachedTranslation
+        ? "timed-text cache"
+        : "timed-text pending";
+      if (cachedTranslation) {
+        currentStatus.lastTranslatedText = truncate(cachedTranslation);
+      }
 
       ensureCueTranslated(match.cue, match.index).catch((error) => {
         currentStatus.lastError = error.message;
@@ -1956,10 +2038,34 @@
     return "";
   }
 
+  function observeNetflixRenderedSubtitle() {
+    const text = findNetflixRenderedSubtitle();
+    const now = performance.now();
+    if (text !== netflixSubtitleCandidate) {
+      netflixSubtitleCandidate = text;
+      netflixSubtitleCandidateSince = now;
+    }
+    return {
+      text,
+      stable:
+        now - netflixSubtitleCandidateSince >=
+        NETFLIX_SUBTITLE_STABILITY_MS,
+    };
+  }
+
   async function handleFallbackRenderedSubtitle() {
     if (!settings.enabled || !settings.model) return;
 
-    const text = findNetflixRenderedSubtitle();
+    const observation = observeNetflixRenderedSubtitle();
+    const text = observation.text;
+    if (!observation.stable) {
+      clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(
+        handleFallbackRenderedSubtitle,
+        NETFLIX_SUBTITLE_STABILITY_MS,
+      );
+      return;
+    }
     if (!text) {
       if (
         lastFallbackText &&
@@ -2084,6 +2190,7 @@
     lastNetflixSyncText = "";
     removeRenderedSubtitlesBySource("timed");
     knownCachedKeys = new Set();
+    knownCachedTranslations = new Map();
     pausedCacheFailedKeys = new Set();
 
     currentStatus.captured = true;
@@ -2306,6 +2413,7 @@
           await loadSettings();
           if (cacheId() !== previousCacheId) {
             knownCachedKeys = new Set();
+            knownCachedTranslations = new Map();
             pausedCacheFailedKeys = new Set();
             if (cues.length) await getCachedTranslations(cues);
           }
@@ -2329,6 +2437,7 @@
 
   async function init() {
     await loadSettings();
+    startFullscreenObserver();
     ensureOverlay();
     setStatus("Waiting for Netflix subtitles…", true);
     startTitleMetadataObserver();
