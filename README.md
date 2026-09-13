@@ -175,7 +175,7 @@ Cached translations record and display the Netflix show name and episode name se
 
 ## Subtitle synchronization
 
-LST checks that an asynchronously translated cue is still active before rendering it, preventing a slow response from replacing a newer subtitle. Cached translations are kept in the content-script session so a new cue can render synchronously, while Netflix's rendered-text fallback must remain stable briefly before it can replace the timed track. This prevents outgoing or transitional Netflix text from flashing before the current translation. LST also clears lingering lines during real subtitle gaps after a short grace period.
+LST checks that an asynchronously translated cue is still active before rendering it, preventing a slow response from replacing a newer subtitle. Cached translations are kept in the content-script session so a new cue can render synchronously, while Netflix's rendered-text fallback must remain stable briefly before it can replace the timed track. This prevents transitional Netflix text from flashing before the current translation while still retaining naturally short cues for the configured minimum display time. LST also clears lingering lines during real subtitle gaps after a short grace period.
 
 The Subtitles tab provides a −2000 ms to +2000 ms timing offset in 50 ms steps. Negative values show LST subtitles earlier and positive values delay them. The persistent Netflix pill offers quick −100 ms, reset, and +100 ms adjustments.
 

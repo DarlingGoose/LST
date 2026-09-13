@@ -1326,10 +1326,11 @@
     const naturalEnd = Number(naturalEndVideoTime);
     if (!Number.isFinite(now)) return;
 
+    // Keep recently ended cues until their configured minimum display time.
+    // Cached current cues render synchronously, so retaining the prior cue no
+    // longer creates the old-line-only flash at a cue boundary.
     renderedSubtitles = renderedSubtitles.filter(
-      (entry) =>
-        entry.source === source &&
-        (entry.key === key || entry.endVideoTime > now),
+      (entry) => entry.source === source,
     );
     const existing = renderedSubtitles.find((entry) => entry.key === key);
     const endVideoTime = Number.isFinite(naturalEnd) ? naturalEnd : now;
