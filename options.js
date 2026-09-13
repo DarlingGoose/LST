@@ -104,6 +104,22 @@ function cueTimestamp(cue) {
   return `${formatTimestamp(cue.startMs)} → ${formatTimestamp(cue.endMs)}`;
 }
 
+function preferredCacheCues(detail) {
+  const allCues = detail?.cues || [];
+  const timedCues = allCues.filter(
+    (cue) =>
+      !cue.fallback &&
+      Number.isFinite(Number(cue.startMs)) &&
+      Number(cue.startMs) >= 0,
+  );
+  return {
+    cues: timedCues.length ? timedCues : allCues,
+    omittedFallbackCount: timedCues.length
+      ? allCues.length - timedCues.length
+      : 0,
+  };
+}
+
 function createCacheItem(cache) {
   const item = document.createElement("article");
   item.className = "cache-item";
@@ -224,7 +240,7 @@ async function loadCacheDetails(cacheId) {
 
 function renderCachePreview(container, detail) {
   container.replaceChildren();
-  const cues = detail.cues || [];
+  const { cues } = preferredCacheCues(detail);
   if (!cues.length) {
     container.textContent = "No translated cues are stored in this cache.";
     return;
@@ -261,10 +277,11 @@ function renderCachePreview(container, detail) {
 
 function exportCache(detail) {
   const metadata = detail.metadata || {};
+  const { cues, omittedFallbackCount } = preferredCacheCues(detail);
   const quote = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
   const rows = [
     ["Timestamp", "Untranslated text", "Translated text"],
-    ...(detail.cues || []).map((cue) => [
+    ...cues.map((cue) => [
       cueTimestamp(cue),
       cue.sourceText,
       cue.translatedText
@@ -288,6 +305,7 @@ function exportCache(detail) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 0);
+  return omittedFallbackCount;
 }
 
 async function loadCacheLibrary() {
@@ -587,8 +605,14 @@ $("cacheList").addEventListener("click", async (event) => {
         renderCachePreview(preview, await loadCacheDetails(cacheId));
       }
     } else if (action === "export") {
-      exportCache(await loadCacheDetails(cacheId));
-      setStatus("Translation exported as TSV.", "success");
+      const omittedFallbackCount = exportCache(await loadCacheDetails(cacheId));
+      setStatus(
+        omittedFallbackCount
+          ? `Translation exported as TSV · ${omittedFallbackCount} fallback ` +
+            `entr${omittedFallbackCount === 1 ? "y" : "ies"} omitted.`
+          : "Translation exported as TSV.",
+        "success",
+      );
     }
   } catch (error) {
     setStatus(`Cache action failed: ${error.message}`, "error");

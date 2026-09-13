@@ -553,14 +553,40 @@ function mergeCacheMetadata(inferred, existing, incoming) {
   return merged;
 }
 
+function fallbackSourceTextFromKey(key) {
+  const value = String(key);
+  if (value.startsWith("fallback:")) return value.slice("fallback:".length);
+  const legacy = value.match(/^-1000:-1000:([\s\S]*)$/);
+  return legacy ? legacy[1] : null;
+}
+
+function normalizeCachedSourceText(value) {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function parseCachedCue(key, translation) {
+  const fallbackSourceText = fallbackSourceTextFromKey(key);
+  if (fallbackSourceText != null) {
+    return {
+      startMs: null,
+      endMs: null,
+      sourceText: fallbackSourceText,
+      translatedText: String(translation || ""),
+      fallback: true
+    };
+  }
+
   const match = String(key).match(/^(-?\d+):(-?\d+):([\s\S]*)$/);
   if (!match) {
     return {
       startMs: null,
       endMs: null,
       sourceText: String(key),
-      translatedText: String(translation || "")
+      translatedText: String(translation || ""),
+      fallback: true
     };
   }
 
@@ -568,7 +594,10 @@ function parseCachedCue(key, translation) {
     startMs: Number(match[1]),
     endMs: Number(match[2]),
     sourceText: match[3],
-    translatedText: String(translation || "")
+    translatedText: String(translation || ""),
+    ...(Number(match[1]) < 0 || Number(match[2]) < 0
+      ? { fallback: true }
+      : {})
   };
 }
 
@@ -583,9 +612,87 @@ async function cacheGet(cacheId, keys) {
   for (const key of keys || []) {
     if (Object.prototype.hasOwnProperty.call(value, key)) {
       found[key] = value[key];
+      continue;
+    }
+    const fallbackText = fallbackSourceTextFromKey(key);
+    if (fallbackText == null) continue;
+    for (const alias of [
+      `fallback:${fallbackText}`,
+      `-1000:-1000:${fallbackText}`
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(value, alias)) {
+        found[key] = value[alias];
+        break;
+      }
     }
   }
   return found;
+}
+
+async function reconcileFallbackCache(cacheId, timedCues, metadata = {}) {
+  if (!cacheId) throw new Error("A cache ID is required.");
+  const storageKey = cacheStorageKey(cacheId);
+  const metadataKey = cacheMetadataKey(cacheId);
+  const stored = await ext.storage.local.get([storageKey, metadataKey]);
+  const entries = { ...(stored[storageKey] || {}) };
+  const existingMetadata = stored[metadataKey] || {};
+  const timedByText = new Map();
+
+  for (const cue of timedCues || []) {
+    const key = String(cue?.key || "");
+    const sourceText = normalizeCachedSourceText(cue?.sourceText);
+    if (!key || !sourceText || fallbackSourceTextFromKey(key) != null) continue;
+    const matches = timedByText.get(sourceText) || [];
+    matches.push(key);
+    timedByText.set(sourceText, matches);
+  }
+
+  let promoted = 0;
+  let pruned = 0;
+  let ambiguous = 0;
+  let unmatched = 0;
+  for (const [fallbackKey, translation] of Object.entries(entries)) {
+    const fallbackText = fallbackSourceTextFromKey(fallbackKey);
+    if (fallbackText == null) continue;
+    const matches = timedByText.get(normalizeCachedSourceText(fallbackText)) || [];
+    if (matches.length !== 1) {
+      if (matches.length > 1) ambiguous += 1;
+      else unmatched += 1;
+      continue;
+    }
+
+    const timedKey = matches[0];
+    if (!Object.prototype.hasOwnProperty.call(entries, timedKey)) {
+      entries[timedKey] = translation;
+      promoted += 1;
+    }
+    delete entries[fallbackKey];
+    pruned += 1;
+  }
+
+  if (pruned || Object.keys(metadata || {}).length) {
+    const inferred = inferCacheMetadata(cacheId);
+    const usefulMetadata = Object.fromEntries(
+      Object.entries(metadata || {}).filter(([, value]) => value !== "" && value != null)
+    );
+    const parsedEntries = Object.entries(entries).map(([key, translation]) =>
+      parseCachedCue(key, translation)
+    );
+    const timedCount = parsedEntries.filter((cue) => !cue.fallback).length;
+    const fallbackCount = parsedEntries.length - timedCount;
+    await ext.storage.local.set({
+      [storageKey]: entries,
+      [metadataKey]: {
+        ...mergeCacheMetadata(inferred, existingMetadata, usefulMetadata),
+        cacheId,
+        cueCount: timedCount || fallbackCount,
+        fallbackCueCount: fallbackCount,
+        updatedAt: new Date().toISOString()
+      }
+    });
+  }
+
+  return { promoted, pruned, ambiguous, unmatched };
 }
 
 async function cacheSet(cacheId, entries, metadata = {}) {
@@ -599,12 +706,18 @@ async function cacheSet(cacheId, entries, metadata = {}) {
   );
   Object.assign(existing, entries || {});
   const inferred = inferCacheMetadata(cacheId);
+  const parsedEntries = Object.entries(existing).map(([key, translation]) =>
+    parseCachedCue(key, translation)
+  );
+  const timedCount = parsedEntries.filter((cue) => !cue.fallback).length;
+  const fallbackCount = parsedEntries.length - timedCount;
   await ext.storage.local.set({
     [storageKey]: existing,
     [metadataKey]: {
       ...mergeCacheMetadata(inferred, existingMetadata, usefulMetadata),
       cacheId,
-      cueCount: Object.keys(existing).length,
+      cueCount: timedCount || fallbackCount,
+      fallbackCueCount: fallbackCount,
       updatedAt: new Date().toISOString()
     }
   });
@@ -620,6 +733,11 @@ async function listTranslationCaches() {
     const metadataKey = cacheMetadataKey(cacheId);
     const metadata = all[metadataKey] || {};
     const inferred = inferCacheMetadata(cacheId);
+    const parsedEntries = Object.entries(entries || {}).map(([key, translation]) =>
+      parseCachedCue(key, translation)
+    );
+    const timedCount = parsedEntries.filter((cue) => !cue.fallback).length;
+    const fallbackCount = parsedEntries.length - timedCount;
     const showName = !isGenericCacheName(metadata.showName)
       ? metadata.showName
       : !isGenericCacheName(metadata.title)
@@ -631,7 +749,8 @@ async function listTranslationCaches() {
       showName,
       episodeName: metadata.episodeName || inferred.episodeName,
       cacheId,
-      cueCount: Object.keys(entries || {}).length,
+      cueCount: timedCount || fallbackCount,
+      fallbackCueCount: fallbackCount,
       bytes: storedByteSize(storageKey, entries) +
         (all[metadataKey] ? storedByteSize(metadataKey, all[metadataKey]) : 0)
     });
@@ -769,6 +888,18 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "CACHE_SET": {
         await cacheSet(message.cacheId, message.entries || {}, message.metadata || {});
         sendResponse({ ok: true });
+        return;
+      }
+
+      case "CACHE_RECONCILE_FALLBACK": {
+        sendResponse({
+          ok: true,
+          ...(await reconcileFallbackCache(
+            message.cacheId,
+            message.timedCues || [],
+            message.metadata || {}
+          ))
+        });
         return;
       }
 

@@ -146,8 +146,70 @@ response = await send({
 assert.equal(response.cues[0].sourceText, "cue");
 assert.equal(response.cues[0].translatedText, "翻訳");
 
+const reconciliationCacheId = "81769818:test-model:English";
+await send({
+  type: "CACHE_SET",
+  cacheId: reconciliationCacheId,
+  entries: {
+    "fallback:unique line": "Unique translation",
+    "-1000:-1000:legacy line": "Legacy translation",
+    "fallback:repeated line": "Ambiguous translation",
+    "fallback:unmatched line": "Unmatched translation"
+  },
+  metadata: {
+    showName: "Example Show",
+    episodeName: "Episode 50",
+    sourceCueCount: 4
+  }
+});
+
+response = await send({
+  type: "CACHE_GET",
+  cacheId: reconciliationCacheId,
+  keys: ["fallback:legacy line"]
+});
+assert.equal(response.entries["fallback:legacy line"], "Legacy translation");
+
+response = await send({
+  type: "CACHE_RECONCILE_FALLBACK",
+  cacheId: reconciliationCacheId,
+  timedCues: [
+    { key: "0:1000:unique line", sourceText: "unique line" },
+    { key: "1000:2000:legacy line", sourceText: "legacy line" },
+    { key: "2000:3000:repeated line", sourceText: "repeated line" },
+    { key: "3000:4000:repeated line", sourceText: "repeated line" }
+  ]
+});
+assert.equal(response.promoted, 2);
+assert.equal(response.pruned, 2);
+assert.equal(response.ambiguous, 1);
+assert.equal(response.unmatched, 1);
+
+response = await send({
+  type: "GET_TRANSLATION_CACHE",
+  cacheId: reconciliationCacheId
+});
+assert.equal(
+  response.cues.find((cue) => cue.startMs === 0)?.translatedText,
+  "Unique translation"
+);
+assert.equal(
+  response.cues.find((cue) => cue.startMs === 1000)?.translatedText,
+  "Legacy translation"
+);
+assert.equal(
+  response.cues.filter((cue) => cue.fallback).length,
+  2
+);
+response = await send({ type: "LIST_TRANSLATION_CACHES" });
+const reconciledCache = response.caches.find(
+  (cache) => cache.cacheId === reconciliationCacheId
+);
+assert.equal(reconciledCache.cueCount, 2);
+assert.equal(reconciledCache.fallbackCueCount, 2);
+
 response = await send({ type: "CLEAR_TRANSLATION_CACHE" });
-assert.equal(response.removed, 1);
+assert.equal(response.removed, 2);
 assert.equal((await send({ type: "LIST_TRANSLATION_CACHES" })).caches.length, 0);
 
 console.log("Translation cache management checks passed.");

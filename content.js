@@ -154,12 +154,45 @@
   }
 
   function cueKey(cue) {
-    return `${Math.round(cue.start * 1000)}:${Math.round(cue.end * 1000)}:${normalizeText(cue.text)}`;
+    const text = normalizeText(cue.text);
+    if (Number(cue.start) < 0 || Number(cue.end) < 0) {
+      return `fallback:${text}`;
+    }
+    return `${Math.round(cue.start * 1000)}:${Math.round(cue.end * 1000)}:${text}`;
   }
 
   function fallbackCueForText(text) {
     // Stable key so repeated DOM updates for the same subtitle reuse the cache.
     return { start: -1, end: -1, text: normalizeText(text) };
+  }
+
+  function promoteFallbackEntries(entries) {
+    if (!cues.length) return entries;
+
+    const timedCuesByText = new Map();
+    for (const cue of cues) {
+      const text = comparableSubtitleText(cue.text);
+      const matches = timedCuesByText.get(text) || [];
+      matches.push(cue);
+      timedCuesByText.set(text, matches);
+    }
+
+    const promoted = {};
+    for (const [key, translation] of Object.entries(entries || {})) {
+      if (!key.startsWith("fallback:")) {
+        promoted[key] = translation;
+        continue;
+      }
+      const matches = timedCuesByText.get(
+        comparableSubtitleText(key.slice("fallback:".length)),
+      );
+      if (matches?.length === 1) {
+        promoted[cueKey(matches[0])] = translation;
+      } else {
+        promoted[key] = translation;
+      }
+    }
+    return promoted;
   }
 
   function cacheId() {
@@ -1660,13 +1693,17 @@
       for (const entry of response.translations || []) {
         if (entry.text) newEntries[entry.id] = entry.text;
       }
-      if (requestedCacheId === cacheId()) rememberCachedEntries(newEntries);
+      const persistedEntries =
+        requestedCacheId === cacheId()
+          ? promoteFallbackEntries(newEntries)
+          : newEntries;
+      if (requestedCacheId === cacheId()) rememberCachedEntries(persistedEntries);
 
-      if (Object.keys(newEntries).length) {
+      if (Object.keys(persistedEntries).length) {
         await runtimeMessage({
           type: "CACHE_SET",
           cacheId: requestedCacheId,
-          entries: newEntries,
+          entries: persistedEntries,
           metadata: requestedCacheMetadata,
         });
       }
@@ -2196,6 +2233,20 @@
 
     currentStatus.captured = true;
     currentStatus.cueCount = cues.length;
+
+    try {
+      await runtimeMessage({
+        type: "CACHE_RECONCILE_FALLBACK",
+        cacheId: cacheId(),
+        timedCues: cues.map((cue) => ({
+          key: cueKey(cue),
+          sourceText: cue.text,
+        })),
+        metadata: cacheMetadata(),
+      });
+    } catch (error) {
+      console.warn("[LST] Could not reconcile fallback translations:", error);
+    }
 
     const allCached = await getCachedTranslations(cues);
     currentStatus.translatedCount = Object.keys(allCached).length;
