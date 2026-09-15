@@ -78,7 +78,8 @@ for (const [provider, key, model, prefix] of [
   const models = await send({ type: "GET_MODELS", provider });
   assert.deepEqual(Array.from(models.models, (item) => item.name), [model]);
   await send({ type: "SAVE_SETTINGS", settings: {
-    provider, model, targetLanguage: "English"
+    provider, model, targetLanguage: "English",
+    customTranslationPrompt: "Custom rules for {{targetLanguage}}."
   } });
   const result = await send({ type: "TRANSLATE_BATCH", items: [
     { id: "a", text: "こんにちは" }, { id: "b", text: "さようなら" }
@@ -93,10 +94,12 @@ for (const [provider, key, model, prefix] of [
   if (provider === "deepseek") {
     assert.equal(request.init.headers.Authorization, `Bearer ${key}`);
     assert.equal(JSON.parse(request.init.body).response_format.type, "json_object");
+    assert.match(JSON.parse(request.init.body).messages[0].content, /Custom rules for English/);
   } else {
     assert.equal(request.init.headers["x-goog-api-key"], key);
     assert.equal(JSON.parse(request.init.body).generationConfig.responseMimeType,
       "application/json");
+    assert.match(JSON.parse(request.init.body).systemInstruction.parts[0].text, /Custom rules for English/);
   }
 }
 

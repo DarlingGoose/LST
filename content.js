@@ -19,6 +19,7 @@
     cacheWhilePaused: true,
     batchSize: 8,
     requestTimeoutSeconds: 75,
+    customTranslationPrompt: "",
     showDebugPanel: false,
     debugPanelAlwaysOnTop: false,
     showQuickPills: true,

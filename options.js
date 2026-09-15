@@ -3,6 +3,14 @@ const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
 const DEFAULT_MODEL = "translategemma:4b";
 const PROVIDER_NAMES = { ollama: "Ollama", deepseek: "DeepSeek", gemini: "Gemini" };
+const ORIGINAL_TRANSLATION_PROMPT = [
+  "You are a subtitle translator.",
+  "Translate every requested subtitle into {{targetLanguage}}.",
+  "Use natural, concise language suitable for subtitles.",
+  "Preserve names, honorifics, punctuation, speaker labels, and intent.",
+  "Do not add explanations, notes, analysis, or romanization.",
+  "Do not merge, split, omit, or reorder items."
+].join(" ");
 const providerModels = { ollama: DEFAULT_MODEL, deepseek: "", gemini: "" };
 let configuredKeys = { deepseek: false, gemini: false };
 const SETTINGS_TABS = ["general", "subtitles", "storage", "advanced"];
@@ -469,6 +477,7 @@ async function load() {
   $("minimumSubtitleDisplaySeconds").value = s.minimumSubtitleDisplaySeconds ?? 2;
   $("maximumVisibleSubtitles").value = s.maximumVisibleSubtitles ?? 2;
   $("requestTimeoutSeconds").value = s.requestTimeoutSeconds ?? 75;
+  $("customTranslationPrompt").value = s.customTranslationPrompt || ORIGINAL_TRANSLATION_PROMPT;
   $("modelSummary").textContent = providerModels[$("provider").value] || "No model selected";
   applyAppearance(s);
   await loadCacheLibrary();
@@ -568,6 +577,10 @@ function renderPullProgress(message) {
 function collectSettings() {
   providerModels[$("provider").value] = $("model").value;
   return {
+    customTranslationPrompt:
+      $("customTranslationPrompt").value.trim() === ORIGINAL_TRANSLATION_PROMPT
+        ? ""
+        : $("customTranslationPrompt").value.trim(),
     provider: $("provider").value,
     ollamaModel: providerModels.ollama,
     deepseekModel: providerModels.deepseek,
@@ -696,6 +709,12 @@ $("pullModel").addEventListener("click", async () => {
 $("resetAppearance").addEventListener("click", () => {
   applyAppearance(APPEARANCE_DEFAULTS);
   setStatus("Appearance reset — save to apply it on Netflix.");
+});
+
+$("resetTranslationPrompt").addEventListener("click", () => {
+  $("customTranslationPrompt").value = ORIGINAL_TRANSLATION_PROMPT;
+  markUnsaved();
+  setStatus("Original translation prompt restored. Save changes to apply it.", "success");
 });
 
 $("model").addEventListener("change", () => {

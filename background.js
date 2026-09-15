@@ -24,6 +24,7 @@ const DEFAULTS = {
   cacheWhilePaused: true,
   batchSize: 8,
   requestTimeoutSeconds: 75,
+  customTranslationPrompt: "",
   showDebugPanel: false,
   debugPanelAlwaysOnTop: false,
   showQuickPills: true,
@@ -334,7 +335,14 @@ function translationSchema() {
   };
 }
 
-function systemPrompt(targetLanguage, hasContext = false) {
+function systemPrompt(targetLanguage, hasContext = false, customPrompt = "") {
+  if (String(customPrompt || "").trim()) {
+    const custom = String(customPrompt).trim().replace(/\{\{targetLanguage\}\}/gi, targetLanguage);
+    if (hasContext) {
+      return `${custom} Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity. Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list.`;
+    }
+    return custom;
+  }
   const instructions = [
     "You are a subtitle translator.",
     `Translate every requested subtitle into ${targetLanguage}.`,
@@ -463,7 +471,7 @@ async function runStructuredTranslation(items, opts) {
           subtitles: input,
           ...(contextInput.length ? { contextSubtitles: contextInput } : {})
     }),
-    `${systemPrompt(opts.targetLanguage, contextInput.length > 0)} ` +
+    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt)} ` +
       "Return exactly one translation for every input item as JSON with a translations array of {id, text} objects. Preserve each input id.",
     opts, true, input.length
   );
@@ -575,7 +583,7 @@ async function runPlainSingleTranslation(item, opts) {
               contextSubtitles: contextInput
             })
           : String(item.text ?? ""),
-    `${systemPrompt(opts.targetLanguage, contextInput.length > 0)} ` +
+    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt)} ` +
       "Return only the translated subtitle text. Do not return JSON or a label.",
     opts, false, 1
   );
@@ -1085,6 +1093,7 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
           targetLanguage: message.targetLanguage || settings.targetLanguage,
           requestTimeoutSeconds:
             message.requestTimeoutSeconds || settings.requestTimeoutSeconds,
+          customTranslationPrompt: settings.customTranslationPrompt || "",
           contextItems: Array.isArray(message.contextItems)
             ? message.contextItems
             : []

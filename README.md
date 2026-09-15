@@ -81,6 +81,8 @@ Open **Settings → General**, select **DeepSeek** or **Gemini**, enter your pro
 
 LST connects directly to `api.deepseek.com` or `generativelanguage.googleapis.com` only when that provider is selected. It has no developer-operated translation server. DeepSeek and Gemini model names are discovered from their APIs, so available models are not hard-coded.
 
+Advanced settings include an optional translation prompt editor. The editor shows the built-in prompt and lets you customize it for any provider; use `{{targetLanguage}}` to insert the selected target language. LST still appends the structured-output instruction needed to align batch translations, and **Restore original prompt** returns to the built-in behavior.
+
 ## Install in Firefox
 
 For development/testing:
