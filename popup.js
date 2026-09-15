@@ -11,6 +11,7 @@ const state = {
     showTranscriptSidebar: false,
     subtitleTimingOffsetMs: 0,
     model: "",
+    provider: "ollama",
     targetLanguage: "English",
     ollamaUrl: "http://localhost:11434"
   },
@@ -69,6 +70,12 @@ function activatePopupTab(tabName, focus = false) {
 }
 
 function syncSettingsControls() {
+  const provider = state.settings.provider || "ollama";
+  const providerName = { ollama: "Ollama", deepseek: "DeepSeek", gemini: "Gemini" }[provider] || "Ollama";
+  $("providerSubtitle").textContent = provider === "ollama"
+    ? "Local translation with Ollama"
+    : `Translation with ${providerName}`;
+  $("modelHelp").textContent = `Using ${providerName}. Change provider in Settings.`;
   $("statusTranslated").checked = state.settings.showTranslated !== false;
   $("controlTranslated").checked = state.settings.showTranslated !== false;
   $("controlOriginal").checked = state.settings.showOriginal === true;
@@ -119,6 +126,7 @@ async function refreshModels() {
   try {
     const response = await runtimeMessage({
       type: "GET_MODELS",
+      provider: state.settings.provider,
       ollamaUrl: state.settings.ollamaUrl
     });
     select.replaceChildren();
@@ -318,7 +326,11 @@ $("timingReset").addEventListener("click", () => changeTiming(null));
 $("timingLater").addEventListener("click", () => changeTiming(100));
 
 $("modelSelect").addEventListener("change", async (event) => {
-  await saveQuickSettings({ model: event.target.value }, "Model changed for Netflix playback.");
+  const provider = state.settings.provider || "ollama";
+  await saveQuickSettings({
+    model: event.target.value,
+    [`${provider}Model`]: event.target.value
+  }, "Model changed for Netflix playback.");
 });
 $("targetLanguage").addEventListener("change", async () => {
   const targetLanguage = $("targetLanguage").value.trim() || "English";
@@ -339,7 +351,7 @@ $("cancel").addEventListener("click", async () => {
   try {
     const tab = await activeNetflixTab();
     await tabMessage(tab.id, { type: "CANCEL_PRECOMPUTE" });
-    $("message").textContent = "Stopping after the current Ollama request finishes…";
+    $("message").textContent = "Stopping after the current translation request finishes…";
   } catch (error) {
     $("message").textContent = `Could not stop precompute: ${error.message}`;
   }

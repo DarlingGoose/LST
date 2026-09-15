@@ -12,7 +12,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><img class="brand-icon" src="favicons/favicon-32x32.png" alt=""><div><h1>Local Subtitle Translate</h1><p>Private translation with Ollama</p></div></div>
+    <div class="brand"><img class="brand-icon" src="favicons/favicon-32x32.png" alt=""><div><h1>Local Subtitle Translate</h1><p id="providerSubtitle">Local translation with Ollama</p></div></div>
     <div id="statePill">Checking</div>
   </header>
 
@@ -70,7 +70,7 @@
       </section>
 
       <section id="modelSection" class="panel control-section">
-        <div class="section-heading"><div><h2>Translation</h2><p>Quickly switch the local model or language.</p></div></div>
+        <div class="section-heading"><div><h2>Translation</h2><p id="modelHelp">Quickly switch the model or language.</p></div></div>
         <div class="translation-fields">
           <div><label for="modelSelect">Model</label><select id="modelSelect"><option value="">Loading models…</option></select></div>
           <div><label for="targetLanguage">Target language</label><input id="targetLanguage" type="text" value="English"></div>

@@ -4,6 +4,7 @@
 
   const DEFAULTS = {
     enabled: true,
+    provider: "ollama",
     model: "translategemma:4b",
     targetLanguage: "English",
     hideNetflixSubtitles: true,
@@ -260,7 +261,11 @@
   }
 
   function cacheId() {
-    const model = encodeURIComponent(settings.model || "none");
+    const model = encodeURIComponent(
+      settings.provider === "ollama"
+        ? settings.model || "none"
+        : `${settings.provider}/${settings.model || "none"}`
+    );
     const language = encodeURIComponent(settings.targetLanguage || "English");
     return `${cueVideoId || getVideoId()}:${model}:${language}`;
   }
@@ -559,6 +564,7 @@
       videoId,
       ...titleMetadata,
       url: location.href,
+      provider: settings.provider || "ollama",
       model: settings.model || "Unknown model",
       targetLanguage: settings.targetLanguage || "English",
       sourceCueCount: cues.length,
@@ -2267,6 +2273,7 @@
       }, cueKey(missing[0]));
       const response = await runtimeMessage({
         type: "TRANSLATE_BATCH",
+        provider: settings.provider,
         model: settings.model,
         targetLanguage: settings.targetLanguage,
         requestTimeoutSeconds: settings.requestTimeoutSeconds,
