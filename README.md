@@ -1,12 +1,13 @@
 # LST — Local Subtitle Translate
 
-A small cross-browser Manifest V3 extension for Firefox and Chromium browsers that translates Netflix subtitles using a local Ollama model.
+A small cross-browser Manifest V3 extension for Firefox and Chromium browsers that translates Netflix subtitles using local Ollama by default, with optional DeepSeek and Gemini providers.
 
 [Privacy policy](PRIVACY.md) · [Browser release guide](FIREFOX_RELEASE.md)
 
 ## Features
 
-- Local Ollama only by default
+- Local Ollama by default; DeepSeek and Gemini are opt-in
+- Playback controls and subtitle work activate only on Netflix watch pages; Home and Search remain idle
 - Discovers installed Ollama models with `/api/tags`
 - Downloads Ollama models by name from Settings
 - Select model and target language in the browser
@@ -20,10 +21,10 @@ A small cross-browser Manifest V3 extension for Firefox and Chromium browsers th
 - Adjustable ±2-second subtitle timing offset in Settings and the in-player pill
 - Captures Netflix TTML/WebVTT subtitle documents when available
 - Precomputes an entire captured episode subtitle track
-- Caches translations locally per Netflix watch ID + model + target language
+- Caches translations locally per Netflix watch ID + provider/model + target language
 - Show-grouped translation history with timestamped preview, TSV export, size, and removal controls
 - Separate Netflix show and episode names for newly cached or refreshed entries
-- Structured JSON output from Ollama to keep batch translations aligned
+- Structured JSON output from the selected provider to keep batch translations aligned
 
 ## Important limitation
 
@@ -73,6 +74,12 @@ sudo systemctl restart ollama
 ```
 
 You can narrow the origin later to this extension's specific `chrome-extension://<extension-id>` origin.
+
+## Optional DeepSeek and Gemini setup
+
+Open **Settings → General**, select **DeepSeek** or **Gemini**, enter your provider API key, and click **Save key**. Refresh models, choose a model, then click **Save changes**. The key is stored in browser extension storage on your device and can be removed from the same screen. Selecting a remote provider sends requested subtitle cues, and surrounding cues if context is enabled, to that provider's API. Requests may use your quota or incur charges. Switching back to Ollama restores your saved local model selection; existing Ollama caches remain usable.
+
+LST connects directly to `api.deepseek.com` or `generativelanguage.googleapis.com` only when that provider is selected. It has no developer-operated translation server. DeepSeek and Gemini model names are discovered from their APIs, so available models are not hard-coded.
 
 ## Install in Firefox
 
@@ -128,7 +135,7 @@ Netflix
 
 ## Translation behavior
 
-The extension sends small batches of subtitle strings to Ollama and requires a structured response shaped like:
+The extension sends small batches of subtitle strings to the selected provider and requires a structured response shaped like:
 
 ```json
 {
@@ -154,8 +161,8 @@ Useful files:
 
 - `page-hook.js`: Netflix timed-text capture
 - `content.js`: parser, sync, overlay, realtime/precompute behavior
-- `background.js`: Ollama client + cache (uses the standard `browser` API when available, with a `chrome` fallback)
-- `options.*`: Ollama/model settings
+- `background.js`: Ollama, DeepSeek, and Gemini clients + cache (uses the standard `browser` API when available, with a `chrome` fallback)
+- `options.*`: provider/model settings
 - `popup.*`: episode status + precompute control
 
 ## Next improvements
@@ -187,7 +194,7 @@ The Advanced tab also includes a bounded local subtitle event log. It records cu
 
 An optional in-player transcript sidebar shows the complete captured subtitle track with locally cached translations as they become available. The current cue is highlighted and automatically scrolled into view; the sidebar can be toggled from Subtitle settings, the extension popup, or the compact Netflix player controls. The popup also exposes whether the compact in-player controls are visible, with direct shortcuts beside All settings.
 
-Surrounding subtitle context is also opt-in. When enabled, LST sends up to two nearby source cues before and after each new translation to the same user-configured Ollama endpoint. These lines are marked as reference-only so the model can resolve names, pronouns, and sentence continuity without returning extra translations. Context can use more tokens and add latency, and enabling it does not replace translations that are already cached.
+Surrounding subtitle context is also opt-in. When enabled, LST sends up to two nearby source cues before and after each new translation to the selected provider. These lines are marked as reference-only so the model can resolve names, pronouns, and sentence continuity without returning extra translations. Context can use more tokens and add latency, and enabling it does not replace translations that are already cached.
 
 An optional persistent LST pill sits in a coordinated top-left HUD. It shows Waiting, Ready, Realtime, Buffering, Cached, Precomputing, or Error status and opens a compact menu for toggling the LST translation, LST original text, and Netflix subtitles. Informational notices stack below the pill rather than overlapping it.
 

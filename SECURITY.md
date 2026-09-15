@@ -38,6 +38,7 @@ LST interacts with:
 - Netflix playback pages and subtitle data
 - browser extension storage
 - a user-configured Ollama endpoint, normally on localhost
+- optional DeepSeek and Gemini API keys and provider requests
 - locally cached subtitle translations
 
 Changes involving host permissions, extension permissions, page-context code, content-script boundaries, local network access, storage, or execution of externally supplied content should receive extra scrutiny.

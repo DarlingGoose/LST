@@ -4,6 +4,7 @@
 
   const DEFAULTS = {
     enabled: true,
+    provider: "ollama",
     model: "translategemma:4b",
     targetLanguage: "English",
     hideNetflixSubtitles: true,
@@ -94,6 +95,11 @@
   let diagnosticFlushTimer = null;
   let diagnosticTextIds = new Map();
   let nextDiagnosticTextId = 1;
+  let playbackActive = false;
+  let playbackGeneration = 0;
+  let cacheGeneration = 0;
+  let stopTitleMetadataObserver = () => {};
+  let stopFallbackObserver = () => {};
 
   let currentStatus = {
     captured: false,
@@ -178,6 +184,10 @@
     return match ? match[1] : "unknown";
   }
 
+  function isWatchPage() {
+    return /^\/watch\/\d+(?:\/|$)/.test(location.pathname);
+  }
+
   function normalizeText(text) {
     return String(text || "")
       .replace(/\u00a0/g, " ")
@@ -260,7 +270,11 @@
   }
 
   function cacheId() {
-    const model = encodeURIComponent(settings.model || "none");
+    const model = encodeURIComponent(
+      settings.provider === "ollama"
+        ? settings.model || "none"
+        : `${settings.provider}/${settings.model || "none"}`
+    );
     const language = encodeURIComponent(settings.targetLanguage || "English");
     return `${cueVideoId || getVideoId()}:${model}:${language}`;
   }
@@ -559,6 +573,7 @@
       videoId,
       ...titleMetadata,
       url: location.href,
+      provider: settings.provider || "ollama",
       model: settings.model || "Unknown model",
       targetLanguage: settings.targetLanguage || "English",
       sourceCueCount: cues.length,
@@ -594,6 +609,7 @@
       '[data-uia*="video-title"], [data-uia*="series-title"], ' +
       '[data-uia*="episode-title"], .video-title, .player-status';
     const observer = new MutationObserver((mutations) => {
+      if (!playbackActive || !isWatchPage()) return;
       const titleChanged = mutations.some((mutation) => {
         const target =
           mutation.target.nodeType === Node.ELEMENT_NODE
@@ -619,6 +635,11 @@
       subtree: true,
       characterData: true,
     });
+    return () => {
+      observer.disconnect();
+      clearTimeout(titleMetadataRefreshTimer);
+      titleMetadataRefreshTimer = null;
+    };
   }
 
   function updateProgress(videoTime) {
@@ -852,6 +873,7 @@
 
   function startFullscreenObserver() {
     const handleFullscreenChange = () => {
+      if (!playbackActive) return;
       requestAnimationFrame(() => {
         ensureOverlay();
         syncOverlayHost();
@@ -2267,6 +2289,7 @@
       }, cueKey(missing[0]));
       const response = await runtimeMessage({
         type: "TRANSLATE_BATCH",
+        provider: settings.provider,
         model: settings.model,
         targetLanguage: settings.targetLanguage,
         requestTimeoutSeconds: settings.requestTimeoutSeconds,
@@ -2436,6 +2459,7 @@
   }
 
   async function maintainLookAhead(currentCue, index) {
+    const generation = cacheGeneration;
     const seconds = Math.max(30, Number(settings.lookAheadSeconds) || 30);
     const playbackTime = Number(document.querySelector("video")?.currentTime);
     const deadline =
@@ -2469,6 +2493,7 @@
     let failed = 0;
     try {
       for (let i = 0; i < ahead.length; i += batchSize) {
+        if (generation !== cacheGeneration || !playbackActive || !isWatchPage()) return;
         const result = await translateCues(ahead.slice(i, i + batchSize));
         failed += result.failures.length;
       }
@@ -2509,6 +2534,7 @@
   }
 
   async function runPausedCaching(video) {
+    const generation = cacheGeneration;
     if (!pausedCacheNoticeShown) {
       pausedCacheNoticeShown = true;
       setStatus(
@@ -2517,7 +2543,14 @@
       );
     }
 
-    while (video.paused && settings.cacheWhilePaused && !precomputeInProgress) {
+    while (
+      generation === cacheGeneration &&
+      playbackActive &&
+      isWatchPage() &&
+      video.paused &&
+      settings.cacheWhilePaused &&
+      !precomputeInProgress
+    ) {
       const playbackTime = subtitleLookupTime(video.currentTime);
       const remaining = cues.filter(
         (cue) =>
@@ -2562,6 +2595,7 @@
   }
 
   async function playbackLoop() {
+    if (!playbackActive || !isWatchPage()) return;
     ensureOverlay();
 
     if (Date.now() - lastTitleMetadataRefreshAt >= 2000) {
@@ -2577,6 +2611,7 @@
     }
 
     if (cueVideoId && cueVideoId !== getVideoId()) {
+      cacheGeneration++;
       precomputeCancelled = true;
       cues = [];
       cueSourceUrl = "";
@@ -2585,6 +2620,12 @@
       knownCachedKeys = new Set();
       knownCachedTranslations = new Map();
       pausedCacheFailedKeys = new Set();
+      lookAheadQueued = new Set();
+      lookAheadNoticeShown = false;
+      lookAheadReadyNoticeShown = false;
+      pausedCacheNoticeShown = false;
+      pausedCacheCompleteNoticeShown = false;
+      lastPlaybackWasPaused = false;
       timedTrackSyncState = "unverified";
       automaticCueTimeOffsetSeconds = 0;
       lastNetflixSyncText = "";
@@ -2762,7 +2803,8 @@
   }
 
   async function handleFallbackRenderedSubtitle() {
-    if (!settings.enabled || !settings.model) return;
+    if (!playbackActive || !isWatchPage() || !settings.enabled || !settings.model) return;
+    const generation = playbackGeneration;
 
     const observation = observeNetflixRenderedSubtitle();
     const text = observation.text;
@@ -2808,6 +2850,7 @@
 
     try {
       const result = await translateCues([fallbackCue]);
+      if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
       const translated = result.entries[key] || "";
 
       if (translated && lastFallbackText === text) {
@@ -2840,6 +2883,7 @@
           result.failures[0].error || "Realtime translation failed";
       }
     } catch (error) {
+      if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
       currentStatus.lastError = error.message;
       setStatus(`Realtime translation error: ${error.message}`, true);
     }
@@ -2847,6 +2891,7 @@
 
   function startFallbackObserver() {
     const observer = new MutationObserver(() => {
+      if (!playbackActive || !isWatchPage()) return;
       clearTimeout(fallbackTimer);
       fallbackTimer = setTimeout(handleFallbackRenderedSubtitle, 40);
     });
@@ -2859,10 +2904,18 @@
 
     // Netflix sometimes updates subtitle layout without a useful mutation on the
     // exact text node we observed. This lightweight poll keeps the fallback honest.
-    setInterval(handleFallbackRenderedSubtitle, 350);
+    const interval = setInterval(handleFallbackRenderedSubtitle, 350);
+    return () => {
+      observer.disconnect();
+      clearInterval(interval);
+      clearTimeout(fallbackTimer);
+      fallbackTimer = null;
+    };
   }
 
   async function acceptSubtitleDocument(url, text) {
+    if (!playbackActive || !isWatchPage()) return;
+    const generation = playbackGeneration;
     const parsed = parseSubtitleDocument(text);
     if (!parsed.length) return;
 
@@ -2936,8 +2989,10 @@
     } catch (error) {
       console.warn("[LST] Could not reconcile fallback translations:", error);
     }
+    if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
 
     const allCached = await getCachedTranslations(cues);
+    if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
     currentStatus.translatedCount = Object.keys(allCached).length;
     updateProgress();
 
@@ -2952,7 +3007,7 @@
   async function precomputeAll() {
     if (precomputeInProgress) return;
     if (!settings.model) {
-      throw new Error("Choose an Ollama model in extension settings first.");
+      throw new Error("Choose a translation model in extension settings first.");
     }
     if (!cues.length) {
       throw new Error(
@@ -3090,6 +3145,9 @@
   }
 
   function startPrecomputeDetached() {
+    if (!playbackActive || !isWatchPage()) {
+      throw new Error("Open a Netflix watch page first.");
+    }
     if (precomputeInProgress) {
       return { started: false, alreadyRunning: true };
     }
@@ -3108,6 +3166,7 @@
   }
 
   window.addEventListener("message", (event) => {
+    if (!playbackActive || !isWatchPage()) return;
     if (event.source !== window) return;
     if (event.data?.source !== SOURCE) return;
     if (event.data?.type !== "SUBTITLE_DOCUMENT") return;
@@ -3150,6 +3209,11 @@
           return;
 
         case "RELOAD_SETTINGS": {
+          if (!playbackActive || !isWatchPage()) {
+            await loadSettings();
+            sendResponse({ ok: true });
+            return;
+          }
           const previousCacheId = cacheId();
           const previousUseTranslationContext = settings.useTranslationContext;
           await loadSettings();
@@ -3181,15 +3245,90 @@
     return true;
   });
 
-  async function init() {
-    await loadSettings();
-    startFullscreenObserver();
-    ensureOverlay();
-    setStatus("Waiting for Netflix subtitles…", true);
-    startTitleMetadataObserver();
-    startFallbackObserver();
-    requestAnimationFrame(playbackLoop);
+  function stopPlayback() {
+    playbackActive = false;
+    playbackGeneration++;
+    precomputeCancelled = true;
+    document.documentElement.classList.remove("lst-hide-netflix-subtitles");
+    stopTitleMetadataObserver();
+    stopFallbackObserver();
+    clearTimeout(diagnosticFlushTimer);
+    diagnosticFlushTimer = null;
+    diagnosticEvents = [];
+    lastFallbackText = "";
+    netflixSubtitleCandidate = "";
+    cues = [];
+    cueSourceUrl = "";
+    cueVideoId = "";
+    translationCoordinator = null;
+    knownCachedKeys = new Set();
+    knownCachedTranslations = new Map();
+      lookAheadQueued = new Set();
+      lookAheadNoticeShown = false;
+      lookAheadReadyNoticeShown = false;
+      pausedCacheFailedKeys = new Set();
+      pausedCacheNoticeShown = false;
+      pausedCacheCompleteNoticeShown = false;
+      lastPlaybackWasPaused = false;
+    renderedSubtitles = [];
+    lastRenderedCueKey = "";
+    currentStatus = {
+      ...currentStatus,
+      captured: false,
+      cueCount: 0,
+      translatedCount: 0,
+      remainingCueCount: 0,
+      remainingTranslatedCount: 0,
+      precomputing: false,
+      progressPercent: 0,
+      playbackMode: "waiting",
+      requestState: "idle",
+      message: "Waiting for Netflix subtitles…"
+    };
+    for (const element of [overlay, hud, debugPanel, transcriptPanel]) {
+      if (element) element.style.display = "none";
+    }
   }
 
-  init();
+  async function syncPlaybackRoute() {
+    if (!isWatchPage()) {
+      if (playbackActive) stopPlayback();
+      return;
+    }
+    if (playbackActive) return;
+    playbackActive = true;
+    const generation = ++playbackGeneration;
+    try {
+      await loadSettings();
+      if (generation !== playbackGeneration) return;
+      if (!isWatchPage()) {
+        stopPlayback();
+        return;
+      }
+      for (const element of [overlay, hud, debugPanel, transcriptPanel]) {
+        if (element) element.style.display = "";
+      }
+      ensureOverlay();
+      setStatus("Waiting for Netflix subtitles…", true);
+      stopTitleMetadataObserver = startTitleMetadataObserver();
+      stopFallbackObserver = startFallbackObserver();
+      requestAnimationFrame(playbackLoop);
+    } catch (error) {
+      if (generation === playbackGeneration) {
+        playbackActive = false;
+        stopTitleMetadataObserver();
+        stopFallbackObserver();
+        for (const element of [overlay, hud, debugPanel, transcriptPanel]) {
+          if (element) element.style.display = "none";
+        }
+      }
+      throw error;
+    }
+  }
+
+  startFullscreenObserver();
+  syncPlaybackRoute().catch((error) => console.warn("[LST] Could not start playback:", error));
+  setInterval(() => {
+    syncPlaybackRoute().catch((error) => console.warn("[LST] Could not follow Netflix navigation:", error));
+  }, 750);
 })();
