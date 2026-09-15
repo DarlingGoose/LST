@@ -7,6 +7,8 @@ const state = {
     showTranslated: true,
     showOriginal: false,
     hideNetflixSubtitles: true,
+    showQuickPills: true,
+    showTranscriptSidebar: false,
     subtitleTimingOffsetMs: 0,
     model: "",
     targetLanguage: "English",
@@ -71,6 +73,15 @@ function syncSettingsControls() {
   $("controlTranslated").checked = state.settings.showTranslated !== false;
   $("controlOriginal").checked = state.settings.showOriginal === true;
   $("controlNetflix").checked = state.settings.hideNetflixSubtitles === false;
+  $("controlQuickPills").checked = state.settings.showQuickPills !== false;
+  $("controlTranscript").checked = state.settings.showTranscriptSidebar === true;
+  $("toggleTranscript").setAttribute(
+    "aria-pressed",
+    String(state.settings.showTranscriptSidebar === true),
+  );
+  $("toggleTranscript").textContent = state.settings.showTranscriptSidebar
+    ? "Transcript: On"
+    : "Transcript: Off";
   $("timingValue").textContent = formatTiming();
   $("timingSummary").textContent = formatTiming();
   $("modelSummary").textContent = state.settings.model || "Not selected";
@@ -290,6 +301,12 @@ $("controlOriginal").addEventListener("change", async (event) => {
 $("controlNetflix").addEventListener("change", async (event) => {
   await saveQuickSettings({ hideNetflixSubtitles: !event.target.checked }, "Netflix-caption setting saved.");
 });
+$("controlQuickPills").addEventListener("change", async (event) => {
+  await saveQuickSettings({ showQuickPills: event.target.checked }, "In-player control setting saved.");
+});
+$("controlTranscript").addEventListener("change", async (event) => {
+  await saveQuickSettings({ showTranscriptSidebar: event.target.checked }, "Transcript setting saved.");
+});
 
 async function changeTiming(delta) {
   const current = Number(state.settings.subtitleTimingOffsetMs) || 0;
@@ -328,6 +345,14 @@ $("cancel").addEventListener("click", async () => {
   }
 });
 
+$("subtitleControls").addEventListener("click", () => activatePopupTab("controls", true));
+$("toggleTranscript").addEventListener("click", async () => {
+  const visible = state.settings.showTranscriptSidebar !== true;
+  await saveQuickSettings(
+    { showTranscriptSidebar: visible },
+    visible ? "Transcript opened on Netflix." : "Transcript hidden on Netflix.",
+  );
+});
 $("settings").addEventListener("click", () => ext?.runtime?.openOptionsPage());
 
 activatePopupTab(new URLSearchParams(location.search).get("tab") === "controls" ? "controls" : "status");
@@ -343,7 +368,9 @@ if (hasExtensionApi) {
     targetLanguage: "English",
     showTranslated: true,
     showOriginal: false,
-    hideNetflixSubtitles: true
+    hideNetflixSubtitles: true,
+    showQuickPills: true,
+    showTranscriptSidebar: false
   };
   $("modelSelect").replaceChildren(new Option("translategemma:4b", "translategemma:4b"));
   syncSettingsControls();

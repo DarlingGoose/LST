@@ -13,6 +13,7 @@
     maximumVisibleSubtitles: 2,
     showStatusMessages: true,
     autoTranslateAhead: true,
+    useTranslationContext: false,
     lookAheadSeconds: 30,
     cacheWhilePaused: true,
     batchSize: 8,
@@ -20,6 +21,7 @@
     showDebugPanel: false,
     debugPanelAlwaysOnTop: false,
     showQuickPills: true,
+    showTranscriptSidebar: false,
     subtitleHorizontalPosition: "center",
     subtitleVerticalPosition: 9,
     subtitleMaxWidth: 92,
@@ -29,6 +31,8 @@
     subtitleTimingOffsetMs: 0,
   };
   const NETFLIX_SUBTITLE_STABILITY_MS = 90;
+  const TIMED_TRACK_MISMATCH_GRACE_MS = 300;
+  const DEBUG_FLUSH_MS = 500;
 
   let settings = { ...DEFAULTS };
   let cues = [];
@@ -47,6 +51,10 @@
   let quickPillsState;
   let debugPanel;
   let debugPanelBody;
+  let transcriptPanel;
+  let transcriptList;
+  let transcriptActiveIndex = -1;
+  let transcriptRowsByKey = new Map();
   let unifiedControlsStatus;
   let unifiedControlsStatusTimer;
   let statusMessageRequestedVisible = false;
@@ -60,11 +68,15 @@
   let timedTrackSyncState = "unverified";
   let automaticCueTimeOffsetSeconds = 0;
   let lastNetflixSyncText = "";
+  let timedTrackMismatchSince = 0;
+  let lastTimedTrackMismatch = "";
+  let timedTrackMismatchSequence = 0;
+  let activeTimedTrackMismatchId = 0;
   let noTimedCueSince = 0;
   let lastTitleMetadataRefreshAt = 0;
   let titleMetadataRefreshTimer = null;
 
-  let translationInFlight = new Map();
+  let translationCoordinator;
   let knownCachedKeys = new Set();
   let knownCachedTranslations = new Map();
   let lookAheadQueued = new Set();
@@ -78,6 +90,10 @@
   let pausedCacheCompleteNoticeShown = false;
   let pausedCacheFailedKeys = new Set();
   let lastPlaybackWasPaused = false;
+  let diagnosticEvents = [];
+  let diagnosticFlushTimer = null;
+  let diagnosticTextIds = new Map();
+  let nextDiagnosticTextId = 1;
 
   let currentStatus = {
     captured: false,
@@ -122,6 +138,41 @@
     return response;
   }
 
+  function diagnosticCue(key) {
+    const match = String(key || "").match(/^(-?\d+):(-?\d+):/);
+    if (match) return `${match[1]}:${match[2]}`;
+    return String(key || "").startsWith("fallback:") ? "fallback" : "";
+  }
+
+  function flushDiagnosticEvents() {
+    clearTimeout(diagnosticFlushTimer);
+    diagnosticFlushTimer = null;
+    if (!diagnosticEvents.length) return;
+    const events = diagnosticEvents.splice(0, diagnosticEvents.length);
+    try {
+      const pending = ext.runtime.sendMessage({ type: "APPEND_DEBUG_EVENTS", events });
+      if (pending?.catch) pending.catch(() => {});
+    } catch {}
+  }
+
+  function logDiagnostic(level, category, event, details = {}, key = "") {
+    const videoTime = Number(document.querySelector("video")?.currentTime);
+    diagnosticEvents.push({
+      timestamp: Date.now(),
+      level,
+      category,
+      event,
+      videoId: getVideoId(),
+      videoTime: Number.isFinite(videoTime) ? videoTime : null,
+      cue: diagnosticCue(key),
+      details,
+    });
+    if (diagnosticEvents.length >= 20) flushDiagnosticEvents();
+    else if (!diagnosticFlushTimer) {
+      diagnosticFlushTimer = setTimeout(flushDiagnosticEvents, DEBUG_FLUSH_MS);
+    }
+  }
+
   function getVideoId() {
     const match = location.pathname.match(/\/watch\/(\d+)/);
     return match ? match[1] : "unknown";
@@ -146,6 +197,19 @@
     );
   }
 
+  function simplifiedDiagnosticText(text) {
+    return globalThis.LSTSubtitleSync.simplifySubtitleText(text);
+  }
+
+  function diagnosticTextId(text) {
+    const normalized = comparableSubtitleText(text);
+    if (!normalized) return "empty";
+    if (!diagnosticTextIds.has(normalized)) {
+      diagnosticTextIds.set(normalized, `text-${nextDiagnosticTextId++}`);
+    }
+    return diagnosticTextIds.get(normalized);
+  }
+
   function truncate(text, max = 160) {
     const normalized = normalizeText(text);
     return normalized.length <= max
@@ -154,12 +218,45 @@
   }
 
   function cueKey(cue) {
-    return `${Math.round(cue.start * 1000)}:${Math.round(cue.end * 1000)}:${normalizeText(cue.text)}`;
+    const text = normalizeText(cue.text);
+    if (Number(cue.start) < 0 || Number(cue.end) < 0) {
+      return `fallback:${text}`;
+    }
+    return `${Math.round(cue.start * 1000)}:${Math.round(cue.end * 1000)}:${text}`;
   }
 
   function fallbackCueForText(text) {
     // Stable key so repeated DOM updates for the same subtitle reuse the cache.
     return { start: -1, end: -1, text: normalizeText(text) };
+  }
+
+  function promoteFallbackEntries(entries) {
+    if (!cues.length) return entries;
+
+    const timedCuesByText = new Map();
+    for (const cue of cues) {
+      const text = comparableSubtitleText(cue.text);
+      const matches = timedCuesByText.get(text) || [];
+      matches.push(cue);
+      timedCuesByText.set(text, matches);
+    }
+
+    const promoted = {};
+    for (const [key, translation] of Object.entries(entries || {})) {
+      if (!key.startsWith("fallback:")) {
+        promoted[key] = translation;
+        continue;
+      }
+      const matches = timedCuesByText.get(
+        comparableSubtitleText(key.slice("fallback:".length)),
+      );
+      if (matches?.length === 1) {
+        promoted[cueKey(matches[0])] = translation;
+      } else {
+        promoted[key] = translation;
+      }
+    }
+    return promoted;
   }
 
   function cacheId() {
@@ -746,7 +843,7 @@
 
   function syncOverlayHost() {
     const host = overlayHost();
-    for (const element of [overlay, hud, debugPanel]) {
+    for (const element of [overlay, hud, debugPanel, transcriptPanel]) {
       if (element?.isConnected && element.parentElement !== host) {
         host.appendChild(element);
       }
@@ -821,6 +918,7 @@
             <label><span>Translation</span><span class="lst-pill-switch"><input data-pill-setting="showTranslated" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Original text</span><span class="lst-pill-switch"><input data-pill-setting="showOriginal" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Hide Netflix subtitles</span><span class="lst-pill-switch"><input data-pill-setting="hideNetflixSubtitles" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
+            <label><span>Transcript sidebar</span><span class="lst-pill-switch"><input data-pill-setting="showTranscriptSidebar" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
           </section>
           <section class="lst-pill-section lst-pill-timing" aria-labelledby="lst-timing-heading">
             <span><h3 id="lst-timing-heading">Timing offset</h3><output id="lst-pill-timing-value">0 ms</output></span>
@@ -885,6 +983,26 @@
         `v${ext.runtime.getManifest().version}`;
     }
 
+    if (!transcriptPanel?.isConnected) {
+      transcriptPanel = document.createElement("aside");
+      transcriptPanel.id = "lst-transcript-panel";
+      transcriptPanel.setAttribute("aria-label", "Episode transcript");
+      transcriptPanel.innerHTML = `
+        <header id="lst-transcript-header">
+          <div><strong>Episode transcript</strong><span id="lst-transcript-count"></span></div>
+          <button type="button" id="lst-transcript-close" aria-label="Hide transcript">×</button>
+        </header>
+        <div id="lst-transcript-list" tabindex="0"></div>
+      `;
+      document.documentElement.appendChild(transcriptPanel);
+      transcriptList = transcriptPanel.querySelector("#lst-transcript-list");
+      transcriptPanel.querySelector("#lst-transcript-close").addEventListener(
+        "click",
+        () => setTranscriptSidebarVisible(false),
+      );
+      renderTranscript();
+    }
+
     syncOverlayHost();
     updateDebugPanel();
     applySubtitleAppearance();
@@ -897,6 +1015,122 @@
     return Math.min(
       max,
       Math.max(min, Number.isFinite(number) ? number : fallback),
+    );
+  }
+
+  function formatTranscriptTime(seconds) {
+    const total = Math.max(0, Number(seconds) || 0);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const remainingSeconds = Math.floor(total % 60);
+    return hours
+      ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`
+      : `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+  }
+
+  function updateTranscriptVisibility() {
+    if (!transcriptPanel) return;
+    const visible = Boolean(settings.enabled && settings.showTranscriptSidebar);
+    const wasHidden = transcriptPanel.hidden;
+    transcriptPanel.hidden = !visible;
+    document.documentElement.classList.toggle("lst-transcript-open", visible);
+    if (visible && wasHidden) {
+      transcriptActiveIndex = -1;
+      const video = document.querySelector("video");
+      focusTranscriptCue(
+        video ? findCueAt(subtitleLookupTime(video.currentTime)) : null,
+      );
+    }
+  }
+
+  function renderTranscript() {
+    if (!transcriptList || !transcriptPanel) return;
+    transcriptList.replaceChildren();
+    transcriptRowsByKey = new Map();
+    transcriptActiveIndex = -1;
+    const count = transcriptPanel.querySelector("#lst-transcript-count");
+    if (count) count.textContent = cues.length ? `${cues.length} cues` : "Waiting for track";
+
+    if (!cues.length) {
+      const empty = document.createElement("p");
+      empty.className = "lst-transcript-empty";
+      empty.textContent = "Turn on a Netflix subtitle track to load its transcript.";
+      transcriptList.appendChild(empty);
+      updateTranscriptVisibility();
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    cues.forEach((cue, index) => {
+      const key = cueKey(cue);
+      const row = document.createElement("article");
+      row.className = "lst-transcript-cue";
+      row.dataset.cueIndex = String(index);
+      const time = document.createElement("time");
+      time.textContent = formatTranscriptTime(cue.start);
+      const text = document.createElement("div");
+      text.className = "lst-transcript-text";
+      const original = document.createElement("p");
+      original.className = "lst-transcript-original";
+      original.textContent = cue.text;
+      const translated = document.createElement("p");
+      translated.className = "lst-transcript-translated";
+      const translation = knownCachedTranslations.get(key) || "";
+      translated.textContent = translation || "Translation pending";
+      translated.dataset.pending = translation ? "false" : "true";
+      text.append(original, translated);
+      row.append(time, text);
+      fragment.appendChild(row);
+      transcriptRowsByKey.set(key, row);
+    });
+    transcriptList.appendChild(fragment);
+    updateTranscriptVisibility();
+  }
+
+  function updateTranscriptTranslations(entries) {
+    for (const [key, translation] of Object.entries(entries || {})) {
+      if (!translation) continue;
+      const translated = transcriptRowsByKey
+        .get(key)
+        ?.querySelector(".lst-transcript-translated");
+      if (!translated) continue;
+      translated.textContent = translation;
+      translated.dataset.pending = "false";
+    }
+  }
+
+  function focusTranscriptCue(match) {
+    const index = match?.index ?? -1;
+    if (index === transcriptActiveIndex) return;
+    if (transcriptActiveIndex >= 0) {
+      transcriptList
+        ?.querySelector(`[data-cue-index="${transcriptActiveIndex}"]`)
+        ?.removeAttribute("data-current");
+    }
+    transcriptActiveIndex = index;
+    if (index < 0 || !settings.showTranscriptSidebar) return;
+    const row = transcriptList?.querySelector(`[data-cue-index="${index}"]`);
+    if (!row) return;
+    row.dataset.current = "true";
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+
+  function setTranscriptSidebarVisible(visible) {
+    settings.showTranscriptSidebar = Boolean(visible);
+    updateTranscriptVisibility();
+    updateQuickPills();
+    if (visible) {
+      const video = document.querySelector("video");
+      focusTranscriptCue(
+        video ? findCueAt(subtitleLookupTime(video.currentTime)) : null,
+      );
+    }
+    logDiagnostic("info", "transcript", visible ? "sidebar-opened" : "sidebar-closed");
+    runtimeMessage({
+      type: "SAVE_SETTINGS",
+      settings: { showTranscriptSidebar: settings.showTranscriptSidebar },
+    }).catch((error) =>
+      setStatus(`Could not save transcript setting: ${error.message}`, true),
     );
   }
 
@@ -948,6 +1182,7 @@
         : "none";
 
     updateQuickPills();
+    updateTranscriptVisibility();
   }
 
   function showUnifiedControlsStatus(message, isError = false) {
@@ -1086,6 +1321,14 @@
       settings[key] =
         control.type === "checkbox" ? control.checked : Number(control.value);
       applySubtitleAppearance();
+      if (key === "showTranscriptSidebar") {
+        logDiagnostic(
+          "info",
+          "transcript",
+          settings.showTranscriptSidebar ? "sidebar-opened" : "sidebar-closed",
+          { source: "player-controls" },
+        );
+      }
       runtimeMessage({
         type: "SAVE_SETTINGS",
         settings: { [key]: settings[key] },
@@ -1181,6 +1424,7 @@
     const lines = [
       `model       ${settings.model || "—"}`,
       `target      ${settings.targetLanguage || "—"}`,
+      `context     ${settings.useTranslationContext ? "2 cues before/after" : "off"}`,
       `track       ${currentStatus.cueCount || 0} cues`,
       `episode     ${currentStatus.translatedCount || 0}/${currentStatus.cueCount || 0} (${currentStatus.episodeProgressPercent || 0}%)`,
       `remaining   ${currentStatus.remainingTranslatedCount || 0}/${currentStatus.remainingCueCount || 0} (${currentStatus.progressPercent || 0}%)`,
@@ -1194,7 +1438,7 @@
       `sync offset ${clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0)}ms`,
       `track sync  ${timedTrackSyncState} · auto ${automaticCueTimeOffsetSeconds.toFixed(2)}s`,
       `cue         ${currentStatus.activeCueStart == null ? "—" : `${Number(currentStatus.activeCueStart).toFixed(2)}–${Number(currentStatus.activeCueEnd).toFixed(2)}s`}`,
-      `in-flight   ${translationInFlight.size}`,
+      `in-flight   ${translationCoordinator?.inFlight.size || 0}`,
       `source      ${shortUrl(cueSourceUrl)}`,
     ];
 
@@ -1248,7 +1492,14 @@
 
   function trimRenderedSubtitles() {
     const excess = renderedSubtitles.length - maximumVisibleSubtitles();
-    if (excess > 0) renderedSubtitles.splice(0, excess);
+    if (excess > 0) {
+      const removed = renderedSubtitles.slice(0, excess);
+      renderedSubtitles.splice(0, excess);
+      logDiagnostic("info", "rendering", "subtitle-stack-trimmed", {
+        reason: "maximum-visible-subtitles",
+        removedCount: removed.length,
+      }, removed.at(-1)?.key);
+    }
     if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
       lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
     }
@@ -1284,9 +1535,13 @@
       settings.enabled && subtitleStack.childElementCount ? "block" : "none";
   }
 
-  function removeRenderedSubtitle(key) {
+  function removeRenderedSubtitle(key, reason = "unspecified") {
     const next = renderedSubtitles.filter((entry) => entry.key !== key);
     if (next.length === renderedSubtitles.length) return;
+    logDiagnostic("info", "rendering", "subtitle-cleared", {
+      reason,
+      removedCount: renderedSubtitles.length - next.length,
+    }, key);
     renderedSubtitles = next;
     if (lastRenderedCueKey === key) {
       lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
@@ -1294,9 +1549,14 @@
     renderSubtitleStack();
   }
 
-  function removeRenderedSubtitlesBySource(source) {
+  function removeRenderedSubtitlesBySource(source, reason = "unspecified") {
     const next = renderedSubtitles.filter((entry) => entry.source !== source);
     if (next.length === renderedSubtitles.length) return;
+    logDiagnostic("warning", "rendering", "subtitle-source-cleared", {
+      reason,
+      source,
+      removedCount: renderedSubtitles.length - next.length,
+    }, lastRenderedCueKey);
     renderedSubtitles = next;
     if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
       lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
@@ -1304,7 +1564,13 @@
     renderSubtitleStack();
   }
 
-  function clearRenderedSubtitle() {
+  function clearRenderedSubtitle(reason = "unspecified") {
+    if (renderedSubtitles.length) {
+      logDiagnostic("warning", "rendering", "subtitle-stack-cleared", {
+        reason,
+        removedCount: renderedSubtitles.length,
+      }, lastRenderedCueKey);
+    }
     renderedSubtitles = [];
     lastRenderedCueKey = "";
     renderSubtitleStack();
@@ -1326,11 +1592,20 @@
     const naturalEnd = Number(naturalEndVideoTime);
     if (!Number.isFinite(now)) return;
 
+    // Keep recently ended cues until their configured minimum display time.
+    // Cached current cues render synchronously, so retaining the prior cue no
+    // longer creates the old-line-only flash at a cue boundary.
+    const previous = renderedSubtitles;
     renderedSubtitles = renderedSubtitles.filter(
-      (entry) =>
-        entry.source === source &&
-        (entry.key === key || entry.endVideoTime > now),
+      (entry) => entry.source === source,
     );
+    if (previous.length !== renderedSubtitles.length) {
+      logDiagnostic("info", "rendering", "subtitle-source-handoff", {
+        from: previous.find((entry) => entry.source !== source)?.source || "unknown",
+        to: source,
+        removedCount: previous.length - renderedSubtitles.length,
+      }, key);
+    }
     const existing = renderedSubtitles.find((entry) => entry.key === key);
     const endVideoTime = Number.isFinite(naturalEnd) ? naturalEnd : now;
     const retainUntilVideoTime = Math.max(
@@ -1397,6 +1672,10 @@
       (entry) => now < entry.retainUntilVideoTime,
     );
     if (next.length === renderedSubtitles.length) return;
+    logDiagnostic("info", "rendering", "subtitle-expired", {
+      reason: "retention-ended",
+      removedCount: renderedSubtitles.length - next.length,
+    }, lastRenderedCueKey);
     renderedSubtitles = next;
     if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
       lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
@@ -1444,6 +1723,19 @@
     return best;
   }
 
+  function findUniqueCueMatchingSimplifiedText(text) {
+    return globalThis.LSTSubtitleSync.findUniqueSimplifiedCue(cues, text);
+  }
+
+  function isInterCueGapMatch(match, naturalTime, naturalMatch) {
+    return globalThis.LSTSubtitleSync.isInterCueGapMatch(
+      cues,
+      match,
+      naturalTime,
+      naturalMatch,
+    );
+  }
+
   function cueListContainsText(selectedCues, text) {
     return Boolean(
       text && selectedCues.some((cue) => subtitleTextsMatch(cue.text, text)),
@@ -1458,6 +1750,18 @@
     );
   }
 
+  function cueTrackSignature(selectedCues) {
+    let hash = 2166136261;
+    for (const cue of selectedCues) {
+      const value = cueKey(cue);
+      for (let index = 0; index < value.length; index++) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+    }
+    return `${selectedCues.length}:${(hash >>> 0).toString(16)}`;
+  }
+
   function naturalSubtitleLookupTime(videoTime) {
     return Number(videoTime) + automaticCueTimeOffsetSeconds;
   }
@@ -1470,28 +1774,230 @@
     );
   }
 
+  function netflixSubtitleDomDiagnostics(netflixText) {
+    const selectors = [
+      ".player-timedtext",
+      '[data-uia="player-subtitle-text"]',
+      ".player-timedtext-text-container",
+    ];
+    const observations = [];
+    let chosenSelector = "none";
+    for (const selector of selectors) {
+      const elements = [...document.querySelectorAll(selector)];
+      const lengths = elements.map((element) => {
+        const text = normalizeText(element.innerText || element.textContent || "");
+        return {
+          length: text.length,
+          comparableLength: comparableSubtitleText(text).length,
+          textId: diagnosticTextId(text),
+        };
+      });
+      if (
+        chosenSelector === "none" &&
+        lengths.some(({ length }) => length > 0)
+      ) {
+        chosenSelector = selector;
+      }
+      observations.push({ selector, nodeCount: elements.length, lengths });
+    }
+    const nonEmptyTextIds = observations
+      .flatMap(({ lengths }) => lengths)
+      .filter(({ length }) => length > 0)
+      .map(({ textId }) => textId);
+    const simplifiedSelected = simplifiedDiagnosticText(netflixText);
+    const midpoint = simplifiedSelected.length / 2;
+    return {
+      chosenSelector,
+      selectedTextId: diagnosticTextId(netflixText),
+      selectedTextLength: normalizeText(netflixText).length,
+      representationCount: new Set(nonEmptyTextIds).size,
+      representationsDisagree: new Set(nonEmptyTextIds).size > 1,
+      selectedLooksDuplicated: Number.isInteger(midpoint) && midpoint > 0 &&
+        simplifiedSelected.slice(0, midpoint) === simplifiedSelected.slice(midpoint),
+      observations,
+    };
+  }
+
+  function timedTrackMismatchDiagnostics(
+    video,
+    netflixText,
+    naturalMatch,
+    matchingCue,
+    matchQuality,
+  ) {
+    const simplifiedNetflix = simplifiedDiagnosticText(netflixText);
+    const simplifiedMatches = simplifiedNetflix
+      ? cues.filter((cue) => simplifiedDiagnosticText(cue.text) === simplifiedNetflix)
+      : [];
+    let nearbyIndex = naturalMatch?.index ?? cues.findIndex(
+      (cue) => cue.start > naturalSubtitleLookupTime(video.currentTime),
+    );
+    if (nearbyIndex < 0) nearbyIndex = cues.length - 1;
+    const nearby = [];
+    for (
+      let index = Math.max(0, nearbyIndex - 1);
+      index <= Math.min(cues.length - 1, nearbyIndex + 1);
+      index++
+    ) {
+      const cue = cues[index];
+      nearby.push({
+        relation: index === nearbyIndex ? "current" : index < nearbyIndex ? "previous" : "next",
+        startMs: Math.round(cue.start * 1000),
+        endMs: Math.round(cue.end * 1000),
+        textLength: normalizeText(cue.text).length,
+        textId: diagnosticTextId(cue.text),
+      });
+    }
+    const nearbySimplified = nearbyIndex >= 0
+      ? cues.slice(Math.max(0, nearbyIndex - 1), nearbyIndex + 2)
+        .map((cue) => simplifiedDiagnosticText(cue.text))
+      : [];
+    const combinedNearbyMatch = nearbySimplified.some(
+      (value, index) =>
+        nearbySimplified[index + 1] &&
+        `${value}${nearbySimplified[index + 1]}` === simplifiedNetflix,
+    );
+    const partialNearbyMatch = Boolean(
+      simplifiedNetflix.length >= 4 &&
+      nearbySimplified.some(
+        (value) => value.includes(simplifiedNetflix) || simplifiedNetflix.includes(value),
+      ),
+    );
+    const naturalTime = naturalSubtitleLookupTime(video.currentTime);
+    const nextMatchedCue = matchingCue ? cues[matchingCue.index + 1] : null;
+
+    return {
+      ...netflixSubtitleDomDiagnostics(netflixText),
+      stableForMs: Math.max(0, Math.round(performance.now() - netflixSubtitleCandidateSince)),
+      trackCueCount: cues.length,
+      naturalLookupMs: Math.round(naturalTime * 1000),
+      userTimingOffsetMs: clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0),
+      automaticTimingOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
+      matchQuality: matchQuality || "none",
+      exactTrackMatch: matchQuality === "exact",
+      simplifiedTrackMatchCount: simplifiedMatches.length,
+      simplifiedMatchCue: simplifiedMatches.length === 1
+        ? diagnosticCue(cueKey(simplifiedMatches[0]))
+        : "",
+      combinedNearbyMatch,
+      partialNearbyMatch,
+      matchedCue: matchingCue ? diagnosticCue(cueKey(matchingCue.cue)) : "",
+      msSinceMatchedCueEnd: matchingCue
+        ? Math.round((naturalTime - matchingCue.cue.end) * 1000)
+        : null,
+      msUntilNextCueStart: nextMatchedCue
+        ? Math.round((nextMatchedCue.start - naturalTime) * 1000)
+        : null,
+      inInterCueGap: isInterCueGapMatch(matchingCue, naturalTime, naturalMatch),
+      nearby,
+      rendered: renderedSubtitles.map((entry) => ({
+        cue: diagnosticCue(entry.key),
+        source: entry.source,
+        hasTranslation: Boolean(entry.translated),
+      })),
+    };
+  }
+
   function validateTimedTrackAgainstNetflix(video, netflixText) {
     if (!video || !cues.length) return false;
 
     const naturalTime = naturalSubtitleLookupTime(video.currentTime);
     const naturalMatch = findCueAt(naturalTime);
 
-    if (!netflixText) return timedTrackSyncState === "verified";
+    if (!netflixText) {
+      if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
+        logDiagnostic("info", "synchronization", "timed-track-mismatch-ended", {
+          mismatchId: activeTimedTrackMismatchId,
+          outcome: "netflix-subtitle-gap",
+          durationMs: timedTrackMismatchSince
+            ? Math.round(performance.now() - timedTrackMismatchSince)
+            : null,
+          previousReason: lastTimedTrackMismatch || "confirmed-mismatch",
+        }, naturalMatch ? cueKey(naturalMatch.cue) : "");
+        timedTrackMismatchSince = 0;
+        lastTimedTrackMismatch = "";
+        activeTimedTrackMismatchId = 0;
+        timedTrackSyncState = "verified";
+      }
+      return timedTrackSyncState === "verified";
+    }
 
     if (
       naturalMatch &&
       subtitleTextsMatch(naturalMatch.cue.text, netflixText)
     ) {
+      if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
+        logDiagnostic("info", "synchronization", "timed-track-mismatch-resolved", {
+          mismatchId: activeTimedTrackMismatchId,
+          outcome: "exact-match",
+          durationMs: timedTrackMismatchSince
+            ? Math.round(performance.now() - timedTrackMismatchSince)
+            : null,
+          previousReason: lastTimedTrackMismatch || "confirmed-mismatch",
+          netflixTextId: diagnosticTextId(netflixText),
+        }, cueKey(naturalMatch.cue));
+      }
       timedTrackSyncState = "verified";
       lastNetflixSyncText = netflixText;
+      timedTrackMismatchSince = 0;
+      lastTimedTrackMismatch = "";
+      activeTimedTrackMismatchId = 0;
       return true;
     }
 
-    const matchingCue = findCueMatchingText(netflixText, naturalTime);
+    const exactMatchingCue = findCueMatchingText(netflixText, naturalTime);
+    const simplifiedMatchingCue = exactMatchingCue
+      ? null
+      : findUniqueCueMatchingSimplifiedText(netflixText);
+    const matchingCue = exactMatchingCue || simplifiedMatchingCue;
+    const matchQuality = exactMatchingCue
+      ? "exact"
+      : simplifiedMatchingCue
+        ? "simplified-unique"
+        : "none";
+
+    if (
+      naturalMatch &&
+      simplifiedMatchingCue &&
+      simplifiedMatchingCue.index === naturalMatch.index
+    ) {
+      if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
+        logDiagnostic("info", "synchronization", "timed-track-mismatch-resolved", {
+          mismatchId: activeTimedTrackMismatchId,
+          outcome: "unique-simplified-current-cue-match",
+          durationMs: timedTrackMismatchSince
+            ? Math.round(performance.now() - timedTrackMismatchSince)
+            : null,
+          previousReason: lastTimedTrackMismatch || "confirmed-mismatch",
+        }, cueKey(naturalMatch.cue));
+      }
+      if (!subtitleTextsMatch(lastNetflixSyncText, netflixText)) {
+        logDiagnostic("info", "synchronization", "formatting-match-accepted", {
+          matchQuality,
+          netflixTextLength: normalizeText(netflixText).length,
+          capturedTextLength: normalizeText(naturalMatch.cue.text).length,
+        }, cueKey(naturalMatch.cue));
+      }
+      timedTrackSyncState = "verified";
+      lastNetflixSyncText = netflixText;
+      timedTrackMismatchSince = 0;
+      lastTimedTrackMismatch = "";
+      activeTimedTrackMismatchId = 0;
+      return true;
+    }
+
+    if (isInterCueGapMatch(matchingCue, naturalTime, naturalMatch)) {
+      timedTrackSyncState = "verified";
+      lastNetflixSyncText = netflixText;
+      timedTrackMismatchSince = 0;
+      lastTimedTrackMismatch = "";
+      activeTimedTrackMismatchId = 0;
+      return true;
+    }
+
     if (
       matchingCue &&
-      (timedTrackSyncState !== "verified" ||
-        !subtitleTextsMatch(lastNetflixSyncText, netflixText))
+      timedTrackSyncState === "unverified"
     ) {
       // Captured subtitle fragments can use a timeline starting at zero even when
       // playback began in the middle of an episode. Anchor that timeline to the
@@ -1500,19 +2006,98 @@
         matchingCue.cue.start + 0.04 - Number(video.currentTime);
       timedTrackSyncState = "verified";
       lastNetflixSyncText = netflixText;
+      timedTrackMismatchSince = 0;
+      lastTimedTrackMismatch = "";
+      logDiagnostic("info", "synchronization", "timed-track-anchored", {
+        matchQuality,
+        automaticOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
+      }, cueKey(matchingCue.cue));
       return true;
     }
 
-    if (matchingCue && timedTrackSyncState === "verified") {
-      // The player DOM and video clock can cross a cue boundary a frame apart.
-      // Suppress that frame instead of repeatedly moving the track timeline.
-      removeRenderedSubtitlesBySource("timed");
-      return false;
+    if (timedTrackSyncState === "verified") {
+      const mismatch = exactMatchingCue
+        ? "known-cue-boundary"
+        : simplifiedMatchingCue
+          ? "formatting-cue-boundary"
+          : "unknown-text";
+      const now = performance.now();
+      if (!timedTrackMismatchSince || lastTimedTrackMismatch !== mismatch) {
+        timedTrackMismatchSince = now;
+        lastTimedTrackMismatch = mismatch;
+        activeTimedTrackMismatchId = ++timedTrackMismatchSequence;
+        logDiagnostic("warning", "synchronization", "timed-track-mismatch-started", {
+          mismatchId: activeTimedTrackMismatchId,
+          reason: mismatch,
+          graceMs: TIMED_TRACK_MISMATCH_GRACE_MS,
+          ...timedTrackMismatchDiagnostics(
+            video,
+            netflixText,
+            naturalMatch,
+            matchingCue,
+            matchQuality,
+          ),
+        }, naturalMatch ? cueKey(naturalMatch.cue) : "");
+      }
+      if (now - timedTrackMismatchSince < TIMED_TRACK_MISMATCH_GRACE_MS) {
+        return true;
+      }
+
+      const cueDistance = matchingCue && naturalMatch
+        ? Math.abs(matchingCue.index - naturalMatch.index)
+        : Infinity;
+      const offsetErrorSeconds = matchingCue
+        ? matchingCue.cue.start - naturalTime
+        : 0;
+      if (
+        matchingCue &&
+        cueDistance > 1 &&
+        Math.abs(offsetErrorSeconds) > 2
+      ) {
+        const mismatchReason = lastTimedTrackMismatch;
+        const mismatchDurationMs = Math.round(now - timedTrackMismatchSince);
+        const mismatchId = activeTimedTrackMismatchId;
+        automaticCueTimeOffsetSeconds =
+          matchingCue.cue.start + 0.04 - Number(video.currentTime);
+        timedTrackMismatchSince = 0;
+        lastTimedTrackMismatch = "";
+        activeTimedTrackMismatchId = 0;
+        lastNetflixSyncText = netflixText;
+        logDiagnostic("warning", "synchronization", "timed-track-reanchored", {
+          reason: mismatchReason,
+          mismatchId,
+          durationMs: mismatchDurationMs,
+          automaticOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
+          cueDistance: Number.isFinite(cueDistance) ? cueDistance : null,
+          matchQuality,
+        }, cueKey(matchingCue.cue));
+        return true;
+      }
     }
 
+    if (timedTrackSyncState !== "mismatch") {
+      logDiagnostic("warning", "synchronization", "timed-track-mismatch-confirmed", {
+        mismatchId: activeTimedTrackMismatchId,
+        reason: exactMatchingCue
+          ? "known-cue-boundary"
+          : simplifiedMatchingCue
+            ? "formatting-cue-boundary"
+            : "unknown-text",
+        retainedTimedSubtitle: true,
+        durationMs: timedTrackMismatchSince
+          ? Math.round(performance.now() - timedTrackMismatchSince)
+          : null,
+        ...timedTrackMismatchDiagnostics(
+          video,
+          netflixText,
+          naturalMatch,
+          matchingCue,
+          matchQuality,
+        ),
+      }, naturalMatch ? cueKey(naturalMatch.cue) : "");
+    }
     timedTrackSyncState = "mismatch";
     lastNetflixSyncText = netflixText;
-    removeRenderedSubtitlesBySource("timed");
     return false;
   }
 
@@ -1546,10 +2131,30 @@
   }
 
   function rememberCachedEntries(entries) {
+    let renderedChanged = false;
+    const videoTime = Number(document.querySelector("video")?.currentTime);
     for (const [key, translation] of Object.entries(entries || {})) {
       knownCachedKeys.add(key);
-      if (translation) knownCachedTranslations.set(key, translation);
+      if (!translation) continue;
+      knownCachedTranslations.set(key, translation);
+      const rendered = renderedSubtitles.find((entry) => entry.key === key);
+      if (rendered && rendered.translated !== translation) {
+        rendered.translated = translation;
+        if (Number.isFinite(videoTime)) {
+          rendered.retainUntilVideoTime = Math.max(
+            rendered.retainUntilVideoTime,
+            videoTime + minimumSubtitleDisplaySeconds(),
+          );
+        }
+        renderedChanged = true;
+        logDiagnostic("info", "translation", "translation-attached", {
+          source: "shared-result",
+          translationLength: String(translation).length,
+        }, key);
+      }
     }
+    if (renderedChanged) renderSubtitleStack();
+    updateTranscriptTranslations(entries);
     refreshCacheCoverage();
   }
 
@@ -1580,13 +2185,48 @@
     currentStatus.cachedAheadSeconds = Math.max(0, coveredUntil - time);
   }
 
-  async function translateCues(selectedCues) {
+  function surroundingTranslationContext(selectedCues) {
+    if (!settings.useTranslationContext || !cues.length || !selectedCues.length) {
+      return [];
+    }
+
+    const cueIndexes = new Map(cues.map((cue, index) => [cueKey(cue), index]));
+    const targetIndexes = selectedCues
+      .map((cue) => cueIndexes.get(cueKey(cue)))
+      .filter(Number.isInteger)
+      .sort((left, right) => left - right);
+    if (!targetIndexes.length) return [];
+
+    const targetSet = new Set(targetIndexes);
+    const first = targetIndexes[0];
+    const last = targetIndexes.at(-1);
+    const candidates = cues
+      .map((cue, index) => ({ cue, index }))
+      .filter(({ index }) => !targetSet.has(index))
+      .map(({ cue, index }) => ({
+        cue,
+        index,
+        distance: Math.min(...targetIndexes.map((target) => Math.abs(target - index))),
+      }))
+      .filter(({ distance }) => distance <= 2)
+      .sort((left, right) => left.distance - right.distance || left.index - right.index)
+      .slice(0, 12)
+      .sort((left, right) => left.index - right.index);
+
+    return candidates.map(({ cue, index }) => ({
+      position: index < first ? "before" : index > last ? "after" : "between",
+      startMs: Math.round(cue.start * 1000),
+      text: cue.text,
+    }));
+  }
+
+  async function translateOwnedCues(selectedCues) {
     const deduped = [];
     const seen = new Set();
 
     for (const cue of selectedCues) {
       const key = cueKey(cue);
-      if (seen.has(key) || translationInFlight.has(key)) continue;
+      if (seen.has(key)) continue;
       seen.add(key);
       deduped.push(cue);
     }
@@ -1605,11 +2245,10 @@
     );
 
     if (!missing.length) {
+      logDiagnostic("info", "translation", "translation-cache-hit", {
+        count: deduped.length,
+      }, cueKey(deduped[0]));
       return { entries: cached, failures: [] };
-    }
-
-    for (const cue of missing) {
-      translationInFlight.set(cueKey(cue), true);
     }
 
     try {
@@ -1620,6 +2259,12 @@
       updateDebugPanel();
 
       const requestStartedAt = Date.now();
+      const contextItems = surroundingTranslationContext(missing);
+      logDiagnostic("info", "translation", "translation-request-started", {
+        count: missing.length,
+        source: precomputeInProgress ? "precompute" : "playback",
+        contextCueCount: contextItems.length,
+      }, cueKey(missing[0]));
       const response = await runtimeMessage({
         type: "TRANSLATE_BATCH",
         model: settings.model,
@@ -1629,6 +2274,7 @@
           id: cueKey(cue),
           text: cue.text,
         })),
+        contextItems,
       });
 
       currentStatus.requestState = "done";
@@ -1640,6 +2286,18 @@
         response.summary?.translated ?? (response.translations || []).length;
       currentStatus.lastRequestFailed =
         response.summary?.failed ?? (response.failures || []).length;
+      logDiagnostic(
+        currentStatus.lastRequestFailed ? "warning" : "info",
+        "translation",
+        "translation-request-completed",
+        {
+          requested: currentStatus.lastRequestRequested,
+          translated: currentStatus.lastRequestTranslated,
+          failed: currentStatus.lastRequestFailed,
+          elapsedMs: currentStatus.lastRequestMs,
+        },
+        cueKey(missing[0]),
+      );
       currentStatus.lastDiagnostics = response.diagnostics || [];
 
       const latestDiag = currentStatus.lastDiagnostics.length
@@ -1659,13 +2317,17 @@
       for (const entry of response.translations || []) {
         if (entry.text) newEntries[entry.id] = entry.text;
       }
-      if (requestedCacheId === cacheId()) rememberCachedEntries(newEntries);
+      const persistedEntries =
+        requestedCacheId === cacheId()
+          ? promoteFallbackEntries(newEntries)
+          : newEntries;
+      if (requestedCacheId === cacheId()) rememberCachedEntries(persistedEntries);
 
-      if (Object.keys(newEntries).length) {
+      if (Object.keys(persistedEntries).length) {
         await runtimeMessage({
           type: "CACHE_SET",
           cacheId: requestedCacheId,
-          entries: newEntries,
+          entries: persistedEntries,
           metadata: requestedCacheMetadata,
         });
       }
@@ -1686,19 +2348,43 @@
         ];
       }
       updateDebugPanel();
+      logDiagnostic("error", "translation", "translation-request-failed", {
+        error: error.message,
+        count: missing.length,
+      }, cueKey(missing[0]));
       throw error;
     } finally {
-      for (const cue of missing) {
-        translationInFlight.delete(cueKey(cue));
-      }
       updateDebugPanel();
     }
+  }
+
+  function getTranslationCoordinator() {
+    if (!translationCoordinator) {
+      translationCoordinator = new globalThis.LSTTranslationCoordinator({
+        keyFor: cueKey,
+        runBatch: translateOwnedCues,
+        onEvent(event, details) {
+          const { key = "", ...safeDetails } = details;
+          logDiagnostic("info", "translation", event, safeDetails, key);
+        },
+      });
+    }
+    return translationCoordinator;
+  }
+
+  function translateCues(selectedCues) {
+    return getTranslationCoordinator().translate(selectedCues);
   }
 
   async function ensureCueTranslated(cue, index) {
     if (!cue || !settings.model) return;
 
     const key = cueKey(cue);
+    logDiagnostic("info", "translation", "active-cue-translation-requested", {
+      cueStartMs: Math.round(cue.start * 1000),
+      cueEndMs: Math.round(cue.end * 1000),
+      textLength: normalizeText(cue.text).length,
+    }, key);
     const cached = await getCachedTranslations([cue]);
 
     if (cached[key]) {
@@ -1711,6 +2397,11 @@
           cached[key],
           document.querySelector("video")?.currentTime,
         );
+      } else {
+        logDiagnostic("warning", "translation", "translation-not-rendered", {
+          reason: "cue-no-longer-current",
+          source: "cache",
+        }, key);
       }
     } else {
       const currentResult = await translateCues([cue]);
@@ -1724,6 +2415,11 @@
             currentResult.entries[key],
             document.querySelector("video")?.currentTime,
           );
+        } else {
+          logDiagnostic("warning", "translation", "translation-not-rendered", {
+            reason: "cue-no-longer-current",
+            source: "realtime",
+          }, key);
         }
       }
     }
@@ -1843,7 +2539,7 @@
 
       const available = remaining.filter(
         (cue) =>
-          !translationInFlight.has(cueKey(cue)) &&
+          !getTranslationCoordinator().has(cueKey(cue)) &&
           !lookAheadQueued.has(cueKey(cue)),
       );
       if (!available.length) return;
@@ -1885,15 +2581,22 @@
       cues = [];
       cueSourceUrl = "";
       cueVideoId = getVideoId();
+      translationCoordinator = null;
       knownCachedKeys = new Set();
       knownCachedTranslations = new Map();
       pausedCacheFailedKeys = new Set();
       timedTrackSyncState = "unverified";
       automaticCueTimeOffsetSeconds = 0;
       lastNetflixSyncText = "";
+      timedTrackMismatchSince = 0;
+      lastTimedTrackMismatch = "";
+      timedTrackMismatchSequence = 0;
+      activeTimedTrackMismatchId = 0;
       lastFallbackText = "";
       netflixSubtitleCandidate = "";
       netflixSubtitleCandidateSince = 0;
+      diagnosticTextIds = new Map();
+      nextDiagnosticTextId = 1;
       currentStatus.captured = false;
       currentStatus.cueCount = 0;
       currentStatus.translatedCount = 0;
@@ -1904,7 +2607,9 @@
       currentStatus.activeCueStart = null;
       currentStatus.activeCueEnd = null;
       currentStatus.playbackMode = "waiting";
-      clearRenderedSubtitle();
+      clearRenderedSubtitle("episode-changed");
+      renderTranscript();
+      logDiagnostic("info", "track", "episode-changed", {});
       setStatus("Episode changed — waiting for its subtitle track…", true);
       handleFallbackRenderedSubtitle();
       requestAnimationFrame(playbackLoop);
@@ -1956,6 +2661,7 @@
         ? "DOM fallback (unverified timed track)"
         : "waiting for subtitle sync";
       updateDebugPanel();
+      focusTranscriptCue(findCueMatchingText(netflixText, subtitleLookupTime(video.currentTime)));
       if (netflixText) handleFallbackRenderedSubtitle();
       requestAnimationFrame(playbackLoop);
       return;
@@ -1969,6 +2675,7 @@
       currentStatus.activeCueStart = null;
       currentStatus.activeCueEnd = null;
       updateDebugPanel();
+      focusTranscriptCue(null);
       // Give the DOM fallback a short handoff window, then clear a stale line
       // when Netflix is also between subtitles.
       if (
@@ -1986,6 +2693,7 @@
     noTimedCueSince = 0;
     currentStatus.activeCueStart = match.cue.start;
     currentStatus.activeCueEnd = match.cue.end;
+    focusTranscriptCue(match);
     updateDebugPanel();
     const key = cueKey(match.cue);
     removeExpiredRenderedSubtitles(video.currentTime);
@@ -2076,7 +2784,7 @@
         if (shouldRetainRenderedSubtitle(fallbackKey, video?.currentTime))
           return;
         lastFallbackText = "";
-        removeRenderedSubtitle(fallbackKey);
+        removeRenderedSubtitle(fallbackKey, "netflix-subtitle-ended");
       }
       return;
     }
@@ -2086,7 +2794,11 @@
     // Only let timed text take over after its underlying line has been checked
     // against Netflix. This also respects a user timing offset, which may make
     // the intentionally rendered LST cue differ from Netflix's current cue.
-    if (video && validateTimedTrackAgainstNetflix(video, text)) {
+    if (
+      video &&
+      timedTrackSyncState !== "mismatch" &&
+      validateTimedTrackAgainstNetflix(video, text)
+    ) {
       return;
     }
 
@@ -2156,10 +2868,15 @@
 
     parsed.sort((a, b) => a.start - b.start);
 
-    const signature = `${url}|${parsed.length}|${parsed[0]?.start}|${parsed.at(-1)?.end}`;
-    const currentSignature = `${cueSourceUrl}|${cues.length}|${cues[0]?.start}|${cues.at(-1)?.end}`;
+    const signature = cueTrackSignature(parsed);
+    const currentSignature = cueTrackSignature(cues);
 
-    if (signature === currentSignature) return;
+    if (signature === currentSignature) {
+      logDiagnostic("info", "track", "equivalent-subtitle-track-ignored", {
+        cueCount: parsed.length,
+      });
+      return;
+    }
 
     const sameVideo = cueVideoId === getVideoId();
     if (sameVideo && cues.length) {
@@ -2188,13 +2905,37 @@
     timedTrackSyncState = "unverified";
     automaticCueTimeOffsetSeconds = 0;
     lastNetflixSyncText = "";
-    removeRenderedSubtitlesBySource("timed");
+    timedTrackMismatchSince = 0;
+    lastTimedTrackMismatch = "";
+    activeTimedTrackMismatchId = 0;
+    translationCoordinator = null;
+    removeRenderedSubtitlesBySource("timed", "new-subtitle-track");
     knownCachedKeys = new Set();
     knownCachedTranslations = new Map();
     pausedCacheFailedKeys = new Set();
+    renderTranscript();
 
     currentStatus.captured = true;
     currentStatus.cueCount = cues.length;
+    logDiagnostic("info", "track", "subtitle-track-accepted", {
+      cueCount: cues.length,
+      firstCueStartMs: Math.round((cues[0]?.start || 0) * 1000),
+      lastCueEndMs: Math.round((cues.at(-1)?.end || 0) * 1000),
+    });
+
+    try {
+      await runtimeMessage({
+        type: "CACHE_RECONCILE_FALLBACK",
+        cacheId: cacheId(),
+        timedCues: cues.map((cue) => ({
+          key: cueKey(cue),
+          sourceText: cue.text,
+        })),
+        metadata: cacheMetadata(),
+      });
+    } catch (error) {
+      console.warn("[LST] Could not reconcile fallback translations:", error);
+    }
 
     const allCached = await getCachedTranslations(cues);
     currentStatus.translatedCount = Object.keys(allCached).length;
@@ -2410,8 +3151,13 @@
 
         case "RELOAD_SETTINGS": {
           const previousCacheId = cacheId();
+          const previousUseTranslationContext = settings.useTranslationContext;
           await loadSettings();
+          if (settings.useTranslationContext !== previousUseTranslationContext) {
+            translationCoordinator = null;
+          }
           if (cacheId() !== previousCacheId) {
+            translationCoordinator = null;
             knownCachedKeys = new Set();
             knownCachedTranslations = new Map();
             pausedCacheFailedKeys = new Set();

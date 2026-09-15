@@ -10,7 +10,9 @@ const sourceFiles = [
   "popup.html",
   "popup.css",
   "popup.js",
-  "styles.css"
+  "styles.css",
+  "subtitle-sync.js",
+  "translation-coordinator.js"
 ];
 
 export async function prepareBrowser(browser) {
@@ -27,6 +29,7 @@ export async function prepareBrowser(browser) {
     await cp(file, `${outputDirectory}/${file}`);
   }
   await cp("icons", `${outputDirectory}/icons`, { recursive: true });
+  await cp("favicons", `${outputDirectory}/favicons`, { recursive: true });
 
   const manifestPath = `${outputDirectory}/manifest.json`;
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));

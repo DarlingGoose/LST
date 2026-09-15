@@ -175,13 +175,19 @@ Cached translations record and display the Netflix show name and episode name se
 
 ## Subtitle synchronization
 
-LST checks that an asynchronously translated cue is still active before rendering it, preventing a slow response from replacing a newer subtitle. Cached translations are kept in the content-script session so a new cue can render synchronously, while Netflix's rendered-text fallback must remain stable briefly before it can replace the timed track. This prevents outgoing or transitional Netflix text from flashing before the current translation. LST also clears lingering lines during real subtitle gaps after a short grace period.
+LST checks that an asynchronously translated cue is still active before rendering it, preventing a slow response from replacing a newer subtitle. Cached translations are kept in the content-script session so a new cue can render synchronously, while Netflix's rendered-text fallback must remain stable briefly before it can replace the timed track. Captured cues and Netflix-rendered text are also compared with a unique formatting-tolerant match, and Netflix may retain the previous cue during the timed track's gap before the next cue without invalidating synchronization. This prevents punctuation or casing differences and normal cue handoffs from causing false mismatches or subtitle flashes. LST still clears lingering lines during real subtitle gaps after a short grace period.
 
 The Subtitles tab provides a −2000 ms to +2000 ms timing offset in 50 ms steps. Negative values show LST subtitles earlier and positive values delay them. The persistent Netflix pill offers quick −100 ms, reset, and +100 ms adjustments.
 
 ## Navigation and in-player controls
 
 Settings is organized into General, Subtitles, Storage, and Advanced tabs so model setup, appearance, cached episodes, and diagnostics no longer compete in one long page.
+
+The Advanced tab also includes a bounded local subtitle event log. It records cue lifecycle, synchronization, cache, and translation events so brief subtitle clears can be diagnosed after playback. Mismatch events include DOM selector/node counts, anonymous page-session text IDs, text lengths, simplified/combined-line match results, nearby cue timing, offsets, rendered state, and resolution outcomes. The log stays in extension storage, omits subtitle text and complete request URLs, and can be filtered, copied, exported, or cleared independently from translation caches.
+
+An optional in-player transcript sidebar shows the complete captured subtitle track with locally cached translations as they become available. The current cue is highlighted and automatically scrolled into view; the sidebar can be toggled from Subtitle settings, the extension popup, or the compact Netflix player controls. The popup also exposes whether the compact in-player controls are visible, with direct shortcuts beside All settings.
+
+Surrounding subtitle context is also opt-in. When enabled, LST sends up to two nearby source cues before and after each new translation to the same user-configured Ollama endpoint. These lines are marked as reference-only so the model can resolve names, pronouns, and sentence continuity without returning extra translations. Context can use more tokens and add latency, and enabling it does not replace translations that are already cached.
 
 An optional persistent LST pill sits in a coordinated top-left HUD. It shows Waiting, Ready, Realtime, Buffering, Cached, Precomputing, or Error status and opens a compact menu for toggling the LST translation, LST original text, and Netflix subtitles. Informational notices stack below the pill rather than overlapping it.
 
@@ -202,7 +208,7 @@ Saved appearance changes are pushed to open Netflix tabs immediately. The option
 
 When Netflix enters browser fullscreen, LST moves its subtitle overlay and optional player controls into the active fullscreen container. They return to the page root when fullscreen closes, preserving the same subtitle state and appearance in both modes.
 
-The Translated episodes section in Settings groups locally cached episodes under their Netflix show, then lists each model/language combination with its translated cue count, estimated storage use, and last update time. Each episode can be previewed as timestamp, original text, and translated text, or exported as a UTF-8 TSV file. Individual caches or the entire local translation library can be removed there. Older caches remain readable and are grouped under Netflix with their video ID until revisiting the episode provides richer metadata.
+The Translated episodes section in Settings groups locally cached episodes under their Netflix show, then lists each model/language combination with its translated cue count, estimated storage use, and last update time. Each episode can be previewed as timestamp, original text, and translated text, or exported as a UTF-8 TSV file. When a timed track becomes available, LST promotes uniquely matched DOM-fallback translations onto their timestamped cues and removes the redundant fallback records. Repeated or unmatched fallback text is preserved for playback recovery but omitted from previews and exports whenever timestamped cues exist. Individual caches or the entire local translation library can be removed there. Older caches remain readable and are migrated when their episode is revisited.
 
 When look-ahead is enabled, LST prepares every subtitle within the configured time window and the first cue after that boundary. The window cannot be set below 30 seconds. Optional top-left notices report when the buffer is being prepared, when it is ready, or when an upcoming cue could not be translated.
 
