@@ -2,6 +2,17 @@ const ext = globalThis.browser || globalThis.chrome;
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
 const DEFAULT_MODEL = "translategemma:4b";
+const PROVIDER_NAMES = { ollama: "Ollama", deepseek: "DeepSeek", gemini: "Gemini" };
+const ORIGINAL_TRANSLATION_PROMPT = [
+  "You are a subtitle translator.",
+  "Translate every requested subtitle into {{targetLanguage}}.",
+  "Use natural, concise language suitable for subtitles.",
+  "Preserve names, honorifics, punctuation, speaker labels, and intent.",
+  "Do not add explanations, notes, analysis, or romanization.",
+  "Do not merge, split, omit, or reorder items."
+].join(" ");
+const providerModels = { ollama: DEFAULT_MODEL, deepseek: "", gemini: "" };
+let configuredKeys = { deepseek: false, gemini: false };
 const SETTINGS_TABS = ["general", "subtitles", "storage", "advanced"];
 const TAB_DETAILS = {
   general: {
@@ -218,7 +229,7 @@ function createCacheItem(cache) {
   for (const value of [
     cueLabel,
     formatBytes(cache.bytes),
-    cache.model || "Unknown model",
+    `${PROVIDER_NAMES[cache.provider] || "Ollama"} · ${cache.model || "Unknown model"}`,
     cache.targetLanguage || "Unknown language",
     formatCacheDate(cache.updatedAt)
   ]) {
@@ -443,6 +454,12 @@ async function load() {
   $("extensionVersion").textContent = ext.runtime.getManifest().version;
 
   $("ollamaUrl").value = s.ollamaUrl || "http://localhost:11434";
+  $("provider").value = PROVIDER_NAMES[s.provider] ? s.provider : "ollama";
+  providerModels.ollama = s.ollamaModel || (s.provider === "ollama" ? s.model : "") || DEFAULT_MODEL;
+  providerModels.deepseek = s.deepseekModel || (s.provider === "deepseek" ? s.model : "") || "";
+  providerModels.gemini = s.geminiModel || (s.provider === "gemini" ? s.model : "") || "";
+  configuredKeys = (await runtimeMessage({ type: "GET_PROVIDER_KEY_STATUS" })).configured;
+  renderProvider();
   $("targetLanguage").value = s.targetLanguage || "English";
   $("enabled").checked = s.enabled !== false;
   $("hideNetflixSubtitles").checked = s.hideNetflixSubtitles !== false;
@@ -460,32 +477,55 @@ async function load() {
   $("minimumSubtitleDisplaySeconds").value = s.minimumSubtitleDisplaySeconds ?? 2;
   $("maximumVisibleSubtitles").value = s.maximumVisibleSubtitles ?? 2;
   $("requestTimeoutSeconds").value = s.requestTimeoutSeconds ?? 75;
-  $("modelSummary").textContent = s.model || DEFAULT_MODEL;
+  $("customTranslationPrompt").value = s.customTranslationPrompt || ORIGINAL_TRANSLATION_PROMPT;
+  $("modelSummary").textContent = providerModels[$("provider").value] || "No model selected";
   applyAppearance(s);
   await loadCacheLibrary();
   await loadDiagnosticLog();
-  $("pullModelName").value = s.model || DEFAULT_MODEL;
+  $("pullModelName").value = providerModels.ollama;
 
   try {
-    await refreshModels(s.model || "");
+    await refreshModels(providerModels[$("provider").value]);
   } catch (error) {
     $("connectionState").textContent = "Unavailable";
     const select = $("model");
     select.replaceChildren();
     const option = document.createElement("option");
-    option.value = s.model || "";
-    option.textContent = s.model || "No model selected";
+    option.value = providerModels[$("provider").value] || "";
+    option.textContent = option.value || "No model selected";
     select.appendChild(option);
-    setStatus(`Could not reach Ollama: ${error.message}`, "error");
+    setStatus(`Could not load ${PROVIDER_NAMES[$("provider").value]} models: ${error.message}`, "error");
   }
 }
 
+function renderProvider() {
+  const provider = $("provider").value;
+  const remote = provider !== "ollama";
+  $("ollamaFields").hidden = remote;
+  $("remoteFields").hidden = !remote;
+  $("modelDownload").hidden = remote;
+  $("providerSummary").textContent = PROVIDER_NAMES[provider];
+  $("privacySummary").textContent = remote ? "Remote provider" : "Local endpoint";
+  $("environmentEndpoint").textContent = remote ? PROVIDER_NAMES[provider] : "Local Ollama";
+  $("modelLabel").textContent = remote ? "Provider model" : "Installed model";
+  $("providerHelp").textContent = remote
+    ? `Subtitle text is sent to ${PROVIDER_NAMES[provider]}. Requests may use your API quota or incur charges.`
+    : "Subtitles are sent to your Ollama endpoint.";
+  $("providerApiKey").value = "";
+  if (remote) $("providerKeyStatus").textContent = configuredKeys[provider]
+    ? "Key saved on this device. Enter a new key to replace it."
+    : "No key saved. Enter a key and choose Save key before refreshing models.";
+}
+
 async function refreshModels(selected = $("model").value) {
-  setStatus("Loading installed Ollama models…");
+  const provider = $("provider").value;
+  setStatus(`Loading ${PROVIDER_NAMES[provider]} models…`);
   const response = await runtimeMessage({
     type: "GET_MODELS",
+    provider,
     ollamaUrl: $("ollamaUrl").value.trim()
   });
+  if (provider !== $("provider").value) return;
 
   const select = $("model");
   select.replaceChildren();
@@ -493,7 +533,7 @@ async function refreshModels(selected = $("model").value) {
   if (!response.models.length) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "No installed models found";
+    option.textContent = "No models found";
     select.appendChild(option);
   } else {
     for (const model of response.models) {
@@ -503,20 +543,21 @@ async function refreshModels(selected = $("model").value) {
       option.textContent = meta ? `${model.name} — ${meta}` : model.name;
       select.appendChild(option);
     }
-    if (selected) {
-      if (![...select.options].some((option) => option.value === selected)) {
-        const option = document.createElement("option");
-        option.value = selected;
-        option.textContent = `${selected} — not installed`;
-        select.prepend(option);
-      }
-      select.value = selected;
+  }
+  if (selected) {
+    if (![...select.options].some((option) => option.value === selected)) {
+      const option = document.createElement("option");
+      option.value = selected;
+      option.textContent = `${selected} — unavailable`;
+      select.prepend(option);
     }
+    select.value = selected;
   }
 
   $("connectionState").textContent = "Connected";
+  providerModels[provider] = select.value;
   $("modelSummary").textContent = select.value || "No model selected";
-  setStatus(`Found ${response.models.length} installed model${response.models.length === 1 ? "" : "s"}.`, "success");
+  setStatus(`Found ${response.models.length} ${PROVIDER_NAMES[provider]} model${response.models.length === 1 ? "" : "s"}.`, "success");
 }
 
 function renderPullProgress(message) {
@@ -534,9 +575,18 @@ function renderPullProgress(message) {
 }
 
 function collectSettings() {
+  providerModels[$("provider").value] = $("model").value;
   return {
+    customTranslationPrompt:
+      $("customTranslationPrompt").value.trim() === ORIGINAL_TRANSLATION_PROMPT
+        ? ""
+        : $("customTranslationPrompt").value.trim(),
+    provider: $("provider").value,
+    ollamaModel: providerModels.ollama,
+    deepseekModel: providerModels.deepseek,
+    geminiModel: providerModels.gemini,
     ollamaUrl: $("ollamaUrl").value.trim().replace(/\/+$/, ""),
-    model: $("model").value,
+    model: providerModels[$("provider").value],
     targetLanguage: $("targetLanguage").value.trim() || "English",
     enabled: $("enabled").checked,
     hideNetflixSubtitles: $("hideNetflixSubtitles").checked,
@@ -576,7 +626,53 @@ async function pushSettingsToNetflixTabs() {
 }
 
 $("refreshModels").addEventListener("click", () => {
-  refreshModels().catch((error) => setStatus(`Could not reach Ollama: ${error.message}`, "error"));
+  refreshModels(providerModels[$("provider").value]).catch((error) =>
+    setStatus(`Could not load models: ${error.message}`, "error"));
+});
+
+$("provider").addEventListener("change", () => {
+  renderProvider();
+  const selected = providerModels[$("provider").value];
+  $("model").replaceChildren(new Option(selected || "Refresh models to choose", selected || ""));
+  $("modelSummary").textContent = selected || "No model selected";
+  const provider = $("provider").value;
+  refreshModels(selected).catch((error) => {
+    if (provider !== $("provider").value) return;
+    $("connectionState").textContent = "Unavailable";
+    setStatus(`Could not load models: ${error.message}`, "error");
+  });
+});
+
+$("saveProviderKey").addEventListener("click", async () => {
+  const provider = $("provider").value;
+  const key = $("providerApiKey").value.trim();
+  if (!key) {
+    setStatus("Enter an API key first.", "error");
+    return;
+  }
+  try {
+    await runtimeMessage({ type: "SET_PROVIDER_KEY", provider, key });
+    configuredKeys[provider] = true;
+    renderProvider();
+    setStatus(`${PROVIDER_NAMES[provider]} key saved on this device.`, "success");
+  } catch (error) {
+    setStatus(`Could not save key: ${error.message}`, "error");
+    return;
+  }
+  refreshModels(providerModels[provider]).catch((error) =>
+    setStatus(`Key saved, but models could not be loaded: ${error.message}`, "error"));
+});
+
+$("removeProviderKey").addEventListener("click", async () => {
+  const provider = $("provider").value;
+  try {
+    await runtimeMessage({ type: "SET_PROVIDER_KEY", provider, key: "" });
+    configuredKeys[provider] = false;
+    renderProvider();
+    setStatus(`${PROVIDER_NAMES[provider]} key removed.`, "success");
+  } catch (error) {
+    setStatus(`Could not remove key: ${error.message}`, "error");
+  }
 });
 
 $("pullModel").addEventListener("click", async () => {
@@ -615,7 +711,14 @@ $("resetAppearance").addEventListener("click", () => {
   setStatus("Appearance reset — save to apply it on Netflix.");
 });
 
+$("resetTranslationPrompt").addEventListener("click", () => {
+  $("customTranslationPrompt").value = ORIGINAL_TRANSLATION_PROMPT;
+  markUnsaved();
+  setStatus("Original translation prompt restored. Save changes to apply it.", "success");
+});
+
 $("model").addEventListener("change", () => {
+  providerModels[$("provider").value] = $("model").value;
   $("modelSummary").textContent = $("model").value || "No model selected";
 });
 
@@ -673,6 +776,11 @@ $("clearDiagnosticLog").addEventListener("click", async () => {
 
 $("save").addEventListener("click", async () => {
   try {
+    const provider = $("provider").value;
+    if (provider !== "ollama" && !configuredKeys[provider]) {
+      throw new Error(`Save a ${PROVIDER_NAMES[provider]} API key first.`);
+    }
+    if (!$("model").value) throw new Error("Choose a translation model first.");
     await runtimeMessage({ type: "SAVE_SETTINGS", settings: collectSettings() });
     await pushSettingsToNetflixTabs();
     setStatus("Saved and applied to open Netflix tabs.", "success");

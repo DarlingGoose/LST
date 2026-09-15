@@ -6,6 +6,10 @@ let diagnosticWriteQueue = Promise.resolve();
 const DEFAULTS = {
   enabled: true,
   ollamaUrl: "http://localhost:11434",
+  provider: "ollama",
+  ollamaModel: "translategemma:4b",
+  deepseekModel: "",
+  geminiModel: "",
   model: "translategemma:4b",
   targetLanguage: "English",
   hideNetflixSubtitles: true,
@@ -20,6 +24,7 @@ const DEFAULTS = {
   cacheWhilePaused: true,
   batchSize: 8,
   requestTimeoutSeconds: 75,
+  customTranslationPrompt: "",
   showDebugPanel: false,
   debugPanelAlwaysOnTop: false,
   showQuickPills: true,
@@ -40,6 +45,7 @@ ext.runtime.onInstalled.addListener(async () => {
     if (current[key] === undefined) missing[key] = value;
   }
   if (!current.model) missing.model = DEFAULTS.model;
+  if (current.ollamaModel === undefined) missing.ollamaModel = current.model || DEFAULTS.model;
   if (Object.keys(missing).length) {
     await ext.storage.local.set(missing);
   }
@@ -125,7 +131,7 @@ async function clearDiagnosticEvents() {
   await ext.storage.local.remove(DIAGNOSTIC_LOG_KEY);
 }
 
-async function fetchJson(url, init = {}, timeoutMs = 15000) {
+async function fetchJson(url, init = {}, timeoutMs = 15000, provider = "Ollama") {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
@@ -135,12 +141,12 @@ async function fetchJson(url, init = {}, timeoutMs = 15000) {
     const elapsedMs = Date.now() - startedAt;
 
     if (!response.ok) {
-      const body = await response.text().catch(() => "");
+      const body = provider === "Ollama" ? await response.text().catch(() => "") : "";
       const error = new Error(
         `${response.status} ${response.statusText}${body ? `: ${body.slice(0, 300)}` : ""}`
       );
       error.diagnostics = {
-        url,
+        url: provider === "Ollama" ? url : provider,
         status: response.status,
         elapsedMs,
         bodySnippet: truncate(body)
@@ -156,10 +162,10 @@ async function fetchJson(url, init = {}, timeoutMs = 15000) {
   } catch (error) {
     if (error?.name === "AbortError") {
       const timeoutError = new Error(
-        `Ollama request timed out after ${Math.round(timeoutMs / 1000)}s`
+        `${provider} request timed out after ${Math.round(timeoutMs / 1000)}s`
       );
       timeoutError.diagnostics = {
-        url,
+        url: provider === "Ollama" ? url : provider,
         timedOut: true,
         elapsedMs: Date.now() - startedAt
       };
@@ -182,6 +188,51 @@ async function getModels(ollamaUrl) {
     parameterSize: m.details?.parameter_size || "",
     quantization: m.details?.quantization_level || ""
   }));
+}
+
+const PROVIDER_KEYS = { deepseek: "deepseekApiKey", gemini: "geminiApiKey" };
+
+function providerName(provider) {
+  return { ollama: "Ollama", deepseek: "DeepSeek", gemini: "Gemini" }[provider] || "Ollama";
+}
+
+async function providerApiKey(provider) {
+  const keyName = PROVIDER_KEYS[provider];
+  if (!keyName) return "";
+  const stored = await ext.storage.local.get(keyName);
+  const key = String(stored[keyName] || "").trim();
+  if (!key) throw new Error(`Add a ${providerName(provider)} API key in Settings first.`);
+  return key;
+}
+
+async function getProviderModels(provider, ollamaUrl) {
+  if (provider === "ollama") return getModels(ollamaUrl);
+  const key = await providerApiKey(provider);
+  if (provider === "deepseek") {
+    const { data } = await fetchJson("https://api.deepseek.com/models", {
+      headers: { Authorization: `Bearer ${key}` }
+    }, 15000, "DeepSeek");
+    return (data.data || []).map((model) => ({ name: model.id })).filter((model) => model.name);
+  }
+  if (provider === "gemini") {
+    const models = [];
+    let pageToken = "";
+    do {
+      const url = new URL("https://generativelanguage.googleapis.com/v1beta/models");
+      url.searchParams.set("pageSize", "1000");
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      const { data } = await fetchJson(url.toString(), {
+        headers: { "x-goog-api-key": key }
+      }, 15000, "Gemini");
+      models.push(...(data.models || [])
+        .filter((model) => model.supportedGenerationMethods?.includes("generateContent"))
+        .map((model) => ({ name: String(model.name || "").replace(/^models\//, "") }))
+        .filter((model) => model.name));
+      pageToken = data.nextPageToken || "";
+    } while (pageToken);
+    return models;
+  }
+  throw new Error("Unknown translation provider.");
 }
 
 function broadcastPullProgress(model, payload = {}) {
@@ -284,7 +335,14 @@ function translationSchema() {
   };
 }
 
-function systemPrompt(targetLanguage, hasContext = false) {
+function systemPrompt(targetLanguage, hasContext = false, customPrompt = "") {
+  if (String(customPrompt || "").trim()) {
+    const custom = String(customPrompt).trim().replace(/\{\{targetLanguage\}\}/gi, targetLanguage);
+    if (hasContext) {
+      return `${custom} Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity. Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list.`;
+    }
+    return custom;
+  }
   const instructions = [
     "You are a subtitle translator.",
     `Translate every requested subtitle into ${targetLanguage}.`,
@@ -318,6 +376,84 @@ function cleanPlainTranslation(value) {
     .trim();
 }
 
+async function generateTranslation(prompt, system, opts, structured, itemCount) {
+  const timeoutMs = Math.max(15, Number(opts.requestTimeoutSeconds) || 75) * 1000;
+  const provider = opts.provider || "ollama";
+  if (provider === "ollama") {
+    const base = normalizeBaseUrl(opts.ollamaUrl);
+    return fetchJson(`${base}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: opts.model,
+        system,
+        prompt,
+        stream: false,
+        ...(structured ? { format: translationSchema() } : {}),
+        think: false,
+        keep_alive: "15m",
+        options: { temperature: 0, num_predict: structured ? Math.max(256, itemCount * 96) : 192 }
+      })
+    }, timeoutMs);
+  }
+
+  const key = await providerApiKey(provider);
+  if (provider === "deepseek") {
+    const result = await fetchJson("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: opts.model,
+        messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+        stream: false,
+        ...(structured ? { response_format: { type: "json_object" } } : {}),
+        temperature: 0,
+        max_tokens: structured ? Math.max(256, itemCount * 96) : 192
+      })
+    }, timeoutMs, "DeepSeek");
+    return {
+      ...result,
+      data: {
+        response: result.data.choices?.[0]?.message?.content || "",
+        done_reason: result.data.choices?.[0]?.finish_reason || "",
+        eval_count: result.data.usage?.completion_tokens || 0,
+        prompt_eval_count: result.data.usage?.prompt_tokens || 0
+      }
+    };
+  }
+  if (provider === "gemini") {
+    if (!/^[a-zA-Z0-9._-]+$/.test(opts.model)) {
+      throw new Error("Invalid Gemini model name.");
+    }
+    const result = await fetchJson(
+      `https://generativelanguage.googleapis.com/v1beta/models/${opts.model}:generateContent`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: {
+            ...(structured ? { responseMimeType: "application/json" } : {}),
+            maxOutputTokens: structured ? Math.max(256, itemCount * 96) : 192
+          }
+        })
+      }, timeoutMs, "Gemini"
+    );
+    const candidate = result.data.candidates?.[0];
+    return {
+      ...result,
+      data: {
+        response: (candidate?.content?.parts || []).map((part) => part.text || "").join(""),
+        done_reason: candidate?.finishReason || result.data.promptFeedback?.blockReason || "",
+        eval_count: result.data.usageMetadata?.candidatesTokenCount || 0,
+        prompt_eval_count: result.data.usageMetadata?.promptTokenCount || 0
+      }
+    };
+  }
+  throw new Error("Unknown translation provider.");
+}
+
 async function runStructuredTranslation(items, opts) {
   const input = items.map((item, index) => ({
     id: String(item.id ?? index),
@@ -329,35 +465,15 @@ async function runStructuredTranslation(items, opts) {
     text: String(item.text ?? "")
   }));
 
-  const timeoutMs = Math.max(15, Number(opts.requestTimeoutSeconds) || 75) * 1000;
-  const base = normalizeBaseUrl(opts.ollamaUrl);
-
-  const result = await fetchJson(
-    `${base}/api/generate`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: opts.model,
-        system:
-          `${systemPrompt(opts.targetLanguage, contextInput.length > 0)} ` +
-          "Return exactly one translation for every input item using the required JSON schema.",
-        prompt: JSON.stringify({
+  const result = await generateTranslation(
+    JSON.stringify({
           targetLanguage: opts.targetLanguage,
           subtitles: input,
           ...(contextInput.length ? { contextSubtitles: contextInput } : {})
-        }),
-        stream: false,
-        format: translationSchema(),
-        think: false,
-        keep_alive: "15m",
-        options: {
-          temperature: 0,
-          num_predict: Math.max(256, input.length * 96)
-        }
-      })
-    },
-    timeoutMs
+    }),
+    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt)} ` +
+      "Return exactly one translation for every input item as JSON with a translations array of {id, text} objects. Preserve each input id.",
+    opts, true, input.length
   );
 
   const data = result.data;
@@ -367,7 +483,7 @@ async function runStructuredTranslation(items, opts) {
   try {
     parsed = JSON.parse(rawResponse || "{}");
   } catch {
-    const error = new Error("Ollama returned invalid structured JSON.");
+    const error = new Error(`${providerName(opts.provider)} returned invalid structured JSON.`);
     error.diagnostics = {
       mode: "structured",
       elapsedMs: result.elapsedMs,
@@ -454,40 +570,22 @@ async function runStructuredTranslation(items, opts) {
 }
 
 async function runPlainSingleTranslation(item, opts) {
-  const timeoutMs = Math.max(15, Number(opts.requestTimeoutSeconds) || 75) * 1000;
-  const base = normalizeBaseUrl(opts.ollamaUrl);
   const contextInput = (opts.contextItems || []).slice(0, 12).map((entry) => ({
     position: String(entry.position || "nearby"),
     startMs: Number.isFinite(Number(entry.startMs)) ? Number(entry.startMs) : null,
     text: String(entry.text ?? "")
   }));
 
-  const result = await fetchJson(
-    `${base}/api/generate`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: opts.model,
-        system:
-          `${systemPrompt(opts.targetLanguage, contextInput.length > 0)} ` +
-          "Return only the translated subtitle text. Do not return JSON or a label.",
-        prompt: contextInput.length
+  const result = await generateTranslation(
+    contextInput.length
           ? JSON.stringify({
               subtitleToTranslate: String(item.text ?? ""),
               contextSubtitles: contextInput
             })
           : String(item.text ?? ""),
-        stream: false,
-        think: false,
-        keep_alive: "15m",
-        options: {
-          temperature: 0,
-          num_predict: 192
-        }
-      })
-    },
-    timeoutMs
+    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt)} ` +
+      "Return only the translated subtitle text. Do not return JSON or a label.",
+    opts, false, 1
   );
 
   const data = result.data;
@@ -553,6 +651,20 @@ async function translateBatchResilient(items, opts, depth = 0) {
       ...errorDiagnostics(structuredError, items.length)
     }];
 
+    if (opts.provider !== "ollama" && [401, 403, 404, 429].includes(
+      structuredError?.diagnostics?.status
+    )) {
+      return {
+        translations: [],
+        failures: items.map((item) => ({
+          id: String(item.id ?? "0"),
+          text: String(item.text ?? ""),
+          error: structuredError.message
+        })),
+        diagnostics
+      };
+    }
+
     if (items.length === 1) {
       try {
         const fallback = await runPlainSingleTranslation(items[0], opts);
@@ -616,13 +728,16 @@ function decodeCachePart(value, fallback = "") {
 
 function inferCacheMetadata(cacheId) {
   const [videoId = "unknown", model = "", targetLanguage = ""] = String(cacheId).split(":");
+  const decodedModel = decodeCachePart(model, "Unknown model");
+  const remoteProvider = decodedModel.match(/^(deepseek|gemini)\/(.+)$/);
   const knownVideo = videoId !== "unknown";
   return {
     videoId,
     showName: "Netflix",
     episodeName: knownVideo ? `Episode ${videoId}` : "Unknown episode",
     title: knownVideo ? `Netflix episode ${videoId}` : "Unknown Netflix episode",
-    model: decodeCachePart(model, "Unknown model"),
+    provider: remoteProvider?.[1] || "ollama",
+    model: remoteProvider?.[2] || decodedModel,
     targetLanguage: decodeCachePart(targetLanguage, "Unknown language")
   };
 }
@@ -915,14 +1030,41 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       case "SAVE_SETTINGS": {
-        await ext.storage.local.set(message.settings || {});
+        const patch = { ...(message.settings || {}) };
+        if (patch.provider && !["ollama", "deepseek", "gemini"].includes(patch.provider)) {
+          throw new Error("Unknown translation provider.");
+        }
+        for (const keyName of Object.values(PROVIDER_KEYS)) delete patch[keyName];
+        await ext.storage.local.set(patch);
         sendResponse({ ok: true, settings: await getSettings() });
+        return;
+      }
+
+      case "GET_PROVIDER_KEY_STATUS": {
+        const keys = await ext.storage.local.get(Object.values(PROVIDER_KEYS));
+        sendResponse({ ok: true, configured: {
+          deepseek: Boolean(keys.deepseekApiKey),
+          gemini: Boolean(keys.geminiApiKey)
+        } });
+        return;
+      }
+
+      case "SET_PROVIDER_KEY": {
+        const keyName = PROVIDER_KEYS[message.provider];
+        if (!keyName) throw new Error("Unknown translation provider.");
+        const key = String(message.key || "").trim();
+        if (key) await ext.storage.local.set({ [keyName]: key });
+        else await ext.storage.local.remove(keyName);
+        sendResponse({ ok: true, configured: Boolean(key) });
         return;
       }
 
       case "GET_MODELS": {
         const settings = await getSettings();
-        const models = await getModels(message.ollamaUrl || settings.ollamaUrl);
+        const models = await getProviderModels(
+          message.provider || settings.provider,
+          message.ollamaUrl || settings.ollamaUrl
+        );
         sendResponse({ ok: true, models });
         return;
       }
@@ -945,17 +1087,23 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "TRANSLATE_BATCH": {
         const settings = await getSettings();
         const opts = {
+          provider: message.provider || settings.provider,
           ollamaUrl: message.ollamaUrl || settings.ollamaUrl,
           model: message.model || settings.model,
           targetLanguage: message.targetLanguage || settings.targetLanguage,
           requestTimeoutSeconds:
             message.requestTimeoutSeconds || settings.requestTimeoutSeconds,
+          customTranslationPrompt: settings.customTranslationPrompt || "",
           contextItems: Array.isArray(message.contextItems)
             ? message.contextItems
             : []
         };
 
-        if (!opts.model) throw new Error("No Ollama model selected.");
+        if (!["ollama", "deepseek", "gemini"].includes(opts.provider)) {
+          throw new Error("Unknown translation provider.");
+        }
+        if (!opts.model) throw new Error(`No ${providerName(opts.provider)} model selected.`);
+        if (opts.provider !== "ollama") await providerApiKey(opts.provider);
 
         const startedAt = Date.now();
         const result = await translateBatchResilient(message.items || [], opts);
@@ -969,6 +1117,7 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
             failed: result.failures.length,
             elapsedMs: Date.now() - startedAt,
             model: opts.model,
+            provider: opts.provider,
             targetLanguage: opts.targetLanguage,
             contextCueCount: opts.contextItems.length
           }

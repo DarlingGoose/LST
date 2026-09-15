@@ -60,6 +60,7 @@ h1 { margin: 0; font-size: clamp(28px, 3vw, 36px); line-height: 1.15; letter-spa
 #status[data-tone="success"] { color: #91e1bd; }
 #status[data-tone="error"] { color: #ff9ca2; }
 [data-settings-panel][hidden] { display: none !important; }
+[hidden] { display: none !important; }
 
 .card, .stat-card { border: 1px solid var(--border); background: var(--card); }
 .card { padding: 24px; border-radius: 16px; }
@@ -72,7 +73,7 @@ h1 { margin: 0; font-size: clamp(28px, 3vw, 36px); line-height: 1.15; letter-spa
 .status-dot.blue { background: var(--blue); }
 .status-dot.purple { background: var(--purple); }
 .general-grid, .subtitle-grid, .advanced-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); gap: 16px; }
-.defaults-card, .connection-help, .diagnostic-log-card { margin-top: 16px; }
+.defaults-card, .connection-help, .diagnostic-log-card, .prompt-editor-card { margin-top: 16px; }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
 h2 { margin: 0; font-size: 19px; line-height: 1.25; letter-spacing: -.015em; }
 .section-heading p, #cacheSummary { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
@@ -80,7 +81,8 @@ h2 { margin: 0; font-size: 19px; line-height: 1.25; letter-spacing: -.015em; }
 .field:first-child { margin-top: 0; }
 label, .label { display: block; font-weight: 670; }
 .help { margin: 6px 0 0; color: var(--subtle); font-size: 11px; }
-input[type="text"], input[type="number"], select { width: 100%; min-height: 44px; margin-top: 7px; padding: 10px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--input); color: #fff; }
+input[type="text"], input[type="password"], input[type="number"], select { width: 100%; min-height: 44px; margin-top: 7px; padding: 10px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--input); color: #fff; }
+textarea { width: 100%; margin-top: 7px; padding: 12px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--input); color: #fff; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
 select { cursor: pointer; }
 .action-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 14px; }
 .action-field > button { margin-bottom: 0; }
