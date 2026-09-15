@@ -4,6 +4,10 @@
 
   const SOURCE = "lst-local-subtitle-translate";
 
+  function isWatchPage() {
+    return /^\/watch\/\d+(?:\/|$)/.test(location.pathname);
+  }
+
   function isLikelySubtitleText(text) {
     if (!text || text.length < 20 || text.length > 5_000_000) return false;
     const head = text.slice(0, 4000);
@@ -15,6 +19,7 @@
   }
 
   function publish(url, text) {
+    if (!isWatchPage()) return;
     if (!isLikelySubtitleText(text)) return;
     window.postMessage(
       {
@@ -27,6 +32,7 @@
   }
 
   async function inspectResponse(response) {
+    if (!isWatchPage()) return;
     try {
       const url = response.url || "";
       const type = (response.headers.get("content-type") || "").toLowerCase();
@@ -54,7 +60,7 @@
   const originalFetch = window.fetch;
   window.fetch = async function (...args) {
     const response = await originalFetch.apply(this, args);
-    inspectResponse(response);
+    if (isWatchPage()) inspectResponse(response);
     return response;
   };
 
@@ -67,7 +73,9 @@
   };
 
   XMLHttpRequest.prototype.send = function (...args) {
+    if (!isWatchPage()) return originalSend.apply(this, args);
     this.addEventListener("load", function () {
+      if (!isWatchPage()) return;
       try {
         const url = this.responseURL || this.__notSubtitleUrl || "";
         const type = (this.getResponseHeader("content-type") || "").toLowerCase();

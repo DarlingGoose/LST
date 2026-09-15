@@ -7,6 +7,7 @@ A small cross-browser Manifest V3 extension for Firefox and Chromium browsers th
 ## Features
 
 - Local Ollama by default; DeepSeek and Gemini are opt-in
+- Playback controls and subtitle work activate only on Netflix watch pages; Home and Search remain idle
 - Discovers installed Ollama models with `/api/tags`
 - Downloads Ollama models by name from Settings
 - Select model and target language in the browser

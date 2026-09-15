@@ -32,7 +32,7 @@ async function tabMessage(tabId, message) {
 
 async function activeNetflixTab() {
   const [tab] = await ext.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !tab.url?.includes("netflix.com/")) {
+  if (!tab?.id || !/^https:\/\/www\.netflix\.com\/watch\/\d+(?:[/?#]|$)/.test(tab.url || "")) {
     throw new Error("Open a Netflix watch page first.");
   }
   return tab;
