@@ -140,6 +140,18 @@ same rendered-caption fallback keeps working: realtime translation of the line t
 player is drawing, plus look-ahead over what has already been rendered. The reason
 a listing produced no track is written to the event log.
 
+**Moving to the next episode needs no reload.** A service asks for the next
+episode's assets while the URL is often still the previous episode's, so the
+document can arrive before LST has noticed the change and find a track already
+loaded. LST holds the newest captured document rather than dropping it — the
+request that carried it is made once and never repeated — and offers it to the
+track that has just been emptied, or to a player that swapped its episode without
+moving the URL at all, where the line the player draws is what shows the held
+document is the one being watched. The same rules that judge an arriving document
+judge a held one, and the event log says which document was adopted and why
+(`held-document-adopted`), or that it was too old to be this episode's
+(`held-document-stale`).
+
 ## Ollama setup
 
 Check Ollama is running:

@@ -1002,6 +1002,13 @@ function createHarness(vtt = CUE_TRACK, { site = "netflix", settings = {} } = {}
           },
         },
       });
+      // The route can also change a moment *after* the document is handed over,
+      // which is what a service does when it asks for the next episode's assets
+      // before it moves the URL.
+      if (options.pathnameAfter) {
+        context.location.pathname = options.pathnameAfter;
+        context.location.href = `${harnessSite.origin}${options.pathnameAfter}`;
+      }
       for (let i = 0; i < 12; i++) await Promise.resolve();
       // content.js buffers diagnostics for half a second before flushing them.
       await sleep(560);
@@ -1245,6 +1252,19 @@ const UNRELATED_TRACK = [
   "",
 ].join("\n");
 
+// The episode the service moves to next: its own lines on its own timeline, which
+// is what a document for the episode being switched to looks like.
+const NEXT_EPISODE_TRACK = [
+  "WEBVTT",
+  "",
+  "00:00:05.000 --> 00:00:06.000",
+  "Next episode line.",
+  "",
+  "00:00:15.000 --> 00:00:16.000",
+  "Another next line.",
+  "",
+].join("\n");
+
 // Re-encoding the same lines must not be treated as a new track: the captured
 // track, its synchronization state, and its cache keys all stay in place.
 {
@@ -1414,6 +1434,96 @@ const UNRELATED_TRACK = [
   assert.equal(accepted.length, 2);
   assert.equal(accepted[1].details.trackRelationship, "none");
   assert.equal(accepted[1].details.trackReason, "no-existing-track");
+}
+
+// A service can ask for the next episode's assets while the viewer is still on
+// the previous episode's URL, so the document arrives before LST can see the
+// route change and is judged against the track that is still loaded. The request
+// is made once and never repeated, so that document is the only copy LST will
+// get: it is held rather than dropped, and the episode change adopts it.
+{
+  const harness = createHarness(CUE_TRACK, { site: "primevideo" });
+  await harness.start();
+  await harness.show("Let's go.", 20.4);
+
+  await harness.capture(NEXT_EPISODE_TRACK, {
+    url: "https://aiv-cdn.net/ttml/B0B6GZ954Z.ttml",
+    pathnameAfter: "/-/en/gp/video/detail/B0B6GZ954Z",
+  });
+
+  const kept = harness.eventsNamed("subtitle-track-kept");
+  assert.equal(
+    kept.length,
+    1,
+    "the next episode's document arrives while the old track is still loaded",
+  );
+  assert.equal(kept[0].details.trackReason, "matches-current-track");
+
+  // Only now does the route catch up, which is the moment LST used to have
+  // nothing left to adopt.
+  await harness.frame(1);
+  await harness.flushDiagnostics();
+
+  const order = harness.debugEvents().map((event) => event.event);
+  assert.ok(order.includes("episode-changed"), "the episode change is noticed");
+  assert.ok(
+    order.lastIndexOf("subtitle-track-accepted") > order.indexOf("episode-changed"),
+    "the next episode's track is adopted after the change, without a reload",
+  );
+  const adopted = harness.eventsNamed("held-document-adopted");
+  assert.equal(adopted.length, 1, "the held document is the one adopted");
+  assert.equal(adopted[0].details.reason, "episode-changed");
+
+  const accepted = harness.eventsNamed("subtitle-track-accepted").at(-1);
+  assert.equal(accepted.details.trackReason, "no-existing-track");
+  assert.equal(accepted.details.cueCount, 2);
+
+  // And the episode translates again, which is what a viewer notices.
+  await harness.show("Next episode line.", 5.4);
+  assert.equal(harness.translationRequests().at(-1), "Next episode line.");
+}
+
+// A player that swaps its episode without moving the URL never fires a route
+// change at all. The line the player draws is then the only evidence: it is a
+// line the held document has and the current track does not, which is the
+// module's own reason to adopt it.
+{
+  const harness = createHarness(CUE_TRACK, { site: "primevideo" });
+  await harness.start();
+  await harness.show("Let's go.", 20.4);
+  await harness.frame(20.4);
+
+  await harness.capture(NEXT_EPISODE_TRACK, {
+    url: "https://aiv-cdn.net/ttml/B0B6GZ954Z.ttml",
+  });
+  assert.equal(
+    harness.eventsNamed("subtitle-track-kept").length,
+    1,
+    "the next episode's document is refused while the old track is loaded",
+  );
+
+  await harness.show("Next episode line.", 5.4);
+  await harness.frame(5.4);
+  await sleep(400);
+  await harness.frame(5.5);
+  await harness.flushDiagnostics();
+
+  const adopted = harness.eventsNamed("held-document-adopted");
+  assert.equal(adopted.length, 1, "the held document is the one adopted");
+  assert.equal(adopted[0].details.reason, "rendered-line-in-held-document");
+  // The current track is still loaded here, so the module decides it the way it
+  // decides an arriving document: the line the player draws belongs to the
+  // incoming one and not to the track on screen.
+  const accepted = harness.eventsNamed("subtitle-track-accepted").at(-1);
+  assert.equal(accepted.details.trackReason, "matches-rendered-line");
+  assert.equal(accepted.details.trackRelationship, "disjoint");
+  assert.equal(accepted.details.renderedLineInIncoming, true);
+  assert.equal(accepted.details.cueCount, 2);
+  assert.equal(
+    harness.eventsNamed("episode-changed").length,
+    0,
+    "the route never moved, so the change is only visible in what is drawn",
+  );
 }
 
 

@@ -517,6 +517,19 @@ subtitle tracks in — belong to `playback-site.js`. Nothing in `content.js` or
   the adapter's declared language preference decides (`ja` first), then the first
   subtitle track listed, and the reason travels with the track.
 - Prime Video's font is not Netflix Sans; keep overlay styling service-neutral.
+- **A captured document is held, not dropped, when it may belong to the episode
+  being switched to.** A service asks for the next episode's assets while the URL
+  is often still the previous episode's, so the document can arrive before
+  `content.js` has noticed the change and be judged against a track that is still
+  loaded — and the request that carried it is never repeated, so it is the only
+  copy LST will get. The newest document is kept in `heldCapturedDocument` and
+  re-offered to an emptied track: after a route change, when playback starts, or
+  when the player draws a line the held document holds and the current track does
+  not (the one piece of evidence that names the episode when the URL never
+  moves). It is never trusted on its own — `resolveTrackDocument()` decides, as it
+  does for an arriving document — it is adopted once, and only while it is fresh
+  enough to be this episode's capture (`HELD_DOCUMENT_FRESH_MS`). The event log
+  records `held-document-adopted` with the reason, or `held-document-stale`.
 
 When changing subtitle parsing or playback synchronization, test:
 

@@ -3593,6 +3593,11 @@
       refreshJimakuFinding({ reason: "episode-changed" }).catch((error) => {
         console.warn("[LST] Could not read what Jimaku holds for this show:", error);
       });
+      // The new episode's own document may have arrived before the route change
+      // was noticed, in which case it was judged against the track that has just
+      // been cleared. It is offered to the empty track now, rather than waiting
+      // for a request the player makes only once.
+      adoptHeldCapturedDocument("episode-changed");
       requestAnimationFrame(playbackLoop);
       return;
     }
@@ -3641,6 +3646,12 @@
         renderedObservation.stable &&
         !validateTimedTrackAgainstRendering(video, renderedText)
       ) {
+        // A line the player draws that this track does not hold is evidence
+        // about which document belongs to the episode being watched, so a
+        // document LST is holding is offered it before the track is given up
+        // on. It is asked once per distinct line, and only the module decides
+        // whether the held document is really the one on screen.
+        if (renderedText) adoptHeldDocumentForRenderedLine(renderedText);
         currentStatus.activeCueStart = null;
         currentStatus.activeCueEnd = null;
         currentStatus.playbackMode = renderedText
@@ -3937,6 +3948,12 @@
     cueSourceUrl = url || "captured";
     cueVideoId = getVideoId();
     cueTrackKind = "captured";
+    // A document that has been adopted is not held any more: the next capture
+    // owns the slot, and this one must not be handed to a later episode as
+    // though it were that episode's track.
+    if (heldCapturedDocument && heldCapturedDocument.text === text) {
+      heldCapturedDocument = null;
+    }
     importedTrack = null;
     currentStatus.subtitleSource = "captured";
     currentStatus.importedFileName = "";
@@ -4630,15 +4647,36 @@
     return { started: true, alreadyRunning: false };
   }
 
-  // A track can be captured before LST has noticed that a player is in use. The
-  // player asks for its resources the moment it starts, and LST notices a
-  // player on its next pass — so the request that names the episode's subtitles
-  // can arrive first, and it is not repeated on demand. The newest document is
-  // therefore held here and adopted as soon as playback starts, rather than
-  // dropped and waited for again.
-  let pendingSubtitleDocument = null;
+  // The newest document the page world handed over, kept whether or not it was
+  // adopted, because a request that names an episode's subtitles is not made
+  // again on demand: whatever LST decides about it, the text is the only copy it
+  // will get. Three moments can arrive out of order around an episode change,
+  // and all three are the same missing step — a document re-offered to a track
+  // that has just been emptied:
+  //
+  //   1. the next episode's document arrives before LST has noticed the route
+  //      changed, so it is judged against the track that is still loaded and
+  //      refused;
+  //   2. the player winks out between episodes, LST withdraws, and the document
+  //      that arrived while it was withdrawn would otherwise be dropped;
+  //   3. a player that swaps its episode without moving the URL never fires the
+  //      route change at all, and only the line the player draws can say which
+  //      document belongs to this episode.
+  //
+  // A held document is never trusted on its own: it is adopted only while no
+  // track is loaded or when the line the player is drawing is a line the
+  // held document holds and the current track does not — the module's own rule
+  // for an arriving document, applied to one that already arrived — and only
+  // while it is fresh enough to belong to the episode being switched to. An
+  // older capture belonged to the episode that has just ended.
+  const HELD_DOCUMENT_FRESH_MS = 10_000;
+  let heldCapturedDocument = null;
+  // The rendered line already put to the held document, so a mismatch that
+  // repeats frame after frame is asked about once rather than sixty times a
+  // second.
+  let heldDocumentAskedFor = "";
 
-  function handleCapturedDocument(payload) {
+  function holdCapturedDocument(payload) {
     const { url, text, site, capture = "", language = "", reason = "" } = payload || {};
     // A document captured on one service is never adopted by the other: the
     // page hook tags what it publishes, and a mismatch is reported rather than
@@ -4650,11 +4688,97 @@
         pageSiteId: currentSiteId() || "none",
         incomingUrl: shortUrl(url),
       });
-      return;
+      return null;
     }
-    acceptSubtitleDocument(url, text, { capture, language, reason }).catch((error) => {
+    if (typeof text !== "string" || !text.trim()) return null;
+    // The folded lines of the held document are worked out once, when it is
+    // held, so asking on every frame whether the player is drawing one of them
+    // costs a set lookup rather than a parse of the whole episode.
+    const folded = new Set();
+    for (const cue of parseSubtitleDocument(text)) {
+      const key = foldedSubtitleText(cue.text);
+      if (key) folded.add(key);
+    }
+    if (!folded.size) return null;
+    heldCapturedDocument = {
+      url: String(url || ""),
+      text,
+      details: { capture, language, reason },
+      videoId: getVideoId(),
+      at: Date.now(),
+      folded,
+    };
+    return heldCapturedDocument;
+  }
+
+  function handleCapturedDocument(payload) {
+    const held = holdCapturedDocument(payload);
+    if (!held) return;
+    acceptSubtitleDocument(held.url, held.text, held.details).catch((error) => {
       console.warn("[LST] Could not parse captured subtitles:", error);
     });
+  }
+
+  function heldDocumentAgeMs(held) {
+    return Math.max(0, Date.now() - (Number(held?.at) || 0));
+  }
+
+  function acceptHeldDocument(held, reason, details = {}) {
+    // One document is adopted once. The next capture sets the slot again, and a
+    // document already adopted must not be handed to the next episode as though
+    // it were that episode's track.
+    heldCapturedDocument = null;
+    logDiagnostic("info", "track", "held-document-adopted", {
+      reason,
+      capturedVideoId: held.videoId || "unknown",
+      pageVideoId: getVideoId(),
+      ageMs: heldDocumentAgeMs(held),
+      incomingUrl: shortUrl(held.url),
+      ...details,
+    });
+    acceptSubtitleDocument(held.url, held.text, held.details).catch((error) => {
+      console.warn("[LST] Could not parse a held subtitle document:", error);
+    });
+  }
+
+  // A document is re-offered to a track LST has just emptied — a new episode, or
+  // playback starting — but only while it is fresh enough to be that episode's
+  // own capture.
+  function adoptHeldCapturedDocument(reason) {
+    const held = heldCapturedDocument;
+    if (!held || cues.length) return false;
+    const ageMs = heldDocumentAgeMs(held);
+    if (ageMs > HELD_DOCUMENT_FRESH_MS) {
+      logDiagnostic("info", "track", "held-document-stale", {
+        reason,
+        ageMs,
+        capturedVideoId: held.videoId || "unknown",
+        pageVideoId: getVideoId(),
+      });
+      return false;
+    }
+    acceptHeldDocument(held, reason);
+    return true;
+  }
+
+  // The one piece of evidence that names the episode when the route does not:
+  // the player is drawing a line the current track does not hold. If the held
+  // document holds it, the held document is the one being watched, and
+  // subtitle-sync.js is asked to decide the same question it decides for a
+  // document that arrives now.
+  function adoptHeldDocumentForRenderedLine(renderedText) {
+    const held = heldCapturedDocument;
+    if (!held || !held.folded) return false;
+    if (heldDocumentAgeMs(held) > HELD_DOCUMENT_FRESH_MS) return false;
+    const key = foldedSubtitleText(renderedText);
+    if (!key || !held.folded.has(key)) return false;
+    if (heldDocumentAskedFor === key) return false;
+    heldDocumentAskedFor = key;
+    if (cues.some((cue) => foldedSubtitleText(cue.text) === key)) return false;
+    acceptHeldDocument(held, "rendered-line-in-held-document", {
+      trackReason: "held-document-matches-rendered-line",
+    });
+    return true;
   }
 
   window.addEventListener("message", (event) => {
@@ -4662,8 +4786,11 @@
     if (event.data?.source !== SOURCE) return;
     if (!playbackActive || !isWatchPage()) {
       // Only a document is worth keeping; a note about a capture that already
-      // happened would describe a page state the log is no longer on.
-      if (event.data?.type === "SUBTITLE_DOCUMENT") pendingSubtitleDocument = event.data.payload;
+      // happened would describe a page state the log is no longer on. The
+      // document is held rather than dropped: the request that carried it is
+      // never repeated, so it is the only copy of this episode's track LST will
+      // get, and playback picks it up when the player comes back.
+      if (event.data?.type === "SUBTITLE_DOCUMENT") holdCapturedDocument(event.data.payload);
       return;
     }
 
@@ -4826,9 +4953,13 @@
     cueVideoId = "";
     cueTrackKind = "none";
     importedTrack = null;
-    // A track captured for the player that has just gone belongs to that player,
-    // not to the next one.
-    pendingSubtitleDocument = null;
+    // A document captured for the player that has just gone may still be the
+    // next episode's own track — the player asks for its resources before LST
+    // has noticed either the new player or the new route — so the held document
+    // survives this teardown. It is adopted only when the track is empty and
+    // only while it is fresh, so a capture from the episode that has ended
+    // cannot become the next episode's subtitles.
+    heldDocumentAskedFor = "";
     // A note belongs to the show that was on screen; the next one reads its own.
     jimakuFinding = null;
     jimakuFindingKey = "";
@@ -4964,12 +5095,9 @@
       requestAnimationFrame(playbackLoop);
       // A track the page world captured before this pass is this episode's
       // track: the request that carried it is not repeated, so holding it would
-      // mean waiting for a capture that is never asked for again.
-      if (pendingSubtitleDocument) {
-        const held = pendingSubtitleDocument;
-        pendingSubtitleDocument = null;
-        handleCapturedDocument(held);
-      }
+      // mean waiting for a capture that is never asked for again. The same
+      // applies to a track captured while LST was withdrawn between episodes.
+      adoptHeldCapturedDocument("playback-start");
       // A subtitle file the viewer imported for this episode is this episode's
       // track, whether or not the service is rendering captions of its own.
       refreshImportedTrack({ reason: "playback-start" }).catch((error) => {
