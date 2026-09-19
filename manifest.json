@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LST — Local Subtitle Translate",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "description": "Translate Netflix and Prime Video subtitles locally with Ollama, or optional DeepSeek and Gemini providers.",
   "icons": {
     "16": "icons/icon-16.png",
