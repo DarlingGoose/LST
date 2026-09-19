@@ -44,6 +44,7 @@ const DEFAULTS = {
   showStatusMessages: true,
   autoTranslateAhead: true,
   useTranslationContext: false,
+  contextLevel: "standard",
   verifyTranslations: true,
   lookAheadSeconds: 30,
   cacheWhilePaused: true,
@@ -1052,8 +1053,8 @@ const CONTEXT_UNAVAILABLE_REPORT = Object.freeze({
   refused: 0
 });
 
-function sanitizeContextItems(items) {
-  if (translationContext) return translationContext.sanitizeContextItems(items);
+function sanitizeContextItems(items, level) {
+  if (translationContext) return translationContext.sanitizeContextItems(items, level);
   // These two strings repeat the module's own vocabulary because a missing
   // module cannot be asked for them. The test suite holds both spellings to the
   // module's constants.
@@ -2036,8 +2037,15 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "TRANSLATE_BATCH": {
         const settings = await getSettings();
+        // The viewer's chosen amount of context, so the boundary here is the one
+        // the request was built under: an item past the level the viewer picked
+        // is refused with a reason rather than sent, and an unknown level falls
+        // back to the default inside the module.
         const context = {
-          ...sanitizeContextItems(message.contextItems),
+          ...sanitizeContextItems(
+            message.contextItems,
+            message.contextLevel ?? settings.contextLevel
+          ),
           sent: Array.isArray(message.contextItems) ? message.contextItems.length : 0
         };
         const opts = {

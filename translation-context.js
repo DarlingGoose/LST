@@ -20,17 +20,22 @@
 // handed to the model as the invented label "nearby". Nothing recorded why
 // context was empty.
 //
-// The rules live here now, stated once in named limits and decided on the cue
+// The rules live here now, stated once as named levels and decided on the cue
 // timeline rather than on index arithmetic:
 //
 //   * a candidate is judged by the silence between it and its nearest requested
 //     line, not by how many indexes away it is;
 //   * a cue that ends before its nearest requested line is "before", one that
 //     starts after it is "after", and one that overlaps it is "overlapping";
-//   * the counts, the gap and the character budgets are declared in
-//     CONTEXT_LIMITS, which the options page, the HUD and the README read
-//     through describeLimits(), so the interface cannot describe a rule this
-//     file does not implement;
+//   * how much context a request carries is the viewer's choice, stated once in
+//     the level table below, and every amount the interface shows — the select,
+//     the sentence under it, the HUD's own line and the README — is read from
+//     that table through describeLevelLabel(), describeLevelSummary(),
+//     describeLimits() and contextLevelOptions(), so no page can state a number
+//     this file does not implement;
+//   * the character budgets that bound the work rather than the dialogue, and
+//     the ceilings a stored level is clamped to, are declared here too, so a
+//     hand-edited or future value cannot make one request grow without bound;
 //   * every admission and every refusal carries a reason, and a question this
 //     file cannot answer — a requested line with no timeline, a reference line
 //     with no position — is reported as unanswered rather than guessed at.
@@ -41,31 +46,148 @@
 // here touches the network, the DOM, or browser storage.
 
 (() => {
-  // The whole budget, in one place. describeLimits() renders these numbers for
-  // the interface, and the test suite compares the interface text against them,
-  // so a rule cannot change here without the description changing with it.
-  const CONTEXT_LIMITS = Object.freeze({
-    // Requested lines are answered by at most this many reference lines on each
-    // side, plus a couple that overlap a requested line (a second line of the
-    // same subtitle, or a line the batch skipped because it was cached).
-    beforeCues: 2,
-    afterCues: 2,
-    overlappingCues: 2,
-    // Hard ceiling for the whole list, whoever built it.
-    maxItems: 6,
-    // Silence longer than this is a scene break, not a pause in the dialogue,
-    // so context is not taken across it.
-    maxGapSeconds: 8,
-    // A reference line is shortened to this before it is sent, and the list as
-    // a whole is kept under the total so a request cannot grow without bound.
+  // The whole budget, in one place, as one row per amount the viewer can choose.
+  // Requested lines are answered by at most the declared number of reference
+  // lines on each side, plus a couple that overlap a requested line (a second
+  // line of the same subtitle, or a line the batch skipped because it was
+  // cached), and silence longer than the declared gap is a scene break rather
+  // than a pause in the dialogue, so context is not taken across it.
+  //
+  // maxItems is deliberately not written down: it is the sum of the three sides,
+  // so a level can never promise more lines per request than it has places to
+  // put them, and the number the interface shows cannot disagree with the
+  // numbers that decide it.
+  const CONTEXT_LEVEL_ROWS = Object.freeze([
+    Object.freeze({
+      id: "minimal",
+      label: "Minimal",
+      beforeCues: 1,
+      afterCues: 1,
+      overlappingCues: 1,
+      maxGapSeconds: 5,
+    }),
+    Object.freeze({
+      id: "standard",
+      label: "Standard",
+      beforeCues: 2,
+      afterCues: 2,
+      overlappingCues: 2,
+      maxGapSeconds: 8,
+    }),
+    Object.freeze({
+      id: "wide",
+      label: "Wide",
+      beforeCues: 4,
+      afterCues: 4,
+      overlappingCues: 2,
+      maxGapSeconds: 12,
+    }),
+  ]);
+
+  // What a request carries when the viewer has chosen nothing. It is the amounts
+  // this feature shipped with, so an install that never opens the setting
+  // translates exactly as it did before the choice existed.
+  const CONTEXT_LEVEL_DEFAULT = "standard";
+
+  // The widest a level may ask for. A stored value written by a newer version,
+  // or edited by hand, is clamped to this rather than trusted.
+  const CONTEXT_LEVEL_CEILING = Object.freeze({
+    beforeCues: 8,
+    afterCues: 8,
+    overlappingCues: 4,
+    maxGapSeconds: 30,
+    maxItems: 20,
+  });
+
+  // What bounds the work rather than the dialogue: how long one reference line
+  // may be, how much text the whole list may carry, how far a scan walks from a
+  // requested cue before giving up, and how many refusals are reported
+  // individually before they are counted instead. None of this is the viewer's
+  // to choose; it exists so one request cannot grow without bound.
+  const CONTEXT_ARCHITECTURE = Object.freeze({
     maxTextChars: 240,
     maxTotalChars: 1000,
-    // How far the scan walks from a requested cue before giving up. The gap
-    // rule decides what is context; this only bounds the work per request.
     maxWalkSteps: 8,
-    // Individual refusals kept in the report before they are counted instead.
     maxReportedRefusals: 5,
   });
+
+  function clampCount(value, ceiling) {
+    const count = Math.floor(Number(value));
+    if (!Number.isFinite(count)) return null;
+    return Math.max(0, Math.min(ceiling, count));
+  }
+
+  // A row, or anything that arrived claiming to be one, turned into the whole
+  // budget a request is built under: the sides, the ceiling they add up to, and
+  // the architecture that bounds the work. What a row does not state is taken
+  // from the level it stands on, so a partial or hand-edited budget cannot end
+  // up with no sides at all, and every amount it does state is clamped.
+  function budgetFrom(row, base) {
+    const source = row && typeof row === "object" ? row : {};
+    const fallback = base && typeof base === "object" ? base : {};
+    const declared = (field) => {
+      const value = source[field];
+      return value === undefined || value === null || value === "" ? fallback[field] : value;
+    };
+    const beforeCues = clampCount(declared("beforeCues"), CONTEXT_LEVEL_CEILING.beforeCues) ?? 0;
+    const afterCues = clampCount(declared("afterCues"), CONTEXT_LEVEL_CEILING.afterCues) ?? 0;
+    const overlappingCues =
+      clampCount(declared("overlappingCues"), CONTEXT_LEVEL_CEILING.overlappingCues) ?? 0;
+    const maxGapSeconds = Math.max(
+      0,
+      Math.min(CONTEXT_LEVEL_CEILING.maxGapSeconds, Number(declared("maxGapSeconds")) || 0),
+    );
+    const id = typeof source.id === "string" && source.id ? source.id : fallback.id;
+    return Object.freeze({
+      id: id || CONTEXT_LEVEL_DEFAULT,
+      label:
+        typeof source.label === "string" && source.label
+          ? source.label
+          : typeof fallback.label === "string"
+            ? fallback.label
+            : "",
+      beforeCues,
+      afterCues,
+      overlappingCues,
+      maxItems: Math.min(
+        CONTEXT_LEVEL_CEILING.maxItems,
+        Math.max(1, beforeCues + afterCues + overlappingCues),
+      ),
+      maxGapSeconds,
+      ...CONTEXT_ARCHITECTURE,
+    });
+  }
+
+  const CONTEXT_LEVELS = Object.freeze(CONTEXT_LEVEL_ROWS.map((row) => budgetFrom(row)));
+  const CONTEXT_LEVEL_BY_ID = new Map(CONTEXT_LEVELS.map((level) => [level.id, level]));
+
+  // The budget in force when nothing else is asked for, kept under its own name
+  // because "the limits" is what the HUD and the event log speak of.
+  const CONTEXT_LIMITS = CONTEXT_LEVEL_BY_ID.get(CONTEXT_LEVEL_DEFAULT);
+
+  /**
+   * The budget a stored setting names.
+   *
+   * A level id is looked up, an unknown or missing value falls back to the
+   * default rather than to no context at all, and a budget that arrives as an
+   * object is read as an amendment to the level it names — or to the default —
+   * with every amount clamped to the ceilings above instead of trusted. Every
+   * caller resolves the same way, so the content script and the background
+   * cannot disagree about what the viewer chose.
+   */
+  function resolveBudget(value) {
+    if (typeof value === "string") {
+      return CONTEXT_LEVEL_BY_ID.get(value.trim().toLowerCase()) || CONTEXT_LIMITS;
+    }
+    if (value && typeof value === "object") {
+      const named =
+        typeof value.id === "string"
+          ? CONTEXT_LEVEL_BY_ID.get(value.id.trim().toLowerCase())
+          : null;
+      return budgetFrom(value, named || CONTEXT_LIMITS);
+    }
+    return CONTEXT_LIMITS;
+  }
 
   // Where a reference line sits relative to the requested line nearest to it.
   const CONTEXT_POSITION = Object.freeze({
@@ -207,13 +329,13 @@
       },
       refuse(entry) {
         refused += 1;
-        if (refused <= CONTEXT_LIMITS.maxReportedRefusals) decisions.push(entry);
+        if (refused <= CONTEXT_ARCHITECTURE.maxReportedRefusals) decisions.push(entry);
       },
       count() {
         return refused;
       },
       summarize() {
-        if (!summarized && refused > CONTEXT_LIMITS.maxReportedRefusals) {
+        if (!summarized && refused > CONTEXT_ARCHITECTURE.maxReportedRefusals) {
           summarized = true;
           decisions.push({
             decision: DECISION.summarized,
@@ -233,9 +355,17 @@
    * the cues being translated as the caller's own cue identity found them, and
    * `requestedCount` is how many cues were asked for, so that a request whose
    * cues are not in the track can be reported as exactly that instead of as an
-   * empty track.
+   * empty track. `level` is the amount of context the viewer chose; an unknown
+   * value falls back to the default level rather than to no context at all.
    */
-  function selectContext({ scope, targetIndexes, requestedCount, enabled = true } = {}) {
+  function selectContext({
+    scope,
+    targetIndexes,
+    requestedCount,
+    enabled = true,
+    level,
+  } = {}) {
+    const budget = resolveBudget(level);
     const report = createReport();
     // How many cues the caller asked for. It is passed in so that a request
     // whose cues are not in the track can be told apart from a request that
@@ -248,7 +378,7 @@
       items,
       decisions: report.decisions,
       refused: report.summarize(),
-      limits: CONTEXT_LIMITS,
+      limits: budget,
       requested,
       targets: 0,
       candidates: 0,
@@ -355,7 +485,7 @@
       for (const step of [-1, 1]) {
         let cursor = target.index + step;
         let steps = 0;
-        while (cursor >= 0 && cursor < track.length && steps < CONTEXT_LIMITS.maxWalkSteps) {
+        while (cursor >= 0 && cursor < track.length && steps < budget.maxWalkSteps) {
           steps += 1;
           if (targetSet.has(cursor)) {
             cursor += step;
@@ -372,7 +502,7 @@
           }
           const nearest = nearestTarget(span, targetSpans);
           const gapMs = Math.round(nearest.gap * 1000);
-          if (nearest.gap > CONTEXT_LIMITS.maxGapSeconds) {
+          if (nearest.gap > budget.maxGapSeconds) {
             refuse({
               decision: DECISION.refused,
               reason: REFUSAL_REASON.gapTooLarge,
@@ -396,9 +526,9 @@
     }
 
     const sideBudget = {
-      [CONTEXT_POSITION.before]: CONTEXT_LIMITS.beforeCues,
-      [CONTEXT_POSITION.after]: CONTEXT_LIMITS.afterCues,
-      [CONTEXT_POSITION.overlapping]: CONTEXT_LIMITS.overlappingCues,
+      [CONTEXT_POSITION.before]: budget.beforeCues,
+      [CONTEXT_POSITION.after]: budget.afterCues,
+      [CONTEXT_POSITION.overlapping]: budget.overlappingCues,
     };
 
     // Rank every requested line's own reference lines by how close they are, and
@@ -439,10 +569,10 @@
     const order = [...queues.keys()].sort((left, right) => left - right);
     const chosen = [];
     const chosenIndexes = new Set();
-    for (let round = 0; chosen.length < CONTEXT_LIMITS.maxItems; round += 1) {
+    for (let round = 0; chosen.length < budget.maxItems; round += 1) {
       let added = 0;
       for (const targetIndex of order) {
-        if (chosen.length >= CONTEXT_LIMITS.maxItems) break;
+        if (chosen.length >= budget.maxItems) break;
         const queue = queues.get(targetIndex);
         if (round >= queue.length) continue;
         chosen.push(queue[round]);
@@ -485,17 +615,17 @@
         });
         continue;
       }
-      const text = shortenText(full, CONTEXT_LIMITS.maxTextChars);
+      const text = shortenText(full, budget.maxTextChars);
       if (text !== full) {
         report.include({
           decision: DECISION.truncated,
           reason: "line-too-long",
           index: candidate.index,
           length: full.length,
-          limit: CONTEXT_LIMITS.maxTextChars,
+          limit: budget.maxTextChars,
         });
       }
-      if (totalChars + text.length > CONTEXT_LIMITS.maxTotalChars) {
+      if (totalChars + text.length > budget.maxTotalChars) {
         report.refuse({
           decision: DECISION.refused,
           reason: REFUSAL_REASON.totalBudgetExceeded,
@@ -550,15 +680,20 @@
    * budget are refused with a reason instead of being relabelled "nearby" or
    * sent whole. Running this over items that already came from selectContext
    * changes nothing, so the boundary can be applied twice.
+   *
+   * `level` is the amount of context the viewer chose, so the boundary is the
+   * one the request was built under rather than a fixed guess; an unknown value
+   * falls back to the default level.
    */
-  function sanitizeContextItems(items) {
+  function sanitizeContextItems(items, level) {
+    const budget = resolveBudget(level);
     const report = createReport();
     const finish = (reason, accepted = []) => ({
       reason,
       items: accepted,
       decisions: report.decisions,
       refused: report.summarize(),
-      limits: CONTEXT_LIMITS,
+      limits: budget,
     });
 
     if (items === undefined || items === null) {
@@ -585,7 +720,7 @@
         });
         return;
       }
-      if (accepted.length >= CONTEXT_LIMITS.maxItems) {
+      if (accepted.length >= budget.maxItems) {
         report.refuse({
           decision: DECISION.itemRefused,
           reason: REFUSAL_REASON.itemBudgetExceeded,
@@ -620,17 +755,17 @@
         });
         return;
       }
-      const text = shortenText(full, CONTEXT_LIMITS.maxTextChars);
+      const text = shortenText(full, budget.maxTextChars);
       if (text !== full) {
         report.include({
           decision: DECISION.itemTruncated,
           reason: "line-too-long",
           index,
           length: full.length,
-          limit: CONTEXT_LIMITS.maxTextChars,
+          limit: budget.maxTextChars,
         });
       }
-      if (totalChars + text.length > CONTEXT_LIMITS.maxTotalChars) {
+      if (totalChars + text.length > budget.maxTotalChars) {
         report.refuse({
           decision: DECISION.itemRefused,
           reason: REFUSAL_REASON.totalBudgetExceeded,
@@ -663,9 +798,9 @@
 
   // The interface describes the rule by asking for it, so the options page, the
   // HUD and the README cannot drift from what selectContext actually does.
-  function describeLimits() {
+  function describeLimits(value) {
     const { beforeCues, afterCues, overlappingCues, maxItems, maxGapSeconds } =
-      CONTEXT_LIMITS;
+      resolveBudget(value);
     return (
       `${beforeCues} line${beforeCues === 1 ? "" : "s"} before / ` +
       `${afterCues} after, ${overlappingCues} overlapping, ` +
@@ -673,18 +808,64 @@
     );
   }
 
+  // How a level is named in the control the viewer picks it with. The amount is
+  // in the name, so a closed select still says what it is set to.
+  function describeLevelLabel(value) {
+    const budget = resolveBudget(value);
+    const side =
+      budget.beforeCues === budget.afterCues
+        ? `${budget.beforeCues} source line${budget.beforeCues === 1 ? "" : "s"} each side`
+        : `${budget.beforeCues} before / ${budget.afterCues} after`;
+    return budget.label ? `${budget.label} — ${side}` : side;
+  }
+
+  // What a level means, said once, for the sentence under the control. The
+  // numbers in it are the ones a request under that level is actually built
+  // with, so the page cannot promise a rule this file does not implement.
+  function describeLevelSummary(value) {
+    const { beforeCues, afterCues, maxItems, maxGapSeconds } = resolveBudget(value);
+    const sides =
+      beforeCues === afterCues
+        ? `up to ${beforeCues} nearby source line${beforeCues === 1 ? "" : "s"} before and after each new translation`
+        : `up to ${beforeCues} nearby source lines before and ${afterCues} after each new translation`;
+    return (
+      `Sends ${sides}, at most ${maxItems} lines per request, to the selected provider. ` +
+      `A reference line is never taken across a silence longer than ${maxGapSeconds} seconds, ` +
+      `so a line from the previous scene is not offered as context.`
+    );
+  }
+
+  // The choices themselves, in the order the interface offers them. Each one
+  // carries its own name and sentence so a page never types an amount.
+  function contextLevelOptions() {
+    return CONTEXT_LEVELS.map((level) => ({
+      id: level.id,
+      label: describeLevelLabel(level.id),
+      summary: describeLevelSummary(level.id),
+      maxItems: level.maxItems,
+    }));
+  }
+
   const api = {
+    CONTEXT_ARCHITECTURE,
+    CONTEXT_LEVELS,
+    CONTEXT_LEVEL_CEILING,
+    CONTEXT_LEVEL_DEFAULT,
     CONTEXT_LIMITS,
     CONTEXT_POSITION,
     CONTEXT_REASON,
     DECISION,
     POSITION_ALIASES,
     REFUSAL_REASON,
+    contextLevelOptions,
     cueSpan,
+    describeLevelLabel,
+    describeLevelSummary,
     describeLimits,
     gapSeconds,
     normalizeContextText,
     positionFor,
+    resolveBudget,
     sanitizeContextItems,
     selectContext,
     shortenText,

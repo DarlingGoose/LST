@@ -495,6 +495,7 @@ async function load() {
   $("showStatusMessages").checked = s.showStatusMessages !== false;
   $("autoTranslateAhead").checked = s.autoTranslateAhead !== false;
   $("useTranslationContext").checked = s.useTranslationContext === true;
+  renderContextLevel(s.contextLevel);
   $("verifyTranslations").checked = s.verifyTranslations !== false;
   $("showDebugPanel").checked = s.showDebugPanel === true;
   $("debugPanelAlwaysOnTop").checked = s.debugPanelAlwaysOnTop === true;
@@ -626,6 +627,9 @@ function collectSettings() {
     showStatusMessages: $("showStatusMessages").checked,
     autoTranslateAhead: $("autoTranslateAhead").checked,
     useTranslationContext: $("useTranslationContext").checked,
+    contextLevel:
+      globalThis.LSTTranslationContext?.resolveBudget($("contextLevel").value).id ||
+      "standard",
     verifyTranslations: $("verifyTranslations").checked,
     showDebugPanel: $("showDebugPanel").checked,
     debugPanelAlwaysOnTop: $("debugPanelAlwaysOnTop").checked,
@@ -683,6 +687,41 @@ function collectEnabledSites() {
     map[input.dataset.serviceId] = input.checked;
   }
   return map;
+}
+
+// Context amount -------------------------------------------------------------
+//
+// How much surrounding context a request carries is the viewer's choice, and
+// every amount on this page — the names in the select and the sentence under it
+// — is read from translation-context.js, so the page cannot state a limit the
+// module does not implement. An amount this build no longer offers, or none at
+// all, resolves to the level the module would actually use.
+function renderContextLevel(stored) {
+  const select = $("contextLevel");
+  const summary = $("contextLevelSummary");
+  const api = globalThis.LSTTranslationContext || null;
+
+  if (api) {
+    if (!select.options.length) {
+      for (const level of api.contextLevelOptions()) {
+        const option = document.createElement("option");
+        option.value = level.id;
+        option.textContent = level.label;
+        select.appendChild(option);
+      }
+    }
+    select.value = api.resolveBudget(stored ?? select.value).id;
+  }
+
+  const on = $("useTranslationContext").checked;
+  // Nothing to choose while context is off, and a control that looks settable
+  // but sends nothing is worse than one that says it is waiting.
+  select.disabled = !api || !on;
+  summary.textContent = !api
+    ? "translation-context.js did not load, so the amount of context cannot be read. Requests carry no reference lines."
+    : on
+      ? `${api.describeLevelSummary(select.value)} Context is reference-only, and existing cached translations are unchanged.`
+      : "Surrounding context is off, so each request carries only the lines it is translating.";
 }
 
 function renderServices(settings) {
@@ -1751,6 +1790,9 @@ $("cacheList").addEventListener("click", async (event) => {
     if (button.isConnected) button.disabled = false;
   }
 });
+
+$("useTranslationContext").addEventListener("change", () => renderContextLevel());
+$("contextLevel").addEventListener("change", () => renderContextLevel());
 
 document.querySelectorAll("input:not([data-transient]), select:not([data-transient])").forEach((control) => {
   control.addEventListener(control.type === "range" ? "input" : "change", markUnsaved);

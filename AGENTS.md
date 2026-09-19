@@ -62,12 +62,23 @@ Important files:
   - Decides which surrounding subtitle lines are sent to the provider as
     reference, and why, and validates the lines that arrive at the background in
     a message.
+  - Loaded in the background, as a content script before `content.js`, and in the
+    options page, which builds the amount control and its sentence from it.
   - Judged on the cue timeline rather than on cue indexes: a candidate is
     measured by the silence between it and the nearest requested line, so a
     silence longer than the declared gap (a scene break) ends the context.
-  - Owns the counts, the gap and the character budgets, and renders them for the
-    interface through `describeLimits()`, so the options page, the HUD and the
-    README cannot describe a rule the module does not implement.
+  - Owns how much context a request carries, as one table of levels — Minimal,
+    Standard, Wide — under `CONTEXT_LEVELS`, with `resolveBudget()` the only way
+    a stored setting becomes a budget: an unknown value falls back to the default
+    level rather than to no context, and anything shaped like a budget is clamped
+    to `CONTEXT_LEVEL_CEILING` rather than trusted. `maxItems` is the sum of the
+    three sides, never a number typed alongside them.
+  - Renders every amount for the interface through `describeLimits()`,
+    `describeLevelLabel()`, `describeLevelSummary()` and `contextLevelOptions()`,
+    so the options page, the HUD and the README cannot describe a rule the module
+    does not implement — and the options page builds its select from
+    `contextLevelOptions()` rather than typing a level's numbers, which a test
+    fails if it stops doing.
   - Every admission and every refusal carries a reason; a line with no position,
     a line with no timeline, or a request whose cues are not in the track is
     reported rather than guessed at. The event log records kinds, reasons and
@@ -579,6 +590,23 @@ Avoid:
 - debug UI enabled by default for normal users
 
 Debug output should be optional and useful for troubleshooting.
+
+### In-player controls
+
+- **The pill says how much of the episode is loaded.** One figure — of the cues
+  LST holds for the episode, the ones translated and cached — drawn as a
+  percentage beside the status and as a bar along the trigger's bottom edge, and
+  spelled out in cues in the panel. It is worked out in one place
+  (`loadProgress()` and `updatePillProgress()` in `content.js`) so the number, the
+  bar and the sentence cannot disagree.
+- **It is the episode's share, not the share left from the viewer's position.**
+  The two part ways as soon as an episode is watched from anywhere but its start;
+  how far ahead the cache reaches is answered separately, in seconds beside the
+  percentage, and the debug panel reports the remaining share as a percentage of
+  its own.
+- **A track that needs no translation has nothing loading**, so the readout is
+  hidden rather than shown at zero — a file already in the viewer's language is
+  all there, and 0% would read as a failure.
 
 ## Subtitle visibility
 

@@ -160,6 +160,10 @@ assert.equal(values.model, "translategemma:4b");
 assert.equal(values.showQuickPills, true);
 assert.equal(values.showTranscriptSidebar, false);
 assert.equal(values.useTranslationContext, false);
+// The amount of surrounding context defaults to the level the module calls its
+// own default, so an install that never opens the setting sends what it always
+// sent and the two files cannot disagree about which level that is.
+assert.equal(values.contextLevel, context.LSTTranslationContext.CONTEXT_LEVEL_DEFAULT);
 
 // --- Settings: the renamed key, the per-service map, and the HUD position ----
 

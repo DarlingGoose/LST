@@ -12,8 +12,15 @@ const context = vm.createContext({});
 vm.runInContext(contextSource, context, { filename: "translation-context.js" });
 const translateContext = context.LSTTranslationContext;
 
-const { CONTEXT_LIMITS, CONTEXT_POSITION, CONTEXT_REASON, REFUSAL_REASON } =
-  translateContext;
+const {
+  CONTEXT_LIMITS,
+  CONTEXT_LEVELS,
+  CONTEXT_LEVEL_CEILING,
+  CONTEXT_LEVEL_DEFAULT,
+  CONTEXT_POSITION,
+  CONTEXT_REASON,
+  REFUSAL_REASON,
+} = translateContext;
 
 assert.equal(CONTEXT_LIMITS.beforeCues, 2);
 assert.equal(CONTEXT_LIMITS.afterCues, 2);
@@ -31,6 +38,133 @@ const cue = (start, end, text) => ({ start, end, text });
 // compared with the objects this file builds.
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const host = (values) => Array.from(values);
+
+// How much context a request carries is the viewer's choice, stated once as
+// levels. The default is the amount this feature shipped with, so an install
+// that never opens the setting translates exactly as it did.
+assert.equal(CONTEXT_LEVEL_DEFAULT, "standard");
+assert.equal(CONTEXT_LIMITS, translateContext.resolveBudget(CONTEXT_LEVEL_DEFAULT));
+assert.ok(CONTEXT_LEVELS.length >= 2, "there must be an amount to choose between");
+assert.deepEqual(
+  host(CONTEXT_LEVELS.map((level) => level.id)),
+  [...new Set(host(CONTEXT_LEVELS.map((level) => level.id)))],
+  "level ids are unique",
+);
+
+for (const level of CONTEXT_LEVELS) {
+  assert.ok(level.label, `level ${level.id} needs a name for the control`);
+  assert.equal(
+    level.maxItems,
+    level.beforeCues + level.afterCues + level.overlappingCues,
+    `level ${level.id} promises a number of lines per request it cannot fill`,
+  );
+  assert.equal(
+    level.beforeCues,
+    level.afterCues,
+    `level ${level.id} must not favour one side of the line being translated`,
+  );
+  assert.ok(
+    level.maxGapSeconds > 0 && level.maxGapSeconds <= CONTEXT_LEVEL_CEILING.maxGapSeconds,
+    `level ${level.id} declares a silence outside the ceiling`,
+  );
+  for (const field of ["beforeCues", "afterCues", "overlappingCues"]) {
+    assert.ok(
+      level[field] <= CONTEXT_LEVEL_CEILING[field],
+      `level ${level.id} asks for more ${field} than the ceiling allows`,
+    );
+  }
+}
+
+// A wider level is wider in every direction, so the order the interface offers
+// the amounts in is the order of the amounts themselves.
+for (let index = 1; index < CONTEXT_LEVELS.length; index += 1) {
+  const previous = CONTEXT_LEVELS[index - 1];
+  const level = CONTEXT_LEVELS[index];
+  assert.ok(level.beforeCues > previous.beforeCues, `${level.id} must send more lines before`);
+  assert.ok(level.afterCues > previous.afterCues, `${level.id} must send more lines after`);
+  assert.ok(level.maxItems > previous.maxItems, `${level.id} must allow more lines per request`);
+  assert.ok(level.maxGapSeconds > previous.maxGapSeconds, `${level.id} must reach further`);
+}
+
+// An unknown amount, or one a future build wrote, resolves to the amount LST
+// would actually use rather than to no context at all or to an unbounded one.
+assert.equal(translateContext.resolveBudget().id, CONTEXT_LEVEL_DEFAULT);
+assert.equal(translateContext.resolveBudget("").id, CONTEXT_LEVEL_DEFAULT);
+assert.equal(translateContext.resolveBudget("nonsense").id, CONTEXT_LEVEL_DEFAULT);
+assert.equal(
+  translateContext.resolveBudget(" WIDE ").id,
+  "wide",
+  "a stored amount is matched, not mistyped",
+);
+assert.equal(
+  translateContext.resolveBudget({ beforeCues: 999 }).beforeCues,
+  CONTEXT_LEVEL_CEILING.beforeCues,
+  "a hand-edited budget is clamped rather than trusted",
+);
+assert.equal(
+  translateContext.resolveBudget({ id: "wide" }).maxItems,
+  translateContext.resolveBudget("wide").maxItems,
+  "a budget that names a level and states nothing else is that level",
+);
+assert.equal(
+  translateContext.resolveBudget({ id: "minimal", beforeCues: 2 }).beforeCues,
+  2,
+  "a budget is read as an amendment to the level it names",
+);
+
+// The control and the sentence under it are built from the levels, so no page
+// types an amount of its own.
+assert.deepEqual(
+  host(translateContext.contextLevelOptions().map((choice) => choice.id)),
+  host(CONTEXT_LEVELS.map((level) => level.id)),
+  "every level is offered, in the order they are declared",
+);
+for (const level of CONTEXT_LEVELS) {
+  assert.match(
+    translateContext.describeLevelLabel(level.id),
+    new RegExp(`${level.beforeCues} source line`),
+    `the control for ${level.id} must name its amount`,
+  );
+  const summary = translateContext.describeLevelSummary(level.id);
+  assert.match(summary, new RegExp(`at most ${level.maxItems} lines per request`));
+  assert.match(summary, new RegExp(`longer than ${level.maxGapSeconds} seconds`));
+}
+
+// The amount chosen is the amount used: the same track under a small level and a
+// wide one does not carry the same lines.
+{
+  const ladder = [
+    cue(0, 1, "one"),
+    cue(2, 3, "two"),
+    cue(4, 5, "target"),
+    cue(6, 7, "three"),
+    cue(8, 9, "four"),
+  ];
+  const under = (level) =>
+    plain(
+      translateContext.selectContext({
+        scope: ladder,
+        targetIndexes: [2],
+        requestedCount: 1,
+        level,
+      }).items,
+    ).map((item) => item.text);
+  assert.deepEqual(under("minimal"), ["two", "three"]);
+  assert.deepEqual(under("wide"), ["one", "two", "three", "four"]);
+  assert.deepEqual(under(undefined), under(CONTEXT_LEVEL_DEFAULT), "an unstated amount is the default");
+  assert.equal(
+    plain(
+      translateContext.selectContext({
+        scope: ladder,
+        targetIndexes: [2],
+        requestedCount: 1,
+        level: "wide",
+      }).limits.id,
+    ),
+    "wide",
+    "the report says which amount the choice was made under",
+  );
+}
 
 assert.deepEqual(plain(translateContext.cueSpan(cue(1, 2, "x"))), { start: 1, end: 2 });
 assert.equal(translateContext.cueSpan(cue(-1, -1, "rendered")), null, "a rendered line has no timeline");
@@ -392,6 +526,36 @@ const crossing = [
     { position: "before", startMs: 0, text: "y".repeat(900) },
   ]);
   assert.ok(oversized.items[0].text.length <= CONTEXT_LIMITS.maxTextChars);
+
+  // The boundary is the amount the viewer chose, so a level is not cut down to
+  // some other level's ceiling on the way to the provider.
+  const shipped = (count) =>
+    Array.from({ length: count }, (_, index) => ({
+      position: "after",
+      startMs: index * 1000,
+      text: `shipped ${index}`,
+    }));
+  const small = translateContext.sanitizeContextItems(shipped(12), "minimal");
+  assert.equal(small.items.length, translateContext.resolveBudget("minimal").maxItems);
+  assert.ok(
+    small.decisions.some((decision) => decision.reason === REFUSAL_REASON.itemBudgetExceeded),
+    "what the smaller amount leaves out is refused with a reason",
+  );
+  assert.equal(
+    translateContext.sanitizeContextItems(shipped(12), "wide").items.length,
+    translateContext.resolveBudget("wide").maxItems,
+    "a wider amount keeps the lines it was chosen to send",
+  );
+  assert.equal(
+    translateContext.sanitizeContextItems(shipped(12)).items.length,
+    CONTEXT_LIMITS.maxItems,
+    "an unstated amount is the default boundary",
+  );
+  assert.equal(
+    translateContext.sanitizeContextItems(shipped(3), "nonsense").items.length,
+    3,
+    "an amount LST does not know falls back to the default rather than refusing everything",
+  );
 }
 
 // Layer 2 — the background validates context at its own boundary, so nothing
@@ -498,13 +662,14 @@ function lastPrompt() {
   return JSON.parse(JSON.parse(request.init.body).prompt);
 }
 
-function translate(items, contextItems) {
+function translate(items, contextItems, contextLevel) {
   return send({
     type: "TRANSLATE_BATCH",
     model: "test-model",
     targetLanguage: "English",
     items,
     ...(contextItems === undefined ? {} : { contextItems }),
+    ...(contextLevel === undefined ? {} : { contextLevel }),
   });
 }
 
@@ -597,6 +762,53 @@ function translate(items, contextItems) {
   const prompt = lastPrompt();
   assert.equal(prompt.contextSubtitles.length, 1);
   assert.ok(prompt.contextSubtitles[0].text.length <= CONTEXT_LIMITS.maxTextChars);
+}
+
+// The boundary the background applies is the amount the viewer chose: the level
+// the request names decides how much survives, and the level stored in settings
+// is what a request that names none is checked against.
+{
+  await loadBackground();
+  const items = Array.from({ length: 12 }, (_, index) => ({
+    position: "after",
+    startMs: index * 1000,
+    text: `extra ${index}`,
+  }));
+
+  const minimal = await translate([{ id: "target", text: "対象" }], items, "minimal");
+  assert.equal(
+    minimal.summary.contextCueCount,
+    translateContext.resolveBudget("minimal").maxItems,
+    "a smaller amount keeps fewer reference lines",
+  );
+  assert.deepEqual(
+    lastPrompt().contextSubtitles.map((item) => item.text),
+    ["extra 0", "extra 1", "extra 2"],
+  );
+
+  const wide = await translate([{ id: "target", text: "対象" }], items, "wide");
+  assert.equal(
+    wide.summary.contextCueCount,
+    translateContext.resolveBudget("wide").maxItems,
+    "a wider amount keeps the lines it was chosen to send",
+  );
+
+  // A request that names no amount is checked against the stored one, so the two
+  // sides cannot disagree about what the viewer chose.
+  values.contextLevel = "minimal";
+  const stored = await translate([{ id: "target", text: "対象" }], items);
+  assert.equal(
+    stored.summary.contextCueCount,
+    translateContext.resolveBudget("minimal").maxItems,
+  );
+  values.contextLevel = "nonsense";
+  const unknown = await translate([{ id: "target", text: "対象" }], items);
+  assert.equal(
+    unknown.summary.contextCueCount,
+    CONTEXT_LIMITS.maxItems,
+    "an amount no build knows falls back to the default",
+  );
+  delete values.contextLevel;
 }
 
 // A request without context is unchanged, and says so.
@@ -776,6 +988,7 @@ function createElementStub(tagName = "div") {
 
 function createContentHarness({
   useTranslationContext = true,
+  contextLevel = "standard",
   withContextModule = true,
   contextReason = "ok",
   cachedEntries = {},
@@ -884,6 +1097,7 @@ function createContentHarness({
                 targetLanguage: "English",
                 showDebugPanel: false,
                 useTranslationContext,
+                contextLevel,
                 autoTranslateAhead: false,
                 cacheWhilePaused: false,
               },
@@ -1136,11 +1350,58 @@ function createContentHarness({
   assert.equal(rejected[0].details.queue, "precompute");
 }
 
+// How much context travels with a request is the viewer's choice, and the player
+// reads that choice from the setting rather than applying a rule of its own: the
+// same episode under the smallest amount does not carry the same lines as it
+// does under the default.
+{
+  const harness = createContentHarness({
+    contextLevel: "minimal",
+    cachedEntries: { ...cached(...EARLIER_SCENE_KEYS), ...LATER_SCENE_KEYS },
+  });
+  await harness.start();
+  await harness.precompute();
+
+  const request = harness.requests()[0];
+  assert.equal(
+    request.contextLevel,
+    "minimal",
+    "the request says which amount it was built under, so the background checks the same one",
+  );
+  assert.deepEqual(
+    Array.from(request.contextItems).map((item) => item.text),
+    ["Please."],
+    "the smallest amount keeps one line on a side, not the two the default would",
+  );
+  const selection = harness.eventsNamed("translation-context-selected");
+  assert.equal(selection[0].details.limits, translateContext.describeLimits("minimal"));
+  assert.equal(selection[0].details.after, 1);
+  assert.equal(selection[0].details.before, 0);
+}
+
+{
+  // An amount this build does not know — a value a later version wrote, or a
+  // hand-edited one — still translates: it resolves to the default rather than
+  // to no context at all, and the request says which amount it was built under.
+  const harness = createContentHarness({
+    contextLevel: "enormous",
+    cachedEntries: { ...cached(...EARLIER_SCENE_KEYS), ...LATER_SCENE_KEYS },
+  });
+  await harness.start();
+  await harness.precompute();
+
+  const request = harness.requests()[0];
+  assert.equal(request.contextLevel, "enormous");
+  const selection = harness.eventsNamed("translation-context-selected");
+  assert.equal(selection[0].details.limits, translateContext.describeLimits());
+}
+
 // Layer 4 — the interface and the packaging describe the same rule the module
 // implements, and load it before the files that ask it questions.
 
 {
   const optionsHtml = await read("options.html");
+  const optionsJs = await read("options.js");
   const readme = await read("README.md");
   const manifest = JSON.parse(await read("manifest.json"));
   const background = await read("background.js");
@@ -1149,15 +1410,53 @@ function createContentHarness({
   const verify = await read("scripts/verify-package.mjs");
   const packageJson = JSON.parse(await read("package.json"));
 
-  // The options page states the numbers the module implements.
-  assert.match(optionsHtml, new RegExp(`${CONTEXT_LIMITS.beforeCues} nearby source lines`));
-  assert.match(optionsHtml, new RegExp(`${CONTEXT_LIMITS.maxItems} lines per request`));
-  assert.match(optionsHtml, new RegExp(`${CONTEXT_LIMITS.maxGapSeconds} seconds`));
+  // The options page asks the module for the amounts it offers. The control is
+  // empty in the markup and both it and the sentence under it are built from
+  // contextLevelOptions(), so the page cannot state a limit of its own — and a
+  // test fails rather than letting one be typed in.
+  assert.match(
+    optionsHtml,
+    /<select id="contextLevel"><\/select>/,
+    "the amounts must be offered by the module, not typed into the page",
+  );
+  assert.match(optionsHtml, /id="contextLevelSummary"/);
+  assert.match(optionsHtml, /<script src="translation-context\.js"><\/script>/);
+  assert.ok(
+    optionsHtml.indexOf('src="translation-context.js"') < optionsHtml.indexOf('src="options.js"'),
+    "the options page loads the module before the script that asks it",
+  );
+  assert.match(optionsJs, /contextLevelOptions\(\)/);
+  assert.match(optionsJs, /describeLevelSummary\(/);
+  assert.match(optionsJs, /resolveBudget\(/);
+  assert.doesNotMatch(
+    optionsJs,
+    /\d+ lines per request/,
+    "an amount must not be typed into the options script either",
+  );
+  assert.doesNotMatch(
+    optionsHtml,
+    /nearby source lines before and after/,
+    "the page must not repeat an amount the setting can change",
+  );
 
-  // So does the README, along with the rule itself.
-  assert.match(readme, new RegExp(`${CONTEXT_LIMITS.beforeCues} nearby source lines`));
-  assert.match(readme, new RegExp(`at most ${CONTEXT_LIMITS.maxItems} lines per request`));
-  assert.match(readme, new RegExp(`silence longer than ${CONTEXT_LIMITS.maxGapSeconds} seconds`));
+  // The README states the amounts the module implements, for every level, and
+  // names the setting the viewer changes.
+  assert.match(readme, /Context amount/);
+  for (const level of CONTEXT_LEVELS) {
+    assert.match(
+      readme,
+      new RegExp(`\\*${level.label}\\*`),
+      `the README must name the ${level.label} amount`,
+    );
+    assert.match(readme, new RegExp(`${level.beforeCues} lines? each side`));
+    assert.match(readme, new RegExp(`at most ${level.maxItems} lines per request`));
+  }
+  const cutoffs = CONTEXT_LEVELS.map((level) => level.maxGapSeconds);
+  assert.match(
+    readme,
+    new RegExp(`${cutoffs.slice(0, -1).join(", ")}, or ${cutoffs.at(-1)} seconds`),
+    "the README states the cutoffs the levels declare",
+  );
   assert.match(readme, /translation-context\.js/);
 
   // Firefox loads it in the background, before background.js.
@@ -1175,9 +1474,19 @@ function createContentHarness({
   // Chromium's single service worker imports it by name.
   assert.match(background, /importScripts\([\s\S]*"translation-context\.js"/);
 
-  // The page describes the rule by asking for it, so the HUD cannot drift.
-  assert.match(content, /translationContextApi\(\)\?\.describeLimits\(\)/);
+  // The page describes the rule by asking for it, so the HUD cannot drift, and
+  // the amount it asks about is the viewer's own choice.
+  assert.match(content, /translationContextApi\(\)\?\.describeLimits\(settings\.contextLevel\)/);
+  assert.match(content, /level: settings\.contextLevel/);
+  assert.match(content, /contextLevel: settings\.contextLevel/);
   assert.doesNotMatch(content, /2 cues before\/after/);
+
+  // The background is the last check before a provider, and it checks against
+  // the amount the request names rather than a fixed one of its own.
+  assert.match(
+    background,
+    /sanitizeContextItems\(\s*message\.contextItems,\s*message\.contextLevel \?\? settings\.contextLevel,?\s*\)/,
+  );
 
   // Both packages ship the module, and the test suite runs it.
   assert.match(prepare, /"translation-context\.js"/);

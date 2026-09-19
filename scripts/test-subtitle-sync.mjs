@@ -660,6 +660,7 @@ function createHarness(vtt = CUE_TRACK, { site = "netflix", settings = {} } = {}
   const windowListeners = new Map();
   let importedTrack = null;
   let jimakuFinding = null;
+  let cachedCueIndexes = [];
   const jimakuAskedShowKeys = [];
   let pageMessageHandler = null;
   const documentElement = createElementStub("html");
@@ -796,6 +797,18 @@ function createHarness(vtt = CUE_TRACK, { site = "netflix", settings = {} } = {}
               finding: note,
               reason: note ? "ok" : "no-finding-yet",
             });
+          }
+          if (message?.type === "CACHE_GET") {
+            // What the background would answer about this episode's cache. A
+            // test names the cues by their position in the track rather than by
+            // key, so it can say which part of an episode is cached without
+            // knowing how cue identity is spelled.
+            const keys = message.keys || [];
+            const entries = {};
+            for (const index of cachedCueIndexes) {
+              if (keys[index]) entries[keys[index]] = `translated ${index + 1}`;
+            }
+            return Promise.resolve({ ok: true, entries, cues: [] });
           }
           return Promise.resolve({ ok: true, entries: {}, cues: [] });
         },
@@ -934,6 +947,11 @@ function createHarness(vtt = CUE_TRACK, { site = "netflix", settings = {} } = {}
     // What the background would answer for this episode's import.
     setImportedTrack(track) {
       importedTrack = track;
+    },
+    // Which cues of the episode are already translated and cached, by their
+    // position in the track.
+    setCachedCueIndexes(indexes) {
+      cachedCueIndexes = [...indexes];
     },
     // The show this page is about, as its own document title words it.
     setTitle(text) {
@@ -1855,6 +1873,160 @@ function importedTrackFor(track) {
   await plain.frame(10);
   assert.equal(plain.pillPart("#lst-pill-source").hidden, true);
   assert.match(plain.pillPart("#lst-pill-source-note").textContent, /Netflix's own subtitles/);
+}
+
+// --- How much of the episode is loaded ---------------------------------------
+//
+// The pill answers "how much is loaded" with the episode's own share, not with
+// the share of what is left from where the viewer is standing. The two part ways
+// as soon as an episode is watched from anywhere but its first second, and the
+// number beside the bar has no room to say which question it answered — so it
+// always answers the episode's, and the sentence in the panel says it in cues,
+// where the figure can be checked rather than trusted.
+{
+  const harness = createHarness(CUE_TRACK, { site: "netflix" });
+  harness.setCachedCueIndexes([0]);
+  await harness.start();
+  await harness.frame(10);
+
+  assert.equal(
+    harness.pillPart("#lst-pill-progress").hidden,
+    false,
+    "the pill shows how much of the episode is loaded",
+  );
+  assert.equal(
+    harness.pillPart("#lst-pill-percent").textContent,
+    "· 33%",
+    "the number is the episode's share, not the share ahead of the viewer",
+  );
+  assert.equal(
+    harness.pillPart("#lst-pill-progress-fill").style.width,
+    "33%",
+    "the bar and the number are one figure",
+  );
+  assert.equal(
+    harness.pillPart("#lst-pill-load-note").textContent,
+    "33% of this episode's subtitles cached · 1 of 3 cues.",
+    "the panel says the same thing in cues",
+  );
+
+  // Watched from the third cue with only the first cached: the share ahead of the
+  // viewer is nothing at all, and the episode's share is still a third. The pill
+  // reports the episode's.
+  await harness.frame(30.5);
+  assert.equal(
+    harness.pillPart("#lst-pill-percent").textContent,
+    "· 33%",
+    "the figure does not follow the viewer down the episode",
+  );
+  const fromHere = await harness.pageMessage({ type: "GET_PAGE_STATUS" });
+  assert.equal(
+    fromHere.status.progressPercent,
+    0,
+    "the share left from here is nothing — the other question, answered elsewhere",
+  );
+  assert.equal(fromHere.status.episodeProgressPercent, 33.3);
+
+  // A whole episode cached is a different sentence from a share of one.
+  const done = createHarness(CUE_TRACK, { site: "netflix" });
+  done.setCachedCueIndexes([0, 1, 2]);
+  await done.start();
+  await done.frame(10);
+  assert.equal(done.pillPart("#lst-pill-percent").textContent, "· 100%");
+  assert.equal(done.pillPart("#lst-pill-progress-fill").style.width, "100%");
+  assert.equal(
+    done.pillPart("#lst-pill-load-note").textContent,
+    "The whole episode is cached: 3 of 3 cues.",
+    "a finished episode says so rather than quoting a percentage of itself",
+  );
+
+  // Nothing captured is nothing to report.
+  const waiting = createHarness(CUE_TRACK, { site: "primevideo" });
+  await waiting.start({ captureTrack: false });
+  await waiting.frame(10);
+  assert.equal(waiting.pillPart("#lst-pill-progress").hidden, true);
+  assert.equal(waiting.pillPart("#lst-pill-percent").hidden, true);
+  assert.equal(waiting.pillPart("#lst-pill-load-note").hidden, true);
+
+  // A file already in the viewer's language is all there and none of it is
+  // translated, so a percentage of it would read as a failure rather than as a
+  // file that needs nothing.
+  const asIs = createHarness(IMPORTED_SRT, {
+    site: "netflix",
+    settings: { targetLanguage: "English" },
+  });
+  asIs.setImportedTrack(
+    importedTrackFor({
+      episodeKey: "80100172",
+      text: IMPORTED_SRT,
+      language: "English",
+      fileName: "[Judas] Show - S01E01.en.srt",
+      translateReason: "viewer-choice",
+      translate: false,
+    }),
+  );
+  await asIs.start({ captureTrack: false });
+  await asIs.frame(10);
+  assert.equal(
+    asIs.pillPart("#lst-pill-progress").hidden,
+    true,
+    "a file shown as it is has nothing loading",
+  );
+  assert.equal(asIs.pillPart("#lst-pill-load-note").hidden, true);
+}
+
+// A share that rounds up to the whole episode while one cue is still missing is
+// the one lie a percentage can tell, so the last percent is not reached until the
+// last cue is: a long track with one cue outstanding reads 99%.
+{
+  const cues = Array.from({ length: 201 }, (_, index) => {
+    const clock = (seconds) =>
+      `00:${String(Math.floor(seconds / 60)).padStart(2, "0")}:` +
+      `${String(seconds % 60).padStart(2, "0")}.000`;
+    const start = 10 + index * 2;
+    return `${clock(start)} --> ${clock(start + 1)}\nLine ${index + 1}`;
+  });
+  const harness = createHarness(["WEBVTT", "", ...cues, ""].join("\n\n"), {
+    site: "netflix",
+  });
+  harness.setCachedCueIndexes(Array.from({ length: 200 }, (_, index) => index));
+  await harness.start();
+  await harness.frame(10);
+
+  assert.equal(
+    harness.pillPart("#lst-pill-percent").textContent,
+    "· 99%",
+    "one outstanding cue is not a loaded episode",
+  );
+  assert.equal(harness.pillPart("#lst-pill-progress-fill").style.width, "99%");
+  assert.equal(
+    harness.pillPart("#lst-pill-load-note").textContent,
+    "99% of this episode's subtitles cached · 200 of 201 cues.",
+  );
+}
+
+// The readout is three parts and one writer. A part that cannot be hidden is a
+// part that stays on screen with nothing to say: an author `display` beats the
+// browser's own rule for [hidden], which is how that happened here before.
+{
+  const playerCss = await fs.readFile(
+    new URL("../styles.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(contentSource, /function loadProgress\(\)/);
+  assert.match(contentSource, /function updatePillProgress\(\)/);
+  for (const [part, rule] of [
+    ["the number beside the state", /\.lst-pill-percent\[hidden\]\s*\{\s*display:\s*none/],
+    ["the bar along the trigger", /\.lst-pill-progress\[hidden\]\s*\{\s*display:\s*none/],
+    ["the sentence in the panel", /\.lst-pill-load-note\[hidden\]\s*\{\s*display:\s*none/],
+  ]) {
+    assert.match(playerCss, rule, `${part} must be hideable on its own`);
+  }
+  assert.match(
+    playerCss,
+    /#lst-pill-trigger\s*\{[^}]*position:\s*relative/,
+    "the bar is positioned against the trigger it is drawn along",
+  );
 }
 
 // --- What Jimaku holds for a show, on arrival ---------------------------------

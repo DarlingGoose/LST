@@ -188,11 +188,41 @@ html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
   cursor: pointer;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34);
   backdrop-filter: blur(14px);
+  /* The load bar is drawn along the trigger's own bottom edge, so the trigger
+     is what it is positioned against and what rounds it off. */
+  position: relative;
+  overflow: hidden;
 }
 
 #lst-pill-trigger > strong { font-size: 14px; }
 #lst-pill-state { margin-left: 2px; color: #d8dbe1; font-weight: 500; }
 .lst-pill-ahead { color: #a7afbc; }
+/* How much of the episode is loaded, said twice: as a number beside the state,
+   and as the bar along the trigger's bottom edge. Both are one figure, worked
+   out in content.js and drawn by one function, so they cannot disagree. */
+.lst-pill-percent { flex: 0 0 auto; color: #f7f8fa; font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
+.lst-pill-percent[hidden] { display: none; }
+.lst-pill-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.lst-pill-progress[hidden] { display: none; }
+.lst-pill-progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 0 999px 999px 0;
+  background: #43d39e;
+  transition: width 0.3s linear;
+}
+/* The bar takes the state's own colour, the one the dot beside it already uses. */
+#lst-quick-pills[data-state="waiting"] .lst-pill-progress-fill { background: #8c939f; }
+#lst-quick-pills[data-state="buffering"] .lst-pill-progress-fill { background: #ffc866; }
+#lst-quick-pills[data-state="error"] .lst-pill-progress-fill { background: #ff7078; }
 /* The chip answers a different question from the state label beside it: not
    whether translation is working, but where the subtitles come from. */
 .lst-pill-source {
@@ -273,6 +303,16 @@ html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
 #lst-pill-panel-status[data-state="completed"],
 #lst-pill-panel-status[data-state="ready"],
 #lst-pill-panel-status[data-state="cached"] { color: #43d39e; }
+/* The sentence under the status line: what the pill's number and bar mean, in
+   cues rather than in percent, so the figure is checkable rather than trusted. */
+.lst-pill-load-note {
+  margin: 10px 0 0;
+  color: #a7afbc;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+.lst-pill-load-note[hidden] { display: none; }
 .lst-pill-section {
   gap: 4px;
   margin-top: 12px;
@@ -334,6 +374,7 @@ html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
 
 @media (prefers-reduced-motion: reduce) {
   #lst-quick-pills[data-state="buffering"] .lst-pill-dot { animation: none; }
+  .lst-pill-progress-fill { transition: none; }
 }
 
 #lst-transcript-panel {

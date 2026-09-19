@@ -62,7 +62,8 @@
               <div class="field"><label for="maximumVisibleSubtitles">Maximum visible stack</label><input id="maximumVisibleSubtitles" type="number" min="1" max="4" step="1" value="2"><p class="help">Limits overlapping translated cues.</p></div>
               <div id="modelDownload" class="field model-download"><label for="pullModelName">Model to download</label><div class="action-field"><input id="pullModelName" data-transient type="text" placeholder="e.g. translategemma:4b" spellcheck="false"><button id="pullModel" class="secondary" type="button">Download model</button></div><p class="help">The model stays inside your local Ollama installation.</p><div id="pullProgress" class="pull-progress" aria-hidden="true"><div id="pullProgressBar"></div></div><div id="pullProgressText" role="status" aria-live="polite"></div></div>
             </div>
-            <div class="switch-row context-setting"><div><span class="label">Use surrounding subtitle context</span><p class="help">Sends up to 2 nearby source lines before and after each new translation, at most 6 lines per request, to the selected provider. A reference line is never taken across a silence longer than 8 seconds, so a line from the previous scene is not offered as context. This can improve pronouns, names, and sentence continuity, but uses more tokens and may add latency. Context is reference-only; only requested cues are translated. Existing cached translations are unchanged.</p></div><label class="switch" aria-label="Use surrounding subtitle context"><input id="useTranslationContext" type="checkbox"><span class="switch-ui"></span></label></div>
+            <div class="switch-row context-setting"><div><span class="label">Use surrounding subtitle context</span><p class="help">Sends nearby source lines around each new translation as reference, so pronouns, names, and sentence continuity survive. Context is reference-only; only requested cues are translated, and enabling it uses more tokens and may add latency.</p></div><label class="switch" aria-label="Use surrounding subtitle context"><input id="useTranslationContext" type="checkbox"><span class="switch-ui"></span></label></div>
+            <div class="field context-setting"><label for="contextLevel">Context amount</label><select id="contextLevel"></select><p id="contextLevelSummary" class="help">How many nearby source lines travel with each request as reference.</p></div>
             <div class="switch-row context-setting"><div><span class="label">Verify translations before caching</span><p class="help">Rejects a model result that is not written in the target language instead of caching it. The line is sent once more on its own, then reported as failed. Detection compares writing systems, so it catches an untranslated or romanized line, but it cannot catch a wrong language that shares the target's writing system. Turn this off to cache every result the model returns.</p></div><label class="switch" aria-label="Verify translations before caching"><input id="verifyTranslations" type="checkbox"><span class="switch-ui"></span></label></div>
           </section>
         </section>
@@ -194,6 +195,7 @@
   <script src="playback-site.js"></script>
   <script src="episode-identity.js"></script>
   <script src="subtitle-import.js"></script>
+  <script src="translation-context.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

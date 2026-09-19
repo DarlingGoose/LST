@@ -17,6 +17,7 @@
     showStatusMessages: true,
     autoTranslateAhead: true,
     useTranslationContext: false,
+    contextLevel: "standard",
     verifyTranslations: true,
     lookAheadSeconds: 30,
     cacheWhilePaused: true,
@@ -955,6 +956,11 @@
     currentStatus.episodeProgressPercent = total
       ? Math.min(100, Number(((translated / total) * 100).toFixed(1)))
       : 0;
+    // The pill's number and bar are drawn here rather than only where the rest of
+    // the pill is refreshed, because progress moves between those moments — a
+    // precompute batch, a cue translated ahead — and a number that only moves when
+    // something else happens to change is worse than no number at all.
+    updatePillProgress();
 
     const video = activeVideo();
     const rawTime = Number.isFinite(Number(videoTime))
@@ -1273,9 +1279,11 @@
           <span class="lst-pill-dot" aria-hidden="true"></span>
           <strong>LST</strong>
           <span id="lst-pill-state">Waiting</span>
+          <span id="lst-pill-percent" class="lst-pill-percent" hidden></span>
           <span id="lst-pill-ahead" class="lst-pill-ahead"></span>
           <span id="lst-pill-source" class="lst-pill-source" hidden></span>
           <span class="lst-pill-controls-label">Controls</span>
+          <span id="lst-pill-progress" class="lst-pill-progress" aria-hidden="true" hidden><span id="lst-pill-progress-fill" class="lst-pill-progress-fill"></span></span>
         </button>
         <div id="lst-pill-menu" hidden>
           <div class="lst-pill-menu-header">
@@ -1285,6 +1293,7 @@
             </div>
             <button type="button" data-pill-action="collapse">Collapse</button>
           </div>
+          <p id="lst-pill-load-note" class="lst-pill-load-note" hidden></p>
           <section class="lst-pill-section lst-pill-subtitles" aria-labelledby="lst-subtitles-heading">
             <h3 id="lst-subtitles-heading">Subtitles</h3>
             <p id="lst-pill-source-note" class="lst-pill-note">Waiting for the service's subtitles.</p>
@@ -1658,6 +1667,73 @@
     return { label: "Waiting", state: "waiting" };
   }
 
+  // How much of this episode is loaded, worked out in one place so the number in
+  // the pill, the bar under it and the sentence in the panel cannot answer
+  // differently. The share is the whole episode's — of the cues LST holds for the
+  // episode, the ones already translated and cached — because "how much is
+  // loaded" is a question about the episode. How far ahead the cache reaches is a
+  // different question, and the pill answers that one in seconds beside it.
+  function loadProgress() {
+    const total = Math.max(0, currentStatus.cueCount || 0);
+    const cached = Math.max(0, currentStatus.translatedCount || 0);
+    // A file already written in the viewer's language is not loaded from
+    // anywhere: it is all there, and none of it is translated. A percentage of
+    // nothing would only look like a failure.
+    const visible =
+      Boolean(currentStatus.captured) && total > 0 && trackNeedsTranslation();
+    const percent = visible
+      ? clamp(currentStatus.episodeProgressPercent, 0, 100, 0)
+      : 0;
+    return {
+      visible,
+      percent,
+      cached,
+      total,
+      complete: visible && cached >= total,
+    };
+  }
+
+  function formatLoadPercent(percent) {
+    // Whole percent, and never 100 while a cue is still missing: a share that
+    // rounds up to the whole episode would claim the episode is loaded when it is
+    // not, and the last percent is reached by the last cue.
+    const value = Math.floor(clamp(percent, 0, 100, 0));
+    return `${value >= 100 ? 100 : Math.min(value, 99)}%`;
+  }
+
+  function describeLoadProgress(progress) {
+    if (!progress.visible) return "";
+    return progress.complete
+      ? `The whole episode is cached: ${progress.total} of ${progress.total} cues.`
+      : `${formatLoadPercent(progress.percent)} of this episode's subtitles cached · ` +
+          `${progress.cached} of ${progress.total} cues.`;
+  }
+
+  function updatePillProgress() {
+    if (!quickPillsPanel) return;
+    const progress = loadProgress();
+    const percent = quickPillsPanel.querySelector("#lst-pill-percent");
+    const bar = quickPillsPanel.querySelector("#lst-pill-progress");
+    const fill = quickPillsPanel.querySelector("#lst-pill-progress-fill");
+    const note = quickPillsPanel.querySelector("#lst-pill-load-note");
+    // One string is the whole readout: the number beside the state and the width
+    // of the bar below it cannot drift apart if they are the same text.
+    const figure = progress.visible ? formatLoadPercent(progress.percent) : "";
+    if (percent) {
+      percent.hidden = !progress.visible;
+      percent.textContent = figure ? `· ${figure}` : "";
+      percent.title = figure
+        ? `${figure} of this episode's subtitles cached`
+        : "";
+    }
+    if (bar) bar.hidden = !progress.visible;
+    if (fill) fill.style.width = figure || "0%";
+    if (note) {
+      note.hidden = !progress.visible;
+      note.textContent = describeLoadProgress(progress);
+    }
+  }
+
   // Where the subtitles on screen come from, said in the player rather than only
   // in the extension's own pages: an imported file is a different thing from the
   // service's own track, and the viewer should not have to open a settings page
@@ -1709,6 +1785,7 @@
     quickPillsState.textContent = status.label;
     updatePillSubtitleSource();
     updateQuickPillsTiming();
+    updatePillProgress();
     const panelStatus = quickPillsPanel.querySelector("#lst-pill-panel-status");
     const ahead = quickPillsPanel.querySelector("#lst-pill-ahead");
     const aheadLabel =
@@ -2050,7 +2127,8 @@
       `target      ${settings.targetLanguage || "—"}`,
       `context     ${
         settings.useTranslationContext
-          ? translationContextApi()?.describeLimits() || "on (limits unknown)"
+          ? translationContextApi()?.describeLimits(settings.contextLevel) ||
+            "on (limits unknown)"
           : "off"
       }`,
       `track       ${currentStatus.cueCount || 0} cues`,
@@ -3018,6 +3096,10 @@
       scope: cues,
       targetIndexes,
       requestedCount: selectedCues.length,
+      // How much context to send is the viewer's choice; the module resolves the
+      // stored value, so an unknown one falls back to the default level rather
+      // than to a rule invented here.
+      level: settings.contextLevel,
       // The setting is checked above so that a feature which is off by default
       // does not write an event for every request.
       enabled: true,
@@ -3036,7 +3118,7 @@
         after: selection.positions.after,
         overlapping: selection.positions.overlapping,
         refused: selection.refused,
-        limits: api.describeLimits(),
+        limits: api.describeLimits(settings.contextLevel),
       },
       cueKey(selectedCues[0]),
     );
@@ -3100,6 +3182,9 @@
           text: cue.text,
         })),
         contextItems,
+        // The level the context above was chosen under, so the background checks
+        // the list against the amount the viewer asked for rather than a guess.
+        contextLevel: settings.contextLevel,
       });
 
       currentStatus.requestState = "done";
@@ -4682,8 +4767,12 @@
           }
           const previousCacheId = cacheId();
           const previousUseTranslationContext = settings.useTranslationContext;
+          const previousContextLevel = settings.contextLevel;
           await loadSettings();
-          if (settings.useTranslationContext !== previousUseTranslationContext) {
+          if (
+            settings.useTranslationContext !== previousUseTranslationContext ||
+            settings.contextLevel !== previousContextLevel
+          ) {
             translationCoordinator = null;
           }
           if (cacheId() !== previousCacheId) {
