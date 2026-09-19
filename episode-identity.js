@@ -279,21 +279,104 @@
     return Boolean(videoIdKind(value));
   }
 
+  // A service can glue onto the show's own name the marker that says *which*
+  // part of the show this page is: "Homeland - Season 2", "Show - S2",
+  // "機動戦士ガンダム 水星の魔女 シーズン1", "Show 第2期". The marker is not the
+  // show's name — the same show is on the next episode's page under the same
+  // name without it — so a name LST stores, groups by, or searches with does not
+  // carry one. Only a *trailing* marker is removed, so a title that mentions a
+  // season in the middle of its name is left alone, and an episode marker is not
+  // touched at all: "Show: Episode 1" names an episode, and the episode is what
+  // a caller asking about an episode is asking about.
+  //
+  // subtitle-import.js keeps its own, wider vocabulary for a search query: a
+  // query also drops an episode marker, a bare trailing number and an ordinal
+  // season ("Show - 3", "Show 3rd Season"), which a title may legitimately be
+  // called.
+  const SHOW_NAME_TRAILERS = Object.freeze([
+    { shape: "season-separator", pattern: /\s*[-–—|:·、：・]\s*(?:season|series|staffel|saison|temporada)\s*\d{1,3}\s*$/i },
+    { shape: "season-word", pattern: /\s*(?:season|series|staffel|saison|temporada)\s*\d{1,3}\s*$/i },
+    { shape: "season-ordinal", pattern: /\s*\d{1,3}(?:st|nd|rd|th)\s+(?:season|series)\s*$/i },
+    { shape: "season-short", pattern: /\s*[-–—|:·、：・]\s*s\d{1,2}\s*$/i },
+    { shape: "japanese-season", pattern: /\s*(?:第\s*)?\d{1,2}\s*(?:シーズン|クール|期|季|部)\s*$/ },
+    { shape: "japanese-season-word", pattern: /\s*(?:シーズン|パート)\s*\d{1,2}\s*$/ },
+  ]);
+
+  // The separator a trimmed marker leaves behind ("Show - 第2期"), and the
+  // punctuation a service hangs off a name.
+  const DANGLING_SEPARATOR = /[-–—|:·、：・]+$/;
+
+  function placeholderShape(name) {
+    for (const entry of PLACEHOLDER_SHAPES) {
+      if (entry.pattern.test(name)) return entry;
+    }
+    return null;
+  }
+
+  // The name a title states once the markers it glued on are gone, and which
+  // markers were removed. A trim that would leave nothing, or leave a
+  // placeholder where a name was ("Season 1 · Episode 50 · The Beginning" is
+  // entirely markers once you take the words out), removed the name itself: the
+  // words it took were the name, so the name stands.
+  function stripShowTrailers(value) {
+    const original = normalizeName(value);
+    if (!original) return { name: "", markers: [] };
+    let working = original;
+    const markers = [];
+    for (let pass = 0; pass <= SHOW_NAME_TRAILERS.length; pass += 1) {
+      let changed = false;
+      for (const entry of SHOW_NAME_TRAILERS) {
+        const next = working
+          .replace(entry.pattern, "")
+          .replace(DANGLING_SEPARATOR, "")
+          .trim();
+        if (next === working) continue;
+        working = next;
+        markers.push(entry.shape);
+        changed = true;
+      }
+      if (!changed) break;
+    }
+    if (!markers.length) return { name: original, markers: [] };
+    if (!working || placeholderShape(working)) {
+      return { name: original, markers: [] };
+    }
+    return { name: working, markers };
+  }
+
+  // The show a page's title names, which is the same name on every episode of
+  // that show: 機動戦士ガンダム 水星の魔女 シーズン1 names 機動戦士ガンダム 水星の魔女.
+  function showNameFromTitle(value) {
+    return stripShowTrailers(value).name;
+  }
+
   // The single answer to "is this a real name or a placeholder?".
   function classifyName(value) {
     const name = normalizeName(value);
     if (!name) {
       return { name: "", kind: NAME_KIND.empty, reason: "empty-name", shape: "" };
     }
-    for (const entry of PLACEHOLDER_SHAPES) {
-      if (entry.pattern.test(name)) {
-        return {
-          name,
-          kind: NAME_KIND.placeholder,
-          reason: entry.reason,
-          shape: entry.shape,
-        };
-      }
+    // A placeholder is a placeholder whole, before any marker is considered: a
+    // name the service renders when it has nothing better is not a show with a
+    // season on the end of it.
+    const placeholder = placeholderShape(name);
+    if (placeholder) {
+      return {
+        name,
+        kind: NAME_KIND.placeholder,
+        reason: placeholder.reason,
+        shape: placeholder.shape,
+      };
+    }
+    const stripped = stripShowTrailers(name);
+    if (stripped.name !== name) {
+      return {
+        name: stripped.name,
+        kind: NAME_KIND.specific,
+        reason: "specific-name-after-marker",
+        shape: "",
+        marker: stripped.markers[stripped.markers.length - 1] || "",
+      };
     }
     return {
       name,
@@ -780,6 +863,8 @@
     normalizeName,
     preferredName,
     showKeyShape,
+    showNameFromTitle,
+    stripShowTrailers,
     siteLabel,
     videoIdKind,
   };

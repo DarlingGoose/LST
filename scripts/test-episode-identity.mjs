@@ -271,6 +271,91 @@ for (const [value, reason] of [
 assert.equal(identity.isSpecificName("Prime Video Original: The Show"), true);
 assert.equal(identity.isSpecificName("Prime Video episode 5 · Pilot"), true);
 
+// --- The show a page's title names ------------------------------------------
+//
+// A service states which part of a show a page is inside the show's own name.
+// The marker is not the name: the same show is on the next episode's page under
+// the same name without it, so a name LST stores, groups by, or searches with
+// does not carry one. Every trim below is a name that stays a name.
+const trimmedShowNames = [
+  ["機動戦士ガンダム 水星の魔女 シーズン1", "機動戦士ガンダム 水星の魔女"],
+  ["機動戦士ガンダム 水星の魔女 第2期", "機動戦士ガンダム 水星の魔女"],
+  ["機動戦士ガンダム 水星の魔女 2クール", "機動戦士ガンダム 水星の魔女"],
+  ["Homeland - Season 2", "Homeland"],
+  ["Homeland Season 2", "Homeland"],
+  ["Show 3rd Season", "Show"],
+  ["Show - S2", "Show"],
+  // The separator the marker left behind goes with it.
+  ["Show : Season 1", "Show"],
+  ["Show – 第2期", "Show"],
+];
+for (const [value, expected] of trimmedShowNames) {
+  assert.equal(
+    identity.showNameFromTitle(value),
+    expected,
+    `${value} names the show, not the season`,
+  );
+  const classified = identity.classifyName(value);
+  assert.equal(classified.name, expected);
+  assert.equal(classified.kind, "specific", `${value} is still a real name`);
+  assert.equal(
+    classified.reason,
+    "specific-name-after-marker",
+    "the decision says a marker was removed, not that the name arrived whole",
+  );
+  assert.ok(classified.marker, "and which marker it was");
+}
+
+// A name that is nothing but a marker keeps every word it has, and a marker that
+// is not trailing is part of the name a service stated.
+const keptShowNames = [
+  "第2期",
+  "Season 2",
+  "Season 1 · Episode 50 · The Beginning",
+  "Example Show: Episode 1",
+  "Show 第2期 特別編",
+  "Netflix - Season 1",
+  "The Witcher",
+  "機動戦士ガンダム 水星の魔女",
+];
+for (const value of keptShowNames) {
+  assert.equal(identity.showNameFromTitle(value), value, `${value} keeps its words`);
+}
+assert.equal(identity.showNameFromTitle(""), "");
+assert.equal(identity.showNameFromTitle(null), "");
+assert.equal(identity.showNameFromTitle("   "), "");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(identity.stripShowTrailers("Homeland - Season 2"))),
+  { name: "Homeland", markers: ["season-separator"] },
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(identity.stripShowTrailers("The Witcher"))),
+  { name: "The Witcher", markers: [] },
+);
+
+// Two seasons of one show are one show: the finding, the grouping and the cache
+// list all use the name without the marker, so a note filed while watching
+// season 1 is the note the viewer sees on season 2.
+{
+  const witcher = identityContext.LSTEpisodeIdentity;
+  assert.equal(
+    witcher.encodeShowKey({ showName: "Show シーズン1", siteId: "netflix" }),
+    witcher.encodeShowKey({ showName: "Show シーズン2", siteId: "netflix" }),
+  );
+  assert.equal(
+    witcher.preferredName("機動戦士ガンダム 水星の魔女 シーズン1").name,
+    "機動戦士ガンダム 水星の魔女",
+  );
+  // Which is how a cache written before the rule existed is listed correctly:
+  // the name is what the cache stores, not what the page said.
+  const stored = witcher.mergeCacheMetadata({
+    inferred: witcher.inferCacheMetadata("primevideo~B0BX1TYH98:qwen3%3A8b:English"),
+    existing: {},
+    incoming: { showName: "機動戦士ガンダム 水星の魔女 シーズン1" },
+  });
+  assert.equal(stored.metadata.showName, "機動戦士ガンダム 水星の魔女");
+}
+
 const unknownVideo = identity.inferCacheMetadata("unknown:qwen3%3A8b:English");
 assert.equal(unknownVideo.videoId, "unknown");
 assert.equal(unknownVideo.episodeName, "Episode details unavailable");

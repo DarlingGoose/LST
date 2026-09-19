@@ -165,12 +165,38 @@
     }
   }
 
-  // A listing names every timed-text track a title carries. The adapter says
-  // which of them is the episode's source; this fetches that one and hands it
-  // over exactly as a Netflix document is handed over, so everything after the
-  // capture — parsing, precompute, the cache, the overlay — is the same code.
+  // The same listing names every timed-text track a title carries. The adapter
+  // says which of them is the episode's source; this fetches that one and hands
+  // it over exactly as a Netflix document is handed over, so everything after
+  // the capture — parsing, precompute, the cache, the overlay — is the same code.
+  //
+  // The listing also names the episode itself, and that answer travels as its
+  // own message because it is not a subtitle document: it is which episode the
+  // player is showing, which is how LST recognizes the next episode on a page
+  // whose URL never moves, and how a title Amazon never names in its document
+  // title gets named at all. It is published first, so the identity is known
+  // before the document that shares the listing arrives.
+  function publishListingIdentity(detected, payload) {
+    let identity = null;
+    try {
+      identity = detected.site?.playbackResources?.identity?.(payload) || null;
+    } catch {
+      identity = null;
+    }
+    if (!identity) return;
+    window.postMessage(
+      {
+        source: SOURCE,
+        type: "EPISODE_IDENTITY",
+        payload: { site: detected.siteId, ...identity },
+      },
+      "*",
+    );
+  }
+
   async function captureTimedTextFromListing(detected, payload) {
     const site = detected.site;
+    publishListingIdentity(detected, payload);
     let tracks = [];
     let choice = null;
     try {

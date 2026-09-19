@@ -42,6 +42,11 @@ Important files:
     `content_scripts.matches` arrays; `scripts/test-playback-site.mjs` fails
     until both halves are done, and fails again if a `matches` pattern no adapter
     claims.
+  - It also owns the shape of the playback-resources listing where a service has
+    one: which tracks it names (`playbackResources.tracks` / `chooseTrack`) and
+    which episode it is about (`playbackResources.identity` —
+    `episodeIdentityFromPlaybackResources`), so the reading of Amazon's
+    `catalogMetadata` happens here rather than in the page world or in the player.
 
 - `episode-identity.js`
   - Decides which names a service actually gave us and which are the
@@ -57,6 +62,16 @@ Important files:
     episode of it), and the name-merge rules; every decision carries the reason it
     was made, and the subtitle event log records kinds and reasons rather than
     the names themselves.
+  - Owns what a season marker glued onto a name is: a service words the show's own
+    name with the part of it this page is (`機動戦士ガンダム 水星の魔女 シーズン1`,
+    `Homeland - Season 2`, `Show 第2期`), and the marker is not the name, so
+    `showNameFromTitle()` / `stripShowTrailers()` remove a *trailing* marker before
+    the name is classified, keyed or stored. A trim that would empty a name or
+    leave only a placeholder is refused, so a show actually called `第2期` keeps
+    its name and `Season 1 · Episode 50 · The Beginning` keeps its words; an
+    episode marker is never touched, because `Show: Episode 1` names an episode.
+    `subtitle-import.js` keeps its own, wider vocabulary for a *search query*, which
+    also drops an episode marker and a bare trailing number.
 
 - `translation-context.js`
   - Decides which surrounding subtitle lines are sent to the provider as
@@ -511,6 +526,23 @@ subtitle tracks in — belong to `playback-site.js`. Nothing in `content.js` or
   and cookies, so no CDN host permission is ever added and the extension never
   asks anything else to fetch a subtitle URL. The document is read immediately
   because these URLs are signed and expire, so a URL is never retained.
+- **The same listing is what names the episode, and that is not a detail.** A
+  Prime Video page can keep the series in its path while the player advances
+  inside it — `amazon.<tld>/gp/video/detail/<ASIN>` names the page, not the
+  episode being watched — so the URL cannot answer "which episode is this" and
+  two episodes of one series would be one cache if it tried. The listing's
+  `catalogMetadata` carries the item being played: its own id (`catalog.id`, a
+  `amzn1.dv.gti.*`), its title, its episode number, and its ancestors
+  (`family.tvAncestors`) — the season, and the series the season belongs to.
+  `playback-site.js` reads that shape (`playbackResources.identity`), `page-hook.js`
+  publishes it as `EPISODE_IDENTITY` before the document that shares the listing
+  arrives, and `content.js` applies it: the episode id becomes the id LST keys a
+  cache on, the series title becomes the show's name, and the episode's number
+  and title become its name (`Episode 1 · The Smile`). A field the listing does
+  not state is left empty with its reason, never guessed; an unreadable listing
+  answers `no-catalog-metadata`; and every decision reaches the event log as
+  `episode-identity-from-listing` with kinds and reasons rather than names. This
+  is also what makes `episode-changed` fire on a page whose URL never moves.
 - A **forced-narrative** track translates on-screen text rather than dialogue, so
   it is never what LST captures: a listing holding nothing else is reported as
   having no track rather than shown as the episode's subtitles. Among the rest,
@@ -579,6 +611,27 @@ When changing cache structure:
 - avoid silently deleting user data
 - keep storage usage visible to the user
 - ensure users can clear individual caches or all cached translations
+
+Do not store data remotely.
+
+### The cache library
+
+- **A cache belongs to one episode of one show on one service.** The episode is
+  whatever the cache id names — on Prime Video that is the listing's own id for
+  the episode, because the page's URL can name the series while the episode
+  advances — so two episodes of one series are two entries and never one entry
+  holding both episodes' cues.
+- **The list groups by show key, not by the spelling a page used** (`options.js`:
+  `cacheShowKey` / `cacheGroupName`). Two episodes whose names differ only by the
+  season they were watched in are one show, because the key is the same key
+  `episode-identity.js` files what LST learned about a show under; a cache whose
+  show was never named belongs to its service (`service:primevideo`) rather than
+  to a show it cannot name.
+- **A show is named by the most specific name one of its episodes stated**, and
+  only the naming module decides what is specific, so a placeholder is never shown
+  as a show's name. A legacy cache whose stored name carries a season is listed
+  under the bare name without it being rewritten: the trim is applied when a name
+  is read, not only when one is written.
 
 Do not store data remotely.
 

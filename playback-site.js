@@ -401,6 +401,122 @@
     return { track: eligible[0], reason: "first-listed-track" };
   }
 
+  // Which episode the listing is about. The same answer the player is handed
+  // names the item it is about to play — Amazon's catalog entry for the episode,
+  // its season, and the series the season belongs to — and that is the only
+  // place a browser is told which episode a player holding one URL is showing.
+  // On `amazon.<tld>` the path can stay on the series while the episode
+  // advances, so the URL is not an answer to this question; the listing is.
+  //
+  // Everything is read defensively and said plainly: a field the listing does
+  // not state is left empty with the reason in `reason`/`sources`, never filled
+  // in from a guess, and a shape LST does not recognise answers
+  // `no-catalog-metadata` rather than a partial record pretending to be whole.
+  // The item's own id is returned unvalidated — the adapter reports what the
+  // listing said, and `episode-identity.js` decides whether it is an id LST can
+  // key a cache on.
+  const CATALOG_ITEM_KEYS = Object.freeze(["catalogMetadata", "catalog"]);
+  const SERIES_ANCESTOR_TYPES = Object.freeze([
+    /^(?:tv\s*show|show|series|serie)$/i,
+  ]);
+  const SEASON_ANCESTOR_TYPES = Object.freeze([/^season$/i]);
+
+  function catalogItemFromListing(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    for (const key of CATALOG_ITEM_KEYS) {
+      const holder = payload[key];
+      if (!holder || typeof holder !== "object") continue;
+      const item = key === "catalogMetadata" ? holder.catalog : holder;
+      if (item && typeof item === "object") {
+        return { item, family: holder.family, source: key };
+      }
+    }
+    return null;
+  }
+
+  function catalogAncestors(holder) {
+    const ancestors = holder?.family?.tvAncestors;
+    return Array.isArray(ancestors) ? ancestors : [];
+  }
+
+  function ancestorTitle(holder, patterns) {
+    for (const ancestor of catalogAncestors(holder)) {
+      const catalog = ancestor?.catalog;
+      if (!catalog || typeof catalog !== "object") continue;
+      const type = String(catalog.type || "");
+      if (!patterns.some((pattern) => pattern.test(type))) continue;
+      const title = String(catalog.title || "").trim();
+      if (title) return { title, catalog };
+    }
+    return null;
+  }
+
+  function positiveInteger(value) {
+    const number = Number(value);
+    return Number.isInteger(number) && number > 0 ? number : null;
+  }
+
+  function episodeIdentityFromPlaybackResources(payload) {
+    const found = catalogItemFromListing(payload);
+    if (!found) {
+      return {
+        reason: "no-catalog-metadata",
+        catalogSource: "",
+        itemType: "",
+        title: "",
+        episodic: false,
+        showName: "",
+        showNameSource: "",
+        videoId: "",
+        videoIdSource: "",
+        seasonNumber: null,
+        episodeNumber: null,
+      };
+    }
+
+    const { item, source } = found;
+    const itemType = String(item.type || "").trim().toUpperCase();
+    const title = String(item.title || "").trim();
+    const episodeNumber = positiveInteger(item.episodeNumber);
+    const episodic = itemType === "EPISODE" || episodeNumber != null;
+
+    const season = ancestorTitle(found, SEASON_ANCESTOR_TYPES);
+    const series = ancestorTitle(found, SERIES_ANCESTOR_TYPES);
+    const showName = series?.title || season?.title || (episodic ? "" : title);
+    const showNameSource = series
+      ? "series-ancestor"
+      : season
+        ? "season-ancestor"
+        : !episodic && title
+          ? "item-title"
+          : "";
+
+    const rendition = payload?.returnedTitleRendition;
+    const idCandidates = [
+      ["catalog-id", item.id],
+      ["rendition-title-id", rendition?.titleId],
+      ["rendition-asin", rendition?.asin],
+    ];
+    const idEntry = idCandidates.find(
+      ([, value]) => typeof value === "string" && value.trim(),
+    );
+
+    return {
+      reason: "catalog-metadata",
+      catalogSource: source,
+      itemType,
+      title,
+      episodic,
+      showName,
+      showNameSource,
+      videoId: idEntry ? idEntry[1].trim() : "",
+      videoIdSource: idEntry ? idEntry[0] : "",
+      seasonNumber:
+        positiveInteger(item.seasonNumber) || positiveInteger(season?.catalog?.seasonNumber),
+      episodeNumber,
+    };
+  }
+
   const netflix = Object.freeze({
     id: "netflix",
     label: "Netflix",
@@ -596,6 +712,9 @@
       urlPatterns: Object.freeze([PRIME_PLAYBACK_RESOURCES_URL]),
       tracks: timedTextTracksFromPlaybackResources,
       chooseTrack: chooseTimedTextTrack,
+      // The same listing names the episode as well as its assets, which is what
+      // lets LST recognize the next episode on a page whose URL never moves.
+      identity: episodeIdentityFromPlaybackResources,
     }),
   });
 
@@ -725,6 +844,7 @@
     siteFor,
     current,
     normalizeText,
+    episodeIdentityFromPlaybackResources,
   };
 
   globalThis.LSTPlaybackSite = api;

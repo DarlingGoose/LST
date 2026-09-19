@@ -44,6 +44,12 @@
   let cues = [];
   let cueSourceUrl = "";
   let cueVideoId = "";
+  // Which episode the service's own listing says it is playing. A Prime Video
+  // page can name the series in its URL while the episode advances inside it, so
+  // the URL is not an answer to "which episode is this" — the listing is, and it
+  // arrives before the episode plays. It is remembered with the page id it was
+  // read on, so a route that moves to another title does not inherit it.
+  let siteEpisodeIdentity = null;
   const titleMetadataByVideoId = new Map();
   const titleMetadataRequestsByVideoId = new Map();
   const storedTitleSignaturesByCacheId = new Map();
@@ -283,7 +289,9 @@
     return Boolean(site.isPlaybackPage(detectedSite().view).ok);
   }
 
-  function getVideoId() {
+  // The id the page's URL states, which is the answer for a service whose URLs
+  // name the thing being played.
+  function pageVideoId() {
     const site = currentSite();
     if (!site) return "unknown";
     try {
@@ -293,6 +301,20 @@
       // id is unavailable rather than that some other rule should be tried.
       return "unknown";
     }
+  }
+
+  // Which episode LST is working with, asked once and answered the same way
+  // everywhere: the id the service's own listing stated, while that listing was
+  // read on the page being played, and the URL's id otherwise. A listing is what
+  // makes two episodes of one series two caches instead of one, so nothing here
+  // may fall back to the URL when the listing has answered.
+  function getVideoId() {
+    const pageId = pageVideoId();
+    const identity = siteEpisodeIdentity;
+    if (identity?.videoId && identity.pageVideoId === pageId) {
+      return identity.videoId;
+    }
+    return pageId;
   }
 
   // Which <video> element the viewer is watching. Prime renders several (main
@@ -520,6 +542,15 @@
     return classifiedName(value).kind === "specific";
   }
 
+  // The show a page's title names, without the marker a service glues onto it to
+  // say which season this page is. The rule is episode-identity.js's; without it
+  // the page's own words stand, exactly as they did before the rule existed.
+  function showNameFromTitle(value) {
+    const api = episodeIdentity();
+    if (api?.showNameFromTitle) return api.showNameFromTitle(value);
+    return normalizeText(value);
+  }
+
   function fallbackEpisodeName(videoId) {
     const api = episodeIdentity();
     if (api) return api.fallbackEpisodeName(videoId);
@@ -717,16 +748,19 @@
         !explicitEpisodeCandidates.includes(value),
     );
     const usablePageTitle = pageTitleCandidates[0] || "";
-    const showName =
+    // Whichever of them answered, the show is the name without the season the
+    // service appended to say which part of the show this page is.
+    const showName = showNameFromTitle(
       usableExplicitShow ||
-      usablePageTitle ||
-      parts.find(
-        (value) =>
-          isSpecificName(value) &&
-          !episodeMarker(value) &&
-          !explicitEpisodeCandidates.includes(value),
-      ) ||
-      "";
+        usablePageTitle ||
+        parts.find(
+          (value) =>
+            isSpecificName(value) &&
+            !episodeMarker(value) &&
+            !explicitEpisodeCandidates.includes(value),
+        ) ||
+        "",
+    );
     const episodeTitle =
       explicitEpisodeCandidates.find(
         (value) => value !== showName && !episodeMarker(value),
@@ -758,12 +792,29 @@
 
     const hasSpecificEpisode = !isFallbackEpisodeName(discovered.episodeName);
     if (!hasSpecificEpisode) requestSiteTitleMetadata(videoId);
+    // A name the service's own catalog stated is the service's answer, and a
+    // page scraped for a title is not allowed to replace it — but a name the
+    // catalog left as a placeholder is still filled in by whatever the page
+    // offers.
+    const fromCatalog = previous.source === "catalog";
+    const merged = fromCatalog
+      ? {
+          showName: isSpecificName(previous.showName)
+            ? previous.showName
+            : discovered.showName,
+          episodeName: isSpecificName(previous.episodeName)
+            ? previous.episodeName
+            : discovered.episodeName,
+          source: "catalog",
+        }
+      : discovered;
     if (
+      fromCatalog ||
       isSpecificName(discovered.showName) ||
       !previous.showName ||
       hasSpecificEpisode
     ) {
-      titleMetadataByVideoId.set(videoId, discovered);
+      titleMetadataByVideoId.set(videoId, merged);
     }
     const remembered = titleMetadataByVideoId.get(videoId) || discovered;
 
@@ -797,6 +848,88 @@
         .filter(Boolean)
         .join(" — "),
     };
+  }
+
+  // What the service's own listing said this episode is, applied to the episode
+  // being played. It is the strongest naming LST has on a service whose page
+  // never states the episode: Amazon's catalog entry for the item carries the
+  // episode's own title and number, the series it belongs to, and the id of the
+  // episode rather than of the series page. Nothing about it is a guess — an
+  // answer the module cannot use is refused with its reason rather than
+  // half-applied — and only kinds and reasons are logged, never the names.
+  function applySiteEpisodeIdentity(payload) {
+    const siteId = currentSiteId();
+    if (!siteId || (payload?.site && payload.site !== siteId)) {
+      logEpisodeMetadata("episode-identity-refused", {
+        reason: "other-site",
+        listedSite: payload?.site || "unknown",
+      });
+      return { applied: false, reason: "other-site" };
+    }
+    const api = episodeIdentity();
+    const pageId = pageVideoId();
+    const stated = normalizeText(payload?.videoId || "");
+    const videoId = stated && (!api?.isKnownVideoId || api.isKnownVideoId(stated)) ? stated : "";
+    const showName = showNameFromTitle(payload?.showName || "");
+    const episodeNumber =
+      Number.isInteger(payload?.episodeNumber) && payload.episodeNumber > 0
+        ? payload.episodeNumber
+        : null;
+    const episodeTitle = normalizeText(payload?.title || "");
+    // A film has no episode to name: the item's own title is the film, which the
+    // adapter already reported as the show.
+    const episodeName =
+      payload?.episodic && api?.episodeNameFromParts
+        ? api.episodeNameFromParts({
+            episodeNumber,
+            title: episodeTitle,
+          })
+        : "";
+
+    siteEpisodeIdentity = {
+      pageVideoId: pageId,
+      videoId,
+      videoIdSource: payload?.videoIdSource || "",
+      showName,
+      episodeName,
+      episodeNumber,
+      seasonNumber: Number.isInteger(payload?.seasonNumber) ? payload.seasonNumber : null,
+    };
+    if (episodeNumber != null) lastEpisodeNumber = episodeNumber;
+
+    // The names are filed under the id LST will look them up with, which is the
+    // listing's own id when the listing stated a usable one.
+    const key = videoId || pageId;
+    if (key && key !== "unknown") {
+      const previous = titleMetadataByVideoId.get(key) || {};
+      titleMetadataByVideoId.set(key, {
+        showName: showName || previous.showName || siteName(),
+        episodeName: episodeName || previous.episodeName || fallbackEpisodeName(key),
+        // A name the service's catalog stated outranks one scraped from a page,
+        // so a later pass over the document title cannot replace it.
+        source: "catalog",
+      });
+    }
+
+    logDiagnostic("info", "episode", "episode-identity-from-listing", {
+      reason: payload?.reason || "unspecified",
+      itemType: payload?.itemType || "unknown",
+      episodic: Boolean(payload?.episodic),
+      showNameKind: classifiedName(showName).kind,
+      showNameReason: classifiedName(showName).reason,
+      episodeNameKind: classifiedName(episodeName).kind,
+      episodeNameReason: classifiedName(episodeName).reason,
+      titleKind: classifiedName(episodeTitle).kind,
+      episodeNumber,
+      seasonNumber: siteEpisodeIdentity.seasonNumber,
+      videoIdSource: siteEpisodeIdentity.videoIdSource,
+      videoIdKind: api?.videoIdKind ? api.videoIdKind(stated) : "",
+      videoIdUsable: Boolean(videoId),
+      namesPage: videoId === pageId,
+      episodeChanged: Boolean(cueVideoId && cueVideoId !== getVideoId()),
+    });
+    persistImprovedCacheMetadata();
+    return { applied: true, reason: payload?.reason || "unspecified" };
   }
 
   // The service a cache belongs to is part of the id it is written under, so a
@@ -4784,6 +4917,17 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     if (event.data?.source !== SOURCE) return;
+
+    // Which episode the listing the page world just read is about. It is not a
+    // subtitle document: it names the episode, and it is read whether or not a
+    // player is in use, because it arrives before the episode plays and names
+    // the episode the player is about to show. Nothing is fetched for it — the
+    // page's own request carried it.
+    if (event.data?.type === "EPISODE_IDENTITY") {
+      applySiteEpisodeIdentity(event.data.payload);
+      return;
+    }
+
     if (!playbackActive || !isWatchPage()) {
       // Only a document is worth keeping; a note about a capture that already
       // happened would describe a page state the log is no longer on. The

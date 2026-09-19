@@ -152,6 +152,29 @@ judge a held one, and the event log says which document was adopted and why
 (`held-document-adopted`), or that it was too old to be this episode's
 (`held-document-stale`).
 
+**An episode is named the way Prime Video names it.** A Prime Video page can keep
+the series in its address while the player advances from episode to episode, so
+the address says which page you are on and not which episode you are watching.
+The same playback-resources listing that names the subtitle tracks also names the
+item being played — its own id, its title, its episode number, its season, and
+the series the season belongs to — and LST uses that answer, so:
+
+- each episode is cached, precomputed and counted on its own, and two episodes of
+  one series are two entries in the translation library rather than one;
+- the show is the show: the season a page appends to its own title
+  (`機動戦士ガンダム 水星の魔女 シーズン1`, `Homeland - Season 2`) is what a later
+  page calls the same show, not part of its name, so the library groups a show's
+  episodes together and what you searched for on Jimaku is found again next
+  season;
+- the episode has a name of its own (`Episode 1 · The Smile`) instead of the video
+  id standing in for one, and moving to the next episode is noticed even though
+  the address never changes.
+
+Nothing extra is requested for any of this: the listing is the page's own request,
+read as it happens. A listing LST cannot read changes nothing — the address names
+the episode again and the library says the service's name for the show — and the
+event log records what was read as kinds and reasons, never the names themselves.
+
 ## Ollama setup
 
 Check Ollama is running:

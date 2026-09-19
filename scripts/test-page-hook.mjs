@@ -29,7 +29,27 @@ Hello there`;
 // second on purpose, so a capture that took the first track would be caught.
 const PRIME_JA_URL = "https://aiv-cdn.net/ttml/B0B6GZ954Y.ja.ttml";
 const PRIME_EN_URL = "https://aiv-cdn.net/ttml/B0B6GZ954Y.en.ttml";
+// The same answer names the episode the player is about to show: Amazon's own
+// catalog entry for it, its season, and the series the season belongs to.
+const PRIME_EPISODE_ID = "amzn1.dv.gti.e4b2f72f-8a6e-405e-44fe-bedba416d622";
+const PRIME_SERIES_ID = "amzn1.dv.gti.c8b2d812-7ea7-6b33-ae74-08abb760fe3c";
 const PRIME_LISTING = JSON.stringify({
+  catalogMetadata: {
+    catalog: {
+      entityType: "TV Show",
+      episodeNumber: 1,
+      id: PRIME_EPISODE_ID,
+      title: "The Smile",
+      type: "EPISODE",
+      version: "1.0",
+    },
+    family: {
+      tvAncestors: [
+        { catalog: { seasonNumber: 2, title: "Homeland - Season 2", type: "SEASON" } },
+        { catalog: { id: PRIME_SERIES_ID, title: "Homeland", type: "SHOW" } },
+      ],
+    },
+  },
   timedTextUrls: {
     result: {
       subtitleUrls: [
@@ -168,6 +188,11 @@ function createPageHarness(href) {
     },
     notes() {
       return messages.filter((message) => message.type === "SUBTITLE_CAPTURE");
+    },
+    // Which episode the listing said it was about. It travels as its own
+    // message because it is not a subtitle document.
+    identities() {
+      return messages.filter((message) => message.type === "EPISODE_IDENTITY");
     },
   };
 }
@@ -371,6 +396,103 @@ const PRIME_LISTING_URL =
       .some((note) => note.payload.event === "playback-resources-track-captured"),
     "the capture reports what it captured and why",
   );
+}
+
+// The listing also names the episode, and that answer is published beside the
+// document. It is what tells the player which episode it is showing when the
+// page's URL does not, so it is published even when the listing names no track
+// LST can use — a title with no subtitles still has a name.
+{
+  const harness = createPageHarness(PRIME_DETAIL);
+  harness.serve(PRIME_JA_URL, PRIME_TTML);
+  harness.serve(PRIME_EN_URL, PRIME_TTML);
+  await harness.fetch(PRIME_LISTING_URL, "application/json", PRIME_LISTING);
+  const identities = harness.identities();
+  assert.equal(identities.length, 1, "one listing, one identity");
+  assert.equal(identities[0].payload.site, "primevideo");
+  assert.equal(identities[0].payload.reason, "catalog-metadata");
+  assert.equal(identities[0].payload.videoId, PRIME_EPISODE_ID);
+  assert.equal(identities[0].payload.title, "The Smile");
+  assert.equal(identities[0].payload.showName, "Homeland");
+  assert.equal(identities[0].payload.episodeNumber, 1);
+  assert.equal(identities[0].payload.seasonNumber, 2);
+  assert.equal(identities[0].payload.episodic, true);
+  assert.ok(
+    harness.messages.indexOf(identities[0]) <
+      harness.messages.indexOf(harness.published()[0]),
+    "the identity is published before the document that shares its listing",
+  );
+
+  // The same listing read again says the same thing again: it is an answer about
+  // state, not a resource that is spent.
+  await harness.fetch(PRIME_LISTING_URL, "application/json", PRIME_LISTING);
+  assert.equal(harness.identities().length, 2);
+}
+
+// A listing with no usable track still names the episode: the answer about which
+// episode this is does not depend on there being subtitles to capture.
+{
+  const harness = createPageHarness(PRIME_DETAIL);
+  await harness.fetch(
+    PRIME_LISTING_URL,
+    "application/json",
+    JSON.stringify({
+      catalogMetadata: {
+        catalog: { episodeNumber: 4, id: "B0B6GZ954Y", title: "第4話", type: "EPISODE" },
+        family: { tvAncestors: [{ catalog: { title: "機動戦士ガンダム 水星の魔女", type: "SHOW" } }] },
+      },
+      forcedNarrativeUrls: [{ languageCode: "ja", url: "https://aiv-cdn.net/forced.ttml" }],
+    }),
+  );
+  assert.equal(
+    harness.published().length,
+    0,
+    "nothing is captured from a forced-narrative listing",
+  );
+  assert.equal(harness.identities().length, 1);
+  assert.equal(harness.identities()[0].payload.showName, "機動戦士ガンダム 水星の魔女");
+  assert.equal(harness.identities()[0].payload.episodeNumber, 4);
+}
+
+// A listing LST cannot read names nothing, and says so rather than publishing a
+// half-identity.
+{
+  const harness = createPageHarness(PRIME_DETAIL);
+  await harness.fetch(
+    PRIME_LISTING_URL,
+    "application/json",
+    JSON.stringify({ subtitleUrls: [{ languageCode: "ja", url: PRIME_JA_URL }] }),
+  );
+  const identities = harness.identities();
+  assert.equal(identities.length, 1);
+  assert.equal(identities[0].payload.reason, "no-catalog-metadata");
+  assert.equal(identities[0].payload.videoId, "");
+  assert.equal(identities[0].payload.showName, "");
+  assert.equal(identities[0].payload.episodic, false);
+}
+
+// Netflix has no listing, so no identity is read there, and a page that is not a
+// player publishes none either.
+{
+  const netflix = createPageHarness("https://www.netflix.com/watch/80100172");
+  await netflix.fetch(PRIME_LISTING_URL, "application/json", PRIME_LISTING);
+  assert.equal(netflix.identities().length, 0);
+
+  const storefront = createPageHarness("https://www.amazon.co.jp/gp/video/storefront");
+  await storefront.fetch(PRIME_LISTING_URL, "application/json", PRIME_LISTING);
+  assert.equal(storefront.identities().length, 0);
+}
+
+// The identity travels over XHR too, because that is how the listing arrives on
+// some builds.
+{
+  const harness = createPageHarness(PRIME_DETAIL);
+  harness.serve(PRIME_JA_URL, PRIME_TTML);
+  harness.serve(PRIME_EN_URL, PRIME_TTML);
+  await harness.xhr(PRIME_LISTING_URL, "application/json", PRIME_LISTING);
+  assert.equal(harness.identities().length, 1);
+  assert.equal(harness.identities()[0].payload.videoId, PRIME_EPISODE_ID);
+  assert.equal(harness.published().length, 1);
 }
 
 // The same listing again — a quality change, a resume, an ad break — must not

@@ -969,6 +969,40 @@ function createHarness(vtt = CUE_TRACK, { site = "netflix", settings = {} } = {}
     sentMessageTypes() {
       return sentMessages.map((message) => message?.type).filter(Boolean);
     },
+    // Which cache the player is reading and writing translations under. Two
+    // episodes of one series must be two of these, however the service spells
+    // its URLs.
+    cacheIds() {
+      return [
+        ...new Set(
+          sentMessages
+            .filter(
+              (message) =>
+                message?.type === "CACHE_GET" || message?.type === "CACHE_SET",
+            )
+            .map((message) => message.cacheId)
+            .filter(Boolean),
+        ),
+      ];
+    },
+    // The listing the page world read for the episode being played. It is what
+    // names the episode on a page whose URL does not move, and it arrives before
+    // the episode plays.
+    async identity(payload) {
+      const handler = windowListeners.get("message");
+      assert.ok(handler, "content.js should listen for captured subtitles");
+      handler({
+        source: windowRef,
+        data: {
+          source: "lst-local-subtitle-translate",
+          type: "EPISODE_IDENTITY",
+          payload: { site, ...payload },
+        },
+      });
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      await sleep(20);
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+    },
     // A message from the extension's own pages, answered by content.js.
     async pageMessage(message) {
       let response;
@@ -1434,6 +1468,153 @@ const NEXT_EPISODE_TRACK = [
   assert.equal(accepted.length, 2);
   assert.equal(accepted[1].details.trackRelationship, "none");
   assert.equal(accepted[1].details.trackReason, "no-existing-track");
+}
+
+// Two episodes of one series watched through one URL are two episodes of the
+// show: two names and two caches. A Prime Video detail page can keep the series
+// in its path while the player advances to the next episode inside it, so the URL
+// names the series on every episode and the listing is the only thing that names
+// the episode. This is the report the case exists for — a cache list that showed
+// one episode of a show the viewer had watched several of, named after the page's
+// own title with the season glued on and the video id standing in for the
+// episode's name — and it is also what makes `episode-changed` fire on a URL that
+// never moves.
+const PRIME_EP1 = "amzn1.dv.gti.e4b2f72f-8a6e-405e-44fe-bedba416d622";
+const PRIME_EP2 = "amzn1.dv.gti.7c1a44de-2b9f-4c22-8a11-6f0d5b2c9e77";
+{
+  const harness = createHarness(CUE_TRACK, { site: "primevideo" });
+  // The listing is asked for before the episode plays, so it answers first.
+  await harness.identity({
+    reason: "catalog-metadata",
+    videoId: PRIME_EP1,
+    videoIdSource: "catalog-id",
+    showName: "機動戦士ガンダム 水星の魔女 シーズン1",
+    episodeNumber: 1,
+    seasonNumber: 1,
+    title: "第1話",
+    episodic: true,
+  });
+  await harness.start();
+  await harness.show("Let's go.", 20.4);
+  // The captured track is what translates the line when it is confirmed, so the
+  // playback loop is what a test steps to see a translation.
+  await harness.frame(20.4);
+
+  let status = (await harness.pageMessage({ type: "GET_PAGE_STATUS" })).status;
+  assert.equal(
+    status.showName,
+    "機動戦士ガンダム 水星の魔女",
+    "the season is what a later page calls the show, not part of its name",
+  );
+  assert.equal(status.episodeName, "Episode 1 · 第1話", "the episode has a name of its own");
+  assert.equal(status.episodeNumber, 1);
+  assert.equal(status.videoId, PRIME_EP1, "the episode is identified by the listing");
+
+  assert.ok(
+    harness.translationRequests().includes("Let's go."),
+    "the line the player drew is translated",
+  );
+  const firstEpisodeCaches = harness.cacheIds();
+  assert.equal(firstEpisodeCaches.length, 1);
+  assert.ok(
+    firstEpisodeCaches[0].includes(PRIME_EP1),
+    `expected the episode's own id, got ${firstEpisodeCaches[0]}`,
+  );
+  assert.ok(
+    !firstEpisodeCaches[0].includes("B0B6GZ954Y"),
+    "the series the URL names is not the episode",
+  );
+  // Only kinds and reasons reach the event log, never the names a service gave.
+  const listed = harness.eventsNamed("episode-identity-from-listing");
+  assert.equal(listed.length, 1, "the listing's answer is recorded once");
+  assert.equal(listed[0].details.reason, "catalog-metadata");
+  assert.equal(listed[0].details.episodeNumber, 1);
+  assert.equal(listed[0].details.namesPage, false, "the listing's id is not the URL's id");
+  assert.ok(!JSON.stringify(listed).includes("水星"), "the log carries no names");
+
+  // The next episode: the URL still names the series, and the listing is what
+  // says this is a different episode.
+  harness.setTitle("Amazon.co.jp: 機動戦士ガンダム 水星の魔女 シーズン2 : Prime Video");
+  await harness.identity({
+    reason: "catalog-metadata",
+    videoId: PRIME_EP2,
+    videoIdSource: "catalog-id",
+    showName: "機動戦士ガンダム 水星の魔女 シーズン2",
+    episodeNumber: 1,
+    seasonNumber: 2,
+    title: "第1話",
+    episodic: true,
+  });
+  assert.equal(harness.eventsNamed("episode-changed").length, 0, "not until a frame runs");
+
+  await harness.frame(1);
+  await harness.flushDiagnostics();
+  assert.equal(
+    harness.eventsNamed("episode-changed").length,
+    1,
+    "the next episode is noticed although the URL never moved",
+  );
+
+  await harness.capture(NEXT_EPISODE_TRACK, {
+    url: "https://aiv-cdn.net/ttml/B0B6GZ954Y.s2.ja.ttml",
+  });
+  const accepted = harness.eventsNamed("subtitle-track-accepted").at(-1);
+  assert.equal(accepted.details.trackReason, "no-existing-track");
+
+  await harness.show("Next episode line.", 5.4);
+  await harness.frame(5.4);
+  assert.ok(harness.translationRequests().includes("Next episode line."));
+
+  const caches = harness.cacheIds();
+  assert.equal(caches.length, 2, "two episodes of one series are two caches");
+  assert.ok(
+    caches.some((cacheId) => cacheId.includes(PRIME_EP1)),
+    `expected a cache for the first episode, got ${caches.join(", ")}`,
+  );
+  assert.ok(caches.some((cacheId) => cacheId.includes(PRIME_EP2)));
+
+  status = (await harness.pageMessage({ type: "GET_PAGE_STATUS" })).status;
+  assert.equal(status.showName, "機動戦士ガンダム 水星の魔女", "one show, however many seasons");
+  assert.equal(status.episodeName, "Episode 1 · 第1話");
+  assert.equal(status.videoId, PRIME_EP2);
+}
+
+// A page that states no episode but glues the season onto the show's own name is
+// named by the show alone, and a name the listing stated outranks the page title
+// the viewer happens to be looking at.
+{
+  const harness = createHarness(CUE_TRACK, { site: "primevideo" });
+  harness.setTitle("Amazon.co.jp: 機動戦士ガンダム 水星の魔女 シーズン1 : Prime Video");
+  await harness.start();
+  await harness.show("Let's go.", 20.4);
+  await harness.frame(20.4);
+
+  let status = (await harness.pageMessage({ type: "GET_PAGE_STATUS" })).status;
+  assert.equal(status.showName, "機動戦士ガンダム 水星の魔女");
+  assert.equal(
+    status.videoId,
+    "B0B6GZ954Y",
+    "with no listing there is nothing better than the URL",
+  );
+
+  await harness.identity({
+    reason: "catalog-metadata",
+    videoId: PRIME_EP1,
+    videoIdSource: "catalog-id",
+    showName: "Homeland",
+    episodeNumber: 1,
+    title: "The Smile",
+    episodic: true,
+  });
+  await harness.frame(1);
+  await harness.flushDiagnostics();
+  status = (await harness.pageMessage({ type: "GET_PAGE_STATUS" })).status;
+  assert.equal(
+    status.showName,
+    "Homeland",
+    "the service's own catalog is not overruled by the document title",
+  );
+  assert.equal(status.episodeName, "Episode 1 · The Smile");
 }
 
 // A service can ask for the next episode's assets while the viewer is still on

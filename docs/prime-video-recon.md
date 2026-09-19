@@ -30,6 +30,7 @@ From a production extension that documents the player
 | Prime exposes no caption-track language through a player API | LST has no source-language setting, so nothing is needed |
 | Some titles use image-based (bitmap) subtitles and produce no caption spans | detected and reported (Phase 2 item 4) |
 | Timed text is DFXP/TTML/TTML2, from `atv-ps.amazon.com/cdp/catalog/GetPlaybackResources` (`GetVodPlaybackResources`), served from `*.aiv-cdn.net`, `*.aiv-delivery.net`, `*.pv-cdn.net` | `timedText.urlPatterns`, `timedText.contentTypes` |
+| The same answer names the item being played, under `catalogMetadata` (`catalog` for the episode: its own `amzn1.dv.gti.*` id, title, `episodeNumber`, type; `family.tvAncestors` for the season and the series; `returnedTitleRendition` for the rendition's spelling of the id) | `playbackResources.identity`, U4 |
 | The playback-resources response names the title's subtitle tracks, under `timedTextUrls.result.subtitleUrls` (and `forcedNarrativeUrls`), with `timedtexttracks[].ttDownloadables` as the delivery document's spelling | `playbackResources`, `timedText.capture: "playback-resources"` |
 
 ## What the implementation assumes (unverified)
@@ -64,7 +65,9 @@ wrong answer if the assumption fails.
    Japanese `…を視聴` suffix. The exact `.co.jp` wording in both the `/-/en/` and
    Japanese locales has not been captured, so a title that does not match those
    shapes is left alone rather than mangled — and the naming falls back to
-   `Prime Video episode <id>`.
+   `Prime Video episode <id>`. The document title is now only a fallback for the
+   show's name: the listing states the series itself (U4), and a season a page
+   glued onto a name is trimmed by `episode-identity.js` either way.
 5. **Prime player title hooks.** The adapter lists
    `[data-automation-id='title']`, `.atvwebplayersdk-title-text`, and
    `.atvwebplayersdk-content-title` as best-effort containers. None is verified,
@@ -123,19 +126,64 @@ fallback running.
 
 ## U4 — does the ASIN change when Prime auto-advances?
 
-**Unanswered.** On `primevideo.com` the path does not change between episodes;
-only the video's `currentSrc` does. If the same is true of the Japan detail page,
-then a cache written for episode 1 would be reached again on episode 2 — the
-same class of bug the Netflix `videoId` never had.
+**Answered by the listing, and implemented.** LST does not have to know whether
+the path moves: the same playback-resources answer that names the title's
+subtitle tracks also names the item being played, so the episode is identified by
+the service's own catalog entry rather than by the page's address.
 
-Until U4 is answered:
+The shape below is a real `GetVodPlaybackResources` answer (quoted from a bug
+report that pasted one, trimmed here), and it is what
+`episodeIdentityFromPlaybackResources` reads:
 
-- LST does not use a media-change signal, so it does not *claim* to detect the
-  change. It reports `episode-changed` when the URL's id changes, and nothing
-  when it does not.
-- Phase 2 item 3 hardens this: identity falls back to `currentSrc`, and when it
-  cannot establish an id it reports `video-id-unstable` and refuses to write a
-  cache keyed on a guess.
+```json
+{
+  "catalogMetadata": {
+    "catalog": {
+      "entityType": "TV Show",
+      "episodeNumber": 1,
+      "id": "amzn1.dv.gti.e4b2f72f-8a6e-405e-44fe-bedba416d622",
+      "runtimeSeconds": 3321,
+      "title": "The Smile",
+      "type": "EPISODE"
+    },
+    "family": {
+      "tvAncestors": [
+        { "catalog": { "seasonNumber": 2, "title": "Homeland - Season 2", "type": "SEASON" } },
+        { "catalog": { "id": "amzn1.dv.gti.c8b2d812-…", "title": "Homeland", "type": "SHOW" } }
+      ]
+    }
+  },
+  "returnedTitleRendition": {
+    "asin": "amzn1.dv.gti.e4b2f72f-…",
+    "titleId": "amzn1.dv.gti.e4b2f72f-…"
+  }
+}
+```
+
+- `catalogMetadata.catalog` is the item being played: its own id (`catalog.id`,
+  which LST already recognizes as an `amzn1.dv.gti.*` id), its `title` — the
+  episode's name, not the show's — its `episodeNumber`, and its type.
+- `catalogMetadata.family.tvAncestors` walks up to the season and then to the
+  series. The series is the show; the season's own title carries the season, which
+  `episode-identity.js` trims.
+- `returnedTitleRendition` repeats the id under the rendition's own names, and is
+  the fallback when `catalog` states none.
+
+What this settles:
+
+- The path does not have to change. `content.js` prefers the listing's id while
+  that listing was read on the page being played, so `episode-changed` fires on a
+  page whose URL never moves — the case `primevideo.com` was known to have, now
+  answered for both URL shapes.
+- A cache is keyed by the episode, so two episodes of one series are two caches
+  and one episode's cue count is that episode's.
+- The episode and the show get real names on a service that never states either in
+  its document title.
+
+Still unverified, and reported rather than assumed: that the Japan marketplace's
+`GetPlaybackResources` answer carries the same `catalogMetadata` (U2 asks the same
+question about the player). A listing without it answers `no-catalog-metadata`,
+and LST falls back to the URL and the document title exactly as before.
 
 ## Permission finding (the plan's §4 exit criterion)
 

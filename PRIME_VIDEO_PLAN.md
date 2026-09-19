@@ -167,7 +167,10 @@ harvest player title and timer text as if it were a subtitle.
   present?
 - **U4. Does the ASIN in the path change when Prime auto-advances** to the next
   episode? If not, LST's URL-derived identity is insufficient on Prime exactly as it
-  is on `primevideo.com`.
+  is on `primevideo.com`. **Answered, and implemented** — see
+  `docs/prime-video-recon.md` §U4: the playback-resources answer names the item being
+  played (`catalogMetadata`), so the episode is identified by the service's own
+  catalog entry and the path never has to move.
 - **U5. Which ids appear in practice** — ASIN (`B0B6GZ954Y`), GTI
   (`amzn1.dv.gti.<uuid>`), or both? The dedupe/precompute key depends on it.
 - **U6. What does Amazon's own document title look like** on `.co.jp` in both the
@@ -526,10 +529,13 @@ what LST reads.
    the transcript sidebar, `translation-context.js` (F5) and the cache reconcile path
    all light up with no site-specific work. That is the payoff of the earlier
    refactors, and it should be verified rather than assumed.
-3. **Episode identity hardening** — if U4 shows the path does not change on episode
-   advance, identity must fall back to a media-change signal (`currentSrc`) and, when
-   it cannot establish an id, report `video-id-unstable` and refuse to write a cache
-   keyed on a guess. F5's rule applies to identity too: never guess, always say why.
+3. **Episode identity hardening — done.** U4 was answered by the listing rather than
+   by a media-change signal: `GetVodPlaybackResources` names the item being played, so
+   `playback-site.js` reads `catalogMetadata` (`playbackResources.identity`),
+   `page-hook.js` publishes it as `EPISODE_IDENTITY`, and `content.js` keys the
+   episode, its names and its change of episode on it. A listing that states nothing
+   usable answers `no-catalog-metadata` and LST behaves exactly as it did before, so
+   nothing is keyed on a guess. F5's rule applies: every decision says why.
 4. **Bitmap detection** — when captions are on, a player exists, and no caption span
    ever appears, report `native-bitmap-subtitles` and surface one clear line in the
    HUD instead of appearing broken.

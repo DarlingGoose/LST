@@ -57,6 +57,37 @@ function cacheShowName(cache) {
   return cache?.showName || api?.labelFor?.(cache?.siteId) || "Unknown service";
 }
 
+// Which show a cache belongs to, as an identity rather than a spelling. Two
+// episodes whose pages worded the show's name differently — one watched in the
+// season the other was not — are one show, because the key episode-identity.js
+// makes from a name is the same key it files what LST learned about a show
+// under. A cache whose show was never named has no key, and belongs to its
+// service rather than to a show it cannot name.
+function cacheShowKey(cache) {
+  const api = globalThis.LSTEpisodeIdentity;
+  const siteId = cache?.siteId || "";
+  const key = api?.encodeShowKey
+    ? api.encodeShowKey({ showName: cache?.showName || "", siteId })
+    : "";
+  return key || `service:${siteId || "unknown"}`;
+}
+
+// What to call a show in the list: the most specific name any of its episodes
+// stated, in the order the caches arrived (newest first), and the service's own
+// name when no episode ever stated one. Only the naming module decides what is
+// specific, so a placeholder can never be shown as the name of a show.
+function cacheGroupName(episodes) {
+  const api = globalThis.LSTEpisodeIdentity;
+  for (const cache of episodes) {
+    const named = api?.showNameFromTitle
+      ? api.showNameFromTitle(cache?.showName || "")
+      : (cache?.showName || "");
+    if (!named) continue;
+    if (!api?.isSpecificName || api.isSpecificName(named)) return named;
+  }
+  return cacheShowName(episodes[0]);
+}
+
 const APPEARANCE_DEFAULTS = {
   subtitleHorizontalPosition: "center",
   subtitleVerticalPosition: 9,
@@ -291,10 +322,15 @@ function createCacheItem(cache) {
 function renderCacheLibrary(caches, totalBytes) {
   const list = $("cacheList");
   list.replaceChildren();
-  const showNames = new Set(caches.map(cacheShowName));
+  const groups = new Map();
+  for (const cache of caches) {
+    const key = cacheShowKey(cache);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(cache);
+  }
   const episodeLabel = `${caches.length} ready`;
   const byteLabel = `${formatBytes(totalBytes)} used`;
-  $("cacheShowCount").textContent = `${showNames.size} cached`;
+  $("cacheShowCount").textContent = `${groups.size} cached`;
   $("cacheEpisodeCount").textContent = episodeLabel;
   $("cacheByteCount").textContent = byteLabel;
   $("cacheStorageSummary").textContent = caches.length
@@ -315,20 +351,13 @@ function renderCacheLibrary(caches, totalBytes) {
     return;
   }
 
-  const groups = new Map();
-  for (const cache of caches) {
-    const showName = cacheShowName(cache);
-    if (!groups.has(showName)) groups.set(showName, []);
-    groups.get(showName).push(cache);
-  }
-
-  for (const [showName, episodes] of groups) {
+  for (const episodes of groups.values()) {
     const group = document.createElement("section");
     group.className = "cache-show";
     const heading = document.createElement("h3");
     heading.className = "cache-show-title";
     const headingName = document.createElement("span");
-    headingName.textContent = showName;
+    headingName.textContent = cacheGroupName(episodes);
     const headingCount = document.createElement("span");
     headingCount.className = "cache-show-count";
     headingCount.textContent = `${episodes.length} episode${episodes.length === 1 ? "" : "s"}`;

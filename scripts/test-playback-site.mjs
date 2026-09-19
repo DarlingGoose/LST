@@ -371,6 +371,143 @@ assert.ok(primeResources, "the Prime adapter must own the listing it reads");
   );
 }
 
+// --- Which episode the listing is about -------------------------------------
+
+// The listing names the item the player is about to play: Amazon's catalog
+// entry for the episode, its season, and the series the season belongs to. The
+// shape below is a real response — `catalogMetadata.catalog` is the episode
+// itself (`id` is its own GTI, `title` the episode's name, `episodeNumber` its
+// number), `family.tvAncestors` walks up to the season and then the series, and
+// `returnedTitleRendition` repeats the id under the rendition's own names.
+{
+  const listingIdentity = site.SITES.primevideo.playbackResources.identity;
+  assert.equal(typeof listingIdentity, "function", "the adapter must name the episode");
+
+  const episodeListing = {
+    catalogMetadata: {
+      catalog: {
+        entityType: "TV Show",
+        episodeNumber: 1,
+        id: "amzn1.dv.gti.e4b2f72f-8a6e-405e-44fe-bedba416d622",
+        runtimeSeconds: 3321,
+        synopsis: "Months after the dramatic events…",
+        title: "The Smile",
+        type: "EPISODE",
+        version: "1.0",
+      },
+      family: {
+        tvAncestors: [
+          {
+            catalog: {
+              id: "amzn1.dv.gti.32b2ec9d-5d43-4fe0-7e4f-c4d5e9a31052",
+              seasonNumber: 2,
+              title: "Homeland - Season 2",
+              type: "SEASON",
+              version: "1.0",
+            },
+            version: "1",
+          },
+          {
+            catalog: {
+              id: "amzn1.dv.gti.c8b2d812-7ea7-6b33-ae74-08abb760fe3c",
+              title: "Homeland",
+              type: "SHOW",
+              version: "1.0",
+            },
+            version: "1",
+          },
+        ],
+        version: "1.0",
+      },
+      version: "1",
+    },
+    returnedTitleRendition: {
+      asin: "amzn1.dv.gti.e4b2f72f-8a6e-405e-44fe-bedba416d622",
+      contentId: "amzn1.dv.vcid.50606e95-747d-4d52-a27f-4143d0317088",
+      titleId: "amzn1.dv.gti.e4b2f72f-8a6e-405e-44fe-bedba416d622",
+      videoMaterialType: "Feature",
+    },
+  };
+
+  const episode = listingIdentity(episodeListing);
+  assert.equal(episode.reason, "catalog-metadata");
+  assert.equal(episode.itemType, "EPISODE");
+  assert.equal(episode.title, "The Smile");
+  assert.equal(episode.episodic, true);
+  assert.equal(episode.episodeNumber, 1);
+  assert.equal(episode.seasonNumber, 2, "the season number comes from the season ancestor");
+  // The series is the show, spelled the way the service spells it; the season
+  // ancestor's own title is only a fallback.
+  assert.equal(episode.showName, "Homeland");
+  assert.equal(episode.showNameSource, "series-ancestor");
+  // The episode's own id, not the season's and not the series': this is what
+  // makes the next episode a different episode on a page whose URL never moves.
+  assert.equal(episode.videoId, "amzn1.dv.gti.e4b2f72f-8a6e-405e-44fe-bedba416d622");
+  assert.equal(episode.videoIdSource, "catalog-id");
+  assert.ok(episode.videoId !== episodeListing.catalogMetadata.family.tvAncestors[0].catalog.id);
+
+  // A season whose ancestors stop at the season names the show with the season's
+  // own title; naming trims the season out of it, not the adapter.
+  const seasonOnly = listingIdentity({
+    catalogMetadata: {
+      catalog: { episodeNumber: 3, id: "B0B6GZ954Y", title: "第3話", type: "EPISODE" },
+      family: { tvAncestors: [{ catalog: { seasonNumber: 1, title: "機動戦士ガンダム 水星の魔女 シーズン1", type: "SEASON" } }] },
+    },
+  });
+  assert.equal(seasonOnly.showName, "機動戦士ガンダム 水星の魔女 シーズン1");
+  assert.equal(seasonOnly.showNameSource, "season-ancestor");
+  assert.equal(seasonOnly.episodeNumber, 3);
+  assert.equal(seasonOnly.seasonNumber, 1);
+
+  // A film is not an episode: the item's own title is the show, and there is no
+  // episode to name.
+  const movie = listingIdentity({
+    catalogMetadata: {
+      catalog: { entityType: "Movie", id: "B0B6GZ954Y", title: "Example Film", type: "MOVIE" },
+    },
+  });
+  assert.equal(movie.episodic, false);
+  assert.equal(movie.episodeNumber, null);
+  assert.equal(movie.showName, "Example Film");
+  assert.equal(movie.showNameSource, "item-title");
+
+  // The rendition's id is used when the catalog states none, and the reason says
+  // which of the two answered. The id is handed over as it arrived — whether it
+  // is an id LST may key a cache on is episode-identity.js's decision.
+  const renditionOnly = listingIdentity({
+    catalogMetadata: { catalog: { type: "EPISODE", title: "Pilot" } },
+    returnedTitleRendition: { asin: "B0B6GZ954Y", titleId: "amzn1.dv.gti.abcdef" },
+  });
+  assert.equal(renditionOnly.videoId, "amzn1.dv.gti.abcdef");
+  assert.equal(renditionOnly.videoIdSource, "rendition-title-id");
+  assert.equal(renditionOnly.showName, "", "an episode with no ancestor states no show");
+
+  const asinOnly = listingIdentity({
+    catalogMetadata: { catalog: { type: "EPISODE" } },
+    returnedTitleRendition: { asin: "B0B6GZ954Y" },
+  });
+  assert.equal(asinOnly.videoId, "B0B6GZ954Y");
+  assert.equal(asinOnly.videoIdSource, "rendition-asin");
+
+  // A listing LST cannot read is reported, never half-read: a document that is
+  // not an object, one with no catalog, and one whose catalog is not an object.
+  for (const unusable of [null, undefined, "nope", 42, [], {}, { catalogMetadata: {} }, { catalogMetadata: { catalog: "nope" } }]) {
+    const answer = listingIdentity(unusable);
+    assert.equal(answer.reason, "no-catalog-metadata", `${JSON.stringify(unusable)}`);
+    assert.equal(answer.videoId, "");
+    assert.equal(answer.showName, "");
+    assert.equal(answer.episodic, false);
+    assert.equal(answer.episodeNumber, null);
+  }
+
+  // The flatter spelling of the same answer, which is what the listing's own
+  // inner object looks like when it arrives without its envelope.
+  const flat = listingIdentity({ catalog: { id: "B0B6GZ954Y", title: "Example Film", type: "MOVIE" } });
+  assert.equal(flat.reason, "catalog-metadata");
+  assert.equal(flat.catalogSource, "catalog");
+  assert.equal(flat.showName, "Example Film");
+}
+
 // The listing is a fact about the service that has one, and Netflix is not it.
 assert.equal(site.SITES.netflix.playbackResources, undefined);
 // The adapter's word for how Prime captures is what the interface explains.

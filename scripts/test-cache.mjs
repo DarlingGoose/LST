@@ -331,6 +331,36 @@ assert.equal(response.caches[0].showName, "Some Show", "a real name still wins")
 await send({ type: "DELETE_TRANSLATION_CACHE", cacheId: primeCacheId });
 assert.equal((await send({ type: "LIST_TRANSLATION_CACHES" })).caches.length, 0);
 
+// A show's name is the show, not the page's own title with the season glued onto
+// it. Amazon spells the series inside its own document title as "Show シーズン1" —
+// what the same show is called on the next season's page — so a cache written
+// from that title is listed, grouped and searched under the bare name, and two
+// seasons of one show are one show.
+const showCacheId = "primevideo~B0BX1TYH98:translategemma%3A4b:English";
+values[`translationCache:${showCacheId}`] = { "0:1000:こんにちは": "Hello" };
+values[`translationCacheMeta:${showCacheId}`] = {
+  cacheId: showCacheId,
+  videoId: "B0BX1TYH98",
+  siteId: "primevideo",
+  showName: "機動戦士ガンダム 水星の魔女 シーズン1",
+  episodeName: "Episode B0BX1TYH98",
+  cueCount: 1,
+  updatedAt: new Date().toISOString(),
+};
+response = await send({ type: "LIST_TRANSLATION_CACHES" });
+assert.equal(response.caches.length, 1);
+assert.equal(
+  response.caches[0].showName,
+  "機動戦士ガンダム 水星の魔女",
+  "the season is what a later page calls the show, not part of its name",
+);
+// The episode is still named by what the cache knows, and a page that never
+// stated an episode name is why it can only say this.
+assert.equal(response.caches[0].episodeName, "Episode B0BX1TYH98");
+delete values[`translationCache:${showCacheId}`];
+delete values[`translationCacheMeta:${showCacheId}`];
+assert.equal((await send({ type: "LIST_TRANSLATION_CACHES" })).caches.length, 0);
+
 values["translationCache:9999:legacy-model:Japanese"] = { cue: "翻訳" };
 response = await send({ type: "LIST_TRANSLATION_CACHES" });
 assert.equal(response.caches[0].title, "Netflix episode 9999");
@@ -877,6 +907,93 @@ assert.deepEqual(values["translationCache:debug-clear-test:model:English"], {
   assert.ok(listed.bytes >= deviceSrt.length);
   await send({ type: "DELETE_IMPORTED_TRACK", episodeKey: "8123" });
   assert.equal((await send({ type: "GET_IMPORTED_TRACK", episodeKey: "8123" })).track, null);
+}
+
+// --- How the library groups and names what it lists ---------------------------
+//
+// The list groups a show by the key episode-identity.js writes, not by the
+// spelling one page happened to use, so two episodes whose names differ by the
+// season they were watched in are one show — and a cache whose show was never
+// named belongs to its service rather than to a show it cannot name.
+
+// A top-level function's source, so the grouping decision can be exercised
+// without a browser: options.js is a page script, and the decision it makes about
+// a cache list is the part a viewer sees.
+function functionSource(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.ok(start > -1, `options.js must keep ${name}()`);
+  const end = source.indexOf("\n}", start);
+  return source.slice(start, end + 2);
+}
+
+{
+  const optionsSource = await fs.readFile(
+    new URL("../options.js", import.meta.url),
+    "utf8",
+  );
+  const listSource = functionSource(optionsSource, "renderCacheLibrary");
+  assert.match(
+    listSource,
+    /cacheShowKey\(cache\)/,
+    "the list must group a show by its key, not by the spelling a page used",
+  );
+  assert.doesNotMatch(
+    listSource,
+    /cacheShowName\(cache\)/,
+    "the raw name is the fallback, never the grouping key",
+  );
+  assert.match(listSource, /cacheGroupName\(episodes\)/);
+
+  const grouping = vm.createContext({});
+  for (const name of ["playback-site.js", "episode-identity.js"]) {
+    vm.runInContext(
+      await fs.readFile(new URL(`../${name}`, import.meta.url), "utf8"),
+      grouping,
+      { filename: name },
+    );
+  }
+  vm.runInContext(
+    [
+      functionSource(optionsSource, "cacheShowName"),
+      functionSource(optionsSource, "cacheShowKey"),
+      functionSource(optionsSource, "cacheGroupName"),
+    ].join("\n"),
+    grouping,
+    { filename: "options-cache-grouping.js" },
+  );
+
+  const entry = (showName, siteId = "primevideo") => ({ showName, siteId });
+  const season1 = entry("機動戦士ガンダム 水星の魔女 シーズン1");
+  const season2 = entry("機動戦士ガンダム 水星の魔女");
+  assert.equal(
+    grouping.cacheShowKey(season1),
+    grouping.cacheShowKey(season2),
+    "two seasons of one show are one group",
+  );
+  assert.equal(grouping.cacheShowKey(entry("Example Show")), "primevideo~example-show");
+  assert.equal(
+    grouping.cacheGroupName([season1, season2]),
+    "機動戦士ガンダム 水星の魔女",
+    "the group is named after the show, not after the page",
+  );
+  assert.equal(
+    grouping.cacheGroupName([entry("Example Show"), entry("Prime Video")]),
+    "Example Show",
+    "the most specific name an episode stated is the name of the show",
+  );
+
+  // A cache that never named its show belongs to its service, and is named by
+  // the service: a placeholder is not the name of a show.
+  const unnamed = entry("Prime Video");
+  assert.equal(grouping.cacheShowKey(unnamed), "service:primevideo");
+  assert.equal(grouping.cacheGroupName([unnamed]), "Prime Video");
+  assert.equal(grouping.cacheGroupName([entry("", "netflix")]), "Netflix");
+
+  // Two services are two groups even when a page called both shows the same.
+  assert.notEqual(
+    grouping.cacheShowKey(entry("Example Show", "netflix")),
+    grouping.cacheShowKey(entry("Example Show", "primevideo")),
+  );
 }
 
 console.log("Translation cache management checks passed.");

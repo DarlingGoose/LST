@@ -5,6 +5,7 @@ const sourceFiles = [
   "content.js",
   "episode-identity.js",
   "manifest.json",
+  "options.css",
   "options.html",
   "options.js",
   "page-hook.js",
