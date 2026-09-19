@@ -7,6 +7,7 @@
     provider: "ollama",
     model: "translategemma:4b",
     targetLanguage: "English",
+    translationPaused: false,
     hideNativeSubtitles: true,
     enabledSites: { netflix: true, primevideo: true },
     hudPosition: "",
@@ -44,6 +45,7 @@
   let cues = [];
   let cueSourceUrl = "";
   let cueVideoId = "";
+  let capturedTrackLanguage = "";
   // Which episode the service's own listing says it is playing. A Prime Video
   // page can name the series in its URL while the episode advances inside it, so
   // the URL is not an answer to "which episode is this" — the listing is, and it
@@ -1438,6 +1440,7 @@
           </section>
           <section class="lst-pill-section" aria-labelledby="lst-visibility-heading">
             <h3 id="lst-visibility-heading">Visibility</h3>
+            <label><span>Pause translation</span><span class="lst-pill-switch"><input data-pill-setting="translationPaused" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Translation</span><span class="lst-pill-switch"><input data-pill-setting="showTranslated" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Original text</span><span class="lst-pill-switch"><input data-pill-setting="showOriginal" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Hide the service's own subtitles</span><span class="lst-pill-switch"><input data-pill-setting="hideNativeSubtitles" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
@@ -1768,6 +1771,7 @@
   }
 
   function quickPillStatus() {
+    if (settings.translationPaused) return { label: "Paused", state: "paused" };
     if (pausedCachingPromise) return { label: "Caching", state: "buffering" };
     if (currentStatus.precomputing)
       return { label: "Precomputing", state: "buffering" };
@@ -1892,7 +1896,12 @@
           `Using ${importedTrack.fileName || "an imported file"} — already ` +
           `${importedTrack.language || settings.targetLanguage}, so it is shown as it is.`;
       } else if (currentStatus.captured) {
-        sourceNote.textContent = `Using ${siteName()}'s own subtitles.`;
+        const languages = playbackLanguages();
+        const audio = languages.audio ? ` · audio ${languages.audio}` : "";
+        const subtitle = capturedTrackLanguage || languages.subtitle;
+        sourceNote.textContent = subtitle
+          ? `Using ${siteName()}'s ${subtitle} subtitles${audio}.`
+          : `Using ${siteName()}'s own subtitles${audio}.`;
       } else {
         sourceNote.textContent = `Waiting for ${siteName()}'s subtitles.`;
       }
@@ -2148,6 +2157,18 @@
       const key = control.dataset.pillSetting;
       settings[key] =
         control.type === "checkbox" ? control.checked : Number(control.value);
+      if (key === "translationPaused") {
+        cacheGeneration++;
+        precomputeCancelled = settings.translationPaused;
+        if (settings.translationPaused) {
+          removeRenderedSubtitlesBySource("timed", "translation-paused");
+          removeRenderedSubtitlesBySource("dom", "translation-paused");
+          setStatus("Subtitle translation paused.", true);
+        } else {
+          lastRenderedCueKey = "";
+          setStatus("Subtitle translation resumed.", true);
+        }
+      }
       applySubtitleAppearance();
       if (key === "showTranscriptSidebar") {
         logDiagnostic(
@@ -3260,6 +3281,9 @@
   }
 
   async function translateOwnedCues(selectedCues) {
+    if (!translationMayRun(findRenderedSubtitle())) {
+      return { entries: {}, failures: [] };
+    }
     const deduped = [];
     const seen = new Set();
 
@@ -3457,7 +3481,7 @@
   async function ensureCueTranslated(cue, index) {
     if (!cue || !settings.model) return;
     // Nothing is asked of a provider for a track that needs no translation.
-    if (!trackNeedsTranslation()) return;
+    if (!translationMayRun(findRenderedSubtitle())) return;
 
     const key = cueKey(cue);
     logDiagnostic("info", "translation", "active-cue-translation-requested", {
@@ -3576,6 +3600,7 @@
     if (
       pausedCachingPromise ||
       !settings.cacheWhilePaused ||
+      settings.translationPaused ||
       !settings.model ||
       !cues.length ||
       !trackNeedsTranslation() ||
@@ -3673,6 +3698,7 @@
       precomputeCancelled = true;
       cues = [];
       cueSourceUrl = "";
+      capturedTrackLanguage = "";
       cueVideoId = getVideoId();
       translationCoordinator = null;
       knownCachedKeys = new Set();
@@ -3740,6 +3766,13 @@
       return;
     }
 
+    if (settings.translationPaused) {
+      currentStatus.playbackMode = "translation paused";
+      removeExpiredRenderedSubtitles(video.currentTime);
+      requestAnimationFrame(playbackLoop);
+      return;
+    }
+
     if (video.paused) {
       if (!lastPlaybackWasPaused) {
         pausedCacheNoticeShown = false;
@@ -3766,6 +3799,12 @@
     if (!importedNow) {
       const renderedObservation = observeRenderedSubtitle();
       const renderedText = renderedObservation.text;
+      if (serviceSubtitlesAreOff(renderedText)) {
+        currentStatus.playbackMode = "subtitles off";
+        clearRenderedSubtitle("service-subtitles-off");
+        requestAnimationFrame(playbackLoop);
+        return;
+      }
       if (
         !renderedObservation.stable &&
         timedTrackSyncState !== "verified"
@@ -3850,7 +3889,9 @@
         source: "timed",
       });
       if (!needsTranslation) {
-        currentStatus.playbackMode = "imported track (no translation)";
+        currentStatus.playbackMode = trackIsImported()
+          ? "imported track (no translation)"
+          : "source track (target language)";
         currentStatus.lastTranslatedText = truncate(match.cue.text);
         requestAnimationFrame(playbackLoop);
         return;
@@ -3922,7 +3963,13 @@
   }
 
   async function handleFallbackRenderedSubtitle() {
-    if (!playbackActive || !isWatchPage() || !settings.enabled || !settings.model) return;
+    if (
+      !playbackActive ||
+      !isWatchPage() ||
+      !settings.enabled ||
+      !settings.model ||
+      settings.translationPaused
+    ) return;
     // The DOM fallback exists because a captured track can fail to be confirmed
     // against what the player draws. An imported track needs no confirmation —
     // it is a file — so reading the service's captions here would only add a
@@ -4081,6 +4128,7 @@
     cueSourceUrl = url || "captured";
     cueVideoId = getVideoId();
     cueTrackKind = "captured";
+    capturedTrackLanguage = String(details.language || "").trim();
     // A document that has been adopted is not held any more: the next capture
     // owns the slot, and this one must not be handed to a later episode as
     // though it were that episode's track.
@@ -4199,8 +4247,48 @@
   // Whether this track has to reach a translation provider at all. Everything
   // that would spend a request asks this first.
   function trackNeedsTranslation() {
-    if (!trackIsImported()) return true;
+    if (!trackIsImported()) {
+      if (!capturedTrackLanguage) return true;
+      const decision = subtitleImport()?.needsTranslation?.({
+        language: capturedTrackLanguage,
+        targetLanguage: settings.targetLanguage,
+        sampleText: cues.slice(0, 20).map((cue) => cue.text).join(" ").slice(0, 4000),
+      });
+      return decision ? decision.translate : true;
+    }
     return importedTrack.translate !== false;
+  }
+
+  // Browser-exposed media tracks are useful even on services with custom player
+  // chrome: when present they are the authoritative active audio/caption state.
+  function playbackLanguages() {
+    const video = activeVideo();
+    const activeLanguage = (list) => {
+      if (!list) return "";
+      for (const track of Array.from(list)) {
+        if (track.enabled === true || track.mode === "showing") {
+          return String(track.language || track.label || "").trim();
+        }
+      }
+      return "";
+    };
+    return {
+      subtitle: activeLanguage(video?.textTracks),
+      audio: activeLanguage(video?.audioTracks),
+    };
+  }
+
+  function serviceSubtitlesAreOff(renderedText = "") {
+    if (trackIsImported() || renderedText) return false;
+    const tracks = activeVideo()?.textTracks;
+    if (!tracks?.length) return false;
+    return !Array.from(tracks).some((track) => track.mode === "showing");
+  }
+
+  function translationMayRun(renderedText = "") {
+    return !settings.translationPaused &&
+      trackNeedsTranslation() &&
+      !serviceSubtitlesAreOff(renderedText);
   }
 
   // Whether an imported file has to be translated, for the language the viewer
@@ -4520,6 +4608,7 @@
     precomputeCancelled = true;
     cues = [];
     cueSourceUrl = "";
+    capturedTrackLanguage = "";
     cueTrackKind = "none";
     importedTrack = null;
     translationCoordinator = null;
@@ -4611,6 +4700,9 @@
 
   async function precomputeAll() {
     if (precomputeInProgress) return;
+    if (settings.translationPaused) {
+      throw new Error("Resume subtitle translation before precomputing.");
+    }
     if (!settings.model && trackNeedsTranslation()) {
       throw new Error("Choose a translation model in extension settings first.");
     }
@@ -5094,6 +5186,7 @@
     renderedSubtitleCandidate = "";
     cues = [];
     cueSourceUrl = "";
+    capturedTrackLanguage = "";
     cueVideoId = "";
     cueTrackKind = "none";
     importedTrack = null;

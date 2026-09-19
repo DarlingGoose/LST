@@ -33,6 +33,7 @@ const DEFAULTS = {
   geminiModel: "",
   model: "translategemma:4b",
   targetLanguage: "English",
+  translationPaused: false,
   hideNativeSubtitles: true,
   enabledSites: { netflix: true, primevideo: true },
   hudPosition: "",
@@ -2037,6 +2038,10 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "TRANSLATE_BATCH": {
         const settings = await getSettings();
+        if (settings.translationPaused) {
+          sendResponse({ ok: false, error: "Subtitle translation is paused." });
+          return;
+        }
         // The viewer's chosen amount of context, so the boundary here is the one
         // the request was built under: an item past the level the viewer picked
         // is refused with a reason rather than sent, and an unknown level falls

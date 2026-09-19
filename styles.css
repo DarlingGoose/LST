@@ -221,6 +221,7 @@ html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
 }
 /* The bar takes the state's own colour, the one the dot beside it already uses. */
 #lst-quick-pills[data-state="waiting"] .lst-pill-progress-fill { background: #8c939f; }
+#lst-quick-pills[data-state="paused"] .lst-pill-dot { background: #a7afbc; box-shadow: none; }
 #lst-quick-pills[data-state="buffering"] .lst-pill-progress-fill { background: #ffc866; }
 #lst-quick-pills[data-state="error"] .lst-pill-progress-fill { background: #ff7078; }
 /* The chip answers a different question from the state label beside it: not
