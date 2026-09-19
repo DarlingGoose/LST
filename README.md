@@ -1,13 +1,29 @@
 # LST — Local Subtitle Translate
 
-A small cross-browser Manifest V3 extension for Firefox and Chromium browsers that translates Netflix subtitles using local Ollama by default, with optional DeepSeek and Gemini providers.
+A small cross-browser Manifest V3 extension for Firefox and Chromium browsers that translates Netflix and Prime Video subtitles using local Ollama by default, with optional DeepSeek and Gemini providers.
 
 [Privacy policy](PRIVACY.md) · [Browser release guide](FIREFOX_RELEASE.md)
 
 ## Features
 
+## Supported services
+
+| Service | Hosts | Realtime | Full-track capture (precompute, transcript) |
+| --- | --- | --- | --- |
+| Netflix | `www.netflix.com` | Yes | Yes |
+| Prime Video | `www.amazon.co.jp`, `www.amazon.com`, `www.primevideo.com` | Yes | Yes |
+
+Both services are detected automatically from the page, and each can be switched
+off independently in Settings → Subtitles → Services. Adding another Amazon
+marketplace is one entry in the adapter's `matchPatterns` plus the same entry in
+both `content_scripts.matches` arrays in `manifest.json`; a test fails until both
+halves are done.
+
+
 - Local Ollama by default; DeepSeek and Gemini are opt-in
-- Playback controls and subtitle work activate only on Netflix watch pages; Home and Search remain idle
+- Supports Netflix and Prime Video; each service can be switched off independently in Settings
+- Playback controls and subtitle work activate only on a watch page; browse pages, storefronts, and pages with nothing playing remain idle
+- The LST control button can sit in any corner of the player, so it stays clear of the service's own controls
 - Discovers installed Ollama models with `/api/tags`
 - Downloads Ollama models by name from Settings
 - Select model and target language in the browser
@@ -17,18 +33,90 @@ A small cross-browser Manifest V3 extension for Firefox and Chromium browsers th
 - Dual subtitle overlay
 - Custom subtitle height, alignment, line width, font sizes, and background strength
 - Collapsible in-player subtitle editor that remembers its panel state
-- Independent visibility controls for Netflix subtitles, LST original text, and LST translations
+- Independent visibility controls for the service's own subtitles, LST original text, and LST translations
 - Adjustable ±2-second subtitle timing offset in Settings and the in-player pill
-- Captures Netflix TTML/WebVTT subtitle documents when available
+- Captures a full subtitle track on both services: Netflix's timed-text documents as the player loads them, and Prime Video's from the playback-resources listing that names the episode's subtitle assets, which LST reads and fetches in the page's own world
 - Precomputes an entire captured episode subtitle track
-- Caches translations locally per Netflix watch ID + provider/model + target language
-- Show-grouped translation history with timestamped preview, TSV export, size, and removal controls
-- Separate Netflix show and episode names for newly cached or refreshed entries
+- Caches translations locally per service + video ID + provider/model + target language
+- Show-grouped translation history with timestamped preview, TSV export, size, and removal controls, grouped under the service the episode came from
+- Separate show and episode names for newly cached or refreshed entries
 - Structured JSON output from the selected provider to keep batch translations aligned
+- First-run setup page for provider, target language, and subtitle layers
+- Import a subtitle file for the episode you are watching — from Jimaku, or one you already downloaded — for a title the service does not subtitle
+- A file already written in your target language is displayed as it is, without translating anything
+
+## Importing subtitles
+
+When a service has no track worth translating, attach a subtitle file instead:
+**Settings → Subtitles → Import subtitles**. There are two ways in, and the
+second one needs nothing but the file you already have.
+
+**A file from Jimaku.** LST searches [Jimaku](https://jimaku.cc) for the show
+through the anonymous search service `subtitlebot.com` publishes, lists the
+entry's files with your own Jimaku API key (neither is needed to search), and
+downloads one file for the episode that is playing. The file is kept on your
+device and becomes that episode's track — transcript sidebar, look-ahead, and
+precompute included. The search asks for the show rather than the episode: a
+season the service wrote into the title is trimmed first, in any of the scripts
+the services use, so `機動戦士ガンダム 水星の魔女 シーズン1` searches for
+`機動戦士ガンダム 水星の魔女` and finds the entry the season-carrying name misses.
+
+**A file on your device.** Downloaded the file yourself, or made it? Choose it in
+the same card (or drag it onto it). LST reads it in the settings page, keeps it
+on your device, and files it under the episode that is playing. No search, no
+Jimaku key, no host permission, and no network request of any kind. SubRip
+(`.srt`), WebVTT, and TTML are read, in UTF-8 or Shift-JIS; archives and ASS/SSA
+are not readable yet.
+
+Either way, a file the service never renders is still subtitled, because an
+imported file carries its own timeline: the clock decides which line is on screen
+rather than what the player draws.
+
+If the file is already written in the language you want to read, LST shows it as
+it is and **does not translate anything** — no model call, no cache entry. That
+decision is made from the file's own language tag, or from its writing system
+when it has none, and you can overrule it per import.
+
+If a downloaded file is out of sync — common when it was cut for a different
+release of the episode — the in-player **Timing offset** controls move that file's
+own clock while it is in use: 30 s, 5 s, 1 s, and 0.1 s steps, ten minutes either
+way, stored with the file and for that episode alone. The service's own track
+keeps the global timing setting, which still applies on top of the file's own
+correction.
+
+Both hosts are optional permissions. LST asks for access to `jimaku.cc` and
+`www.subtitlebot.com` the first time you press Search, never at install, and
+never contacts either host unless you ask it to. Nothing about your viewing is
+sent anywhere: the search carries a show name, and the download is a plain file
+request. A file you choose from your own disk never touches the network at all.
+See `docs/subtitle-import.md`.
+
+### Knowing what LST is using, and what Jimaku holds
+
+The player says where its subtitles come from. When an imported file is on
+screen the LST controls carry an **Imported** chip, and the controls themselves
+say which file it is and whether it is being translated. The same sentence is in
+the toolbar popup, and the settings card lists every imported episode.
+
+Searching Jimaku also leaves a **note about the show**, and LST reads it when you
+open any episode of that show: the player shows a line saying what Jimaku held —
+how many entries, or how many files for the episode you are on — so arriving at a
+title tells you whether it is worth importing. The note is written by the search
+you ran and read from your own device: **opening a page never contacts Jimaku**.
+A note is forgotten after 60 days, and **Forget this** in the import card drops it
+sooner.
+
+Inside the LST controls, **Import subtitles…** opens the card for the episode you
+are watching, and **Check Jimaku** asks about this show right there — one
+anonymous search, on your click. It is the only request LST ever sends about a
+show you merely opened: it is sent because you pressed the button, not because a
+page loaded.
+
+See `docs/subtitle-import.md`.
 
 ## Important limitation
 
-Netflix is a private, frequently changing web application. The robust path is:
+Netflix and Prime Video are private, frequently changing web applications. On Netflix the robust path is:
 
 1. Load a Netflix watch page.
 2. Enable the **source subtitle language** you want translated.
@@ -36,6 +124,21 @@ Netflix is a private, frequently changing web application. The robust path is:
 4. Once captured, use the extension popup → **Precompute episode subtitles**.
 
 If Netflix changes its subtitle delivery or the timed-text response cannot be captured, the extension falls back to observing the rendered subtitle DOM and translating one cue at a time. That fallback cannot precompute unseen cues.
+
+Prime Video delivers its timed text differently. Instead of handing the player one
+document, the player first asks for the title's *playback resources*, and the
+answer to that request lists every subtitle track the title carries. LST reads
+that listing in the page's own world, takes the track the adapter names (Japanese
+first, then the first subtitle track offered), fetches that one document there,
+and parses it — so a Prime Video episode precomputes and replays from cache
+exactly as a Netflix one does. The request is the page's own, carrying the page's
+origin and cookies, so LST needs no CDN host permission for it and never asks the
+background to fetch a subtitle URL.
+
+If Prime's listing cannot be read, or the track it names cannot be fetched, the
+same rendered-caption fallback keeps working: realtime translation of the line the
+player is drawing, plus look-ahead over what has already been rendered. The reason
+a listing produced no track is written to the event log.
 
 ## Ollama setup
 
@@ -83,6 +186,17 @@ LST connects directly to `api.deepseek.com` or `generativelanguage.googleapis.co
 
 Advanced settings include an optional translation prompt editor. The editor shows the built-in prompt and lets you customize it for any provider; use `{{targetLanguage}}` to insert the selected target language. LST still appends the structured-output instruction needed to align batch translations, and **Restore original prompt** returns to the built-in behavior.
 
+## First-run setup
+
+Installing LST opens a **setup page** once. It walks through four steps and saves as you go, so closing it halfway keeps whatever you already chose:
+
+1. **Welcome** — what LST does and what to have ready.
+2. **Engine** — provider, Ollama URL or provider key, model list, and a model download field, plus the `OLLAMA_ORIGINS` command if the local connection is refused.
+3. **Language** — target language, a live subtitle preview, and the subtitle layer switches (translator, the service's own subtitles, original text, translated text, translation verification, and one switch per supported service).
+4. **Ready** — a summary of what will be saved, then **Save and finish**.
+
+Reopen it any time from **Settings → Advanced → Environment → Reopen setup guide**. It opens automatically only on a fresh install; updates and reloads stay silent.
+
 ## Install in Firefox
 
 For development/testing:
@@ -90,13 +204,15 @@ For development/testing:
 1. Open `about:debugging#/runtime/this-firefox`.
 2. Click **Load Temporary Add-on…**.
 3. Choose this extension's `manifest.json`.
-4. Open the extension settings/options.
-5. Click **Refresh models** and choose an installed Ollama model.
-6. Open a Netflix watch page and enable the source subtitle track.
+4. The setup page opens automatically; if it does not, open the extension settings/options.
+5. Confirm the model list and choose an installed Ollama model, then finish setup.
+6. Open a watch page on Netflix or Prime Video and enable the source subtitle track.
 7. Open the extension popup.
 8. Once it says the full subtitle track is captured, click **Precompute episode subtitles**.
 
 A temporary Firefox add-on is removed when Firefox exits. For permanent personal installation, package/sign it through Mozilla's normal add-on workflow.
+
+Firefox keeps the manifest a copy of an add-on was **loaded** with, and only that manifest decides what the copy may ask for. After changing `manifest.json` (permissions included), press **Reload** on the extension in `about:debugging` — that re-reads the manifest — rather than only expecting the new files to take effect. A copy loaded before LST declared access to Jimaku reports **LST is running from a copy loaded before it declared access to jimaku.cc** when you press Search, and says to reload it.
 
 ## Install in Chrome / Chromium / Brave
 
@@ -104,35 +220,47 @@ A temporary Firefox add-on is removed when Firefox exits. For permanent personal
 2. Enable **Developer mode**.
 3. Click **Load unpacked**.
 4. Select this folder.
-5. Open the extension's **Details → Extension options**.
-6. Click **Refresh models**.
-7. Select an installed Ollama model and target language.
-8. Open Netflix and start an episode.
-9. Enable the source subtitle track.
-10. Open the extension popup.
-11. If the popup says the full track was captured, click **Precompute episode subtitles**.
+5. The setup page opens automatically; if it does not, open the extension's **Details → Extension options**.
+6. Confirm the model list, pick a target language, and finish setup.
+7. Open the service and start an episode.
+8. Enable the source subtitle track.
+9. Open the extension popup.
+10. If the popup says the full track was captured, click **Precompute episode subtitles**.
 
 ## How it works
 
 ```text
-Netflix
-  ├─ page-hook.js
-  │    └─ observes fetch/XHR responses for TTML / WebVTT
-  │
-  └─ content.js
-       ├─ parses timed cues
-       ├─ syncs cue selection to <video>.currentTime
-       ├─ renders the overlay
-       └─ falls back to Netflix's rendered subtitle DOM
-              │
-              ▼
-        background.js
-          ├─ GET /api/tags
-          ├─ POST /api/generate
-          └─ chrome.storage.local cache
-              │
-              ▼
-           Ollama
+playback-site.js
+  └─ which service this page is, and every site-specific fact about it
+       │
+       ├─▶ page-hook.js   (page world)
+       │     └─ observes fetch/XHR responses for TTML / WebVTT, tagged with the site
+       │
+       └─▶ content.js     (isolated world)
+             ├─ parses timed cues
+             ├─ syncs cue selection to the active <video>.currentTime
+             ├─ renders the overlay
+             └─ falls back to the service's rendered subtitle DOM
+                    │
+                    ▼
+              background.js
+                ├─ GET /api/tags
+                ├─ POST /api/generate
+                ├─ Jimaku search / file listing / download (only when asked)
+                └─ chrome.storage.local cache
+                    │
+                    ▼
+                   Ollama
+
+subtitle-import.js
+  └─ where a subtitle comes from when it did not come from the player:
+     the two hosts and their request shapes, what a search result or a file
+     listing says, which file belongs to which episode, SubRip and the bytes
+     around it, and whether a file needs translating
+       │
+       └─▶ an imported file becomes the episode's track instead of a captured one
+         (fetched from Jimaku, or read from the viewer's own disk — the second
+          one makes no request at all)
 ```
 
 ## Translation behavior
@@ -149,6 +277,14 @@ The extension sends small batches of subtitle strings to the selected provider a
 
 If a model breaks the batch contract, the extension recursively splits the batch and retries smaller groups.
 
+## Translation verification
+
+A model can return the input instead of translating it. Rather than write that into the cache, LST checks every result against the selected target language before it is stored. The check compares writing systems, so a Japanese line returned for an English target, a romanized line, or output in an unrelated script is rejected instead of cached. A rejected line is sent once more on its own with the reason attached, and if it is still wrong it is reported as a failed cue rather than saved.
+
+Verification is code, not a model call: it adds no requests, no network access, and no cost beyond one retry per rejected cue (capped at three retries per batch). It cannot judge a wrong language that shares the target's writing system, such as English output for a Spanish target, and it never judges an unrecognized target language or a line too short to compare. **Verify translations before caching** in Translation defaults turns the whole check off.
+
+Entries already in the cache are checked the same way when they are read. A stored result that is not in the target language is skipped, so the cue is translated again and the new result replaces the stale one. Nothing is deleted from storage without your action, and the cache library in the Storage tab still lists what is stored.
+
 ## Good model choices
 
 For Japanese → English, `translategemma:4b` is the initial default and a good lightweight starting point. LST still discovers every installed Ollama model dynamically, so you can choose a larger or different model whenever you prefer.
@@ -161,19 +297,26 @@ Release packaging generates `.firefox-build` and `.chrome-build` from the shared
 
 Useful files:
 
-- `page-hook.js`: Netflix timed-text capture
+- `playback-site.js`: the playback-site adapter — which service a page belongs to, its playback paths, its video element, its caption rendering, its title wording, and its timed-text shapes
+- `page-hook.js`: timed-text capture, site-aware
 - `content.js`: parser, sync, overlay, realtime/precompute behavior
+- `subtitle-sync.js`: decides which captured cue a rendered line belongs to
+- `subtitle-import.js`: imported subtitles — the two hosts and their request shapes, which file belongs to which episode, the bytes and the SubRip reader, and whether a file needs translating
+- `episode-identity.js`: which names a service actually gave us, and how a cache id or an episode key is written
 - `background.js`: Ollama, DeepSeek, and Gemini clients + cache (uses the standard `browser` API when available, with a `chrome` fallback)
+- `translation-guard.js`: target-language check applied to translations before they are cached
+- `structured-response.js`: recovers the batch JSON from a model response and aligns it back to cues
 - `options.*`: provider/model settings
+- `setup.*`: first-run setup page (auto-opened once on install)
 - `popup.*`: episode status + precompute control
 
 ## Next improvements
 
-- Detect and select among multiple captured Netflix subtitle tracks/languages.
+- Detect and select among multiple captured subtitle tracks/languages.
 - Add subtitle context windows to improve pronoun/name translation.
 - Store caches in IndexedDB with per-show metadata and LRU cleanup.
 - Precompute starting near the current playback position before translating the rest.
-- Add import and VTT/SRT export formats.
+- Add VTT/SRT export formats.
 - Expand automated browser compatibility tests.
 - Add a side panel showing the episode transcript and translation progress.
 - Add model-specific translation prompt presets.
@@ -182,23 +325,36 @@ Useful files:
 
 Cached translations record and display the Netflix show name and episode name separately. LST checks several player-title structures, recognizes episode markers such as `E50`, `Episode 50`, and `S1:E50`, and falls back to the current title's Netflix metadata page when the player hides its title UI. That fallback is a same-origin Netflix request and does not send subtitle text anywhere. Existing caches remain usable and gain richer names the next time their episode is revisited.
 
+### How an episode is named
+
+Names are decided in one place, `episode-identity.js`, so the page, the background, the popup and the cache list all agree. A name is either a real name or one of the placeholders Netflix renders when it has nothing better — `Netflix`, `Netflix - …`, `Netflix episode <id>`, `Episode <id>`, `Video <id>`, `Unknown episode`, `Episode details unavailable` — and the placeholders are recognized by shape, anchored to the whole name, so `Episode 5 · Pilot` is a real name while `Episode 5` alone is only the number with no title.
+
+A real name always beats a placeholder, whichever side it arrives from, so a cache that has already found an episode name cannot lose it to a differently worded placeholder on a later visit. The name written when Netflix never tells us one is derived from the video id and is itself recognizable as a placeholder, so it can never be mistaken for a real title. The cache id remains the source of truth for the video, provider, model, and target language, because it is also the storage key: a cache that disagreed with its own key could not be found again.
+
+The episode marker inside a title is found by ordered, named rules, and the title block embedded in Netflix's episode page is read from the object that holds the video id rather than from a fixed number of characters after it, so field order, whitespace, and distance are Netflix's business. Every decision and the reason for it — which rule matched, which name was kept or replaced, why a refresh was skipped — is written to the subtitle event log as kinds and reasons, never as the names themselves, so the log stays safe to share.
+
 ## Subtitle synchronization
 
-LST checks that an asynchronously translated cue is still active before rendering it, preventing a slow response from replacing a newer subtitle. Cached translations are kept in the content-script session so a new cue can render synchronously, while Netflix's rendered-text fallback must remain stable briefly before it can replace the timed track. Captured cues and Netflix-rendered text are also compared with a unique formatting-tolerant match, and Netflix may retain the previous cue during the timed track's gap before the next cue without invalidating synchronization. This prevents punctuation or casing differences and normal cue handoffs from causing false mismatches or subtitle flashes. LST still clears lingering lines during real subtitle gaps after a short grace period.
+LST checks that an asynchronously translated cue is still active before rendering it, preventing a slow response from replacing a newer subtitle. Cached translations are kept in the content-script session so a new cue can render synchronously, while Netflix's rendered-text fallback must remain stable briefly before it can replace the timed track.
+
+Captured cues and Netflix-rendered text are matched by text identity rather than byte equality.
+ LST folds the encoding and layout differences Netflix introduces while rendering the same line — typographic quotes, dashes, ellipses, full-width forms, zero-width and soft-hyphen characters, and line wrapping — then falls back to a punctuation- and case-insensitive comparison, and recognizes a line that Netflix renders as two adjacent cues joined into one block. A line that still matches several cues, such as a repeated short phrase, is resolved by playback time only while the timeline is already trusted; otherwise LST reports the ambiguity and keeps the visible-subtitle fallback instead of guessing, so a translation is never attached to the wrong cue. Netflix may also retain the previous cue during the timed track's gap before the next cue without invalidating synchronization. This prevents formatting differences and normal cue handoffs from causing false mismatches or subtitle flashes. LST still clears lingering lines during real subtitle gaps after a short grace period.
 
 The Subtitles tab provides a −2000 ms to +2000 ms timing offset in 50 ms steps. Negative values show LST subtitles earlier and positive values delay them. The persistent Netflix pill offers quick −100 ms, reset, and +100 ms adjustments.
+
+LST may capture several timed-text documents for the same episode, because Netflix can serve the same track again, serve a part of it, or serve a different representation entirely. Each captured document is classified by cue membership and time coverage rather than by cue count or duration. A document whose cues the current track already has is a fragment or a duplicate and never replaces it. A document that contains the whole current track is adopted without losing anything. A document covering a part of the episode the current track does not reach is added to it instead of replacing it. Anything else — a different track, a different representation of the same timeline, or a document that only partly overlaps — is adopted only when the line Netflix is rendering belongs to it, or while the current track has never been confirmed by Netflix's rendering; otherwise LST keeps the track it already has and says why. Adopted documents reuse the current track's own cue objects for the lines both documents already agree on, so cached translations and cache keys stay valid across a re-fetch, and a document that keeps every cue of the current track does not invalidate the synchronization Netflix has already confirmed for it. Every decision, and the reason for it, is written to the subtitle event log.
 
 ## Navigation and in-player controls
 
 Settings is organized into General, Subtitles, Storage, and Advanced tabs so model setup, appearance, cached episodes, and diagnostics no longer compete in one long page.
 
-The Advanced tab also includes a bounded local subtitle event log. It records cue lifecycle, synchronization, cache, and translation events so brief subtitle clears can be diagnosed after playback. Mismatch events include DOM selector/node counts, anonymous page-session text IDs, text lengths, simplified/combined-line match results, nearby cue timing, offsets, rendered state, and resolution outcomes. The log stays in extension storage, omits subtitle text and complete request URLs, and can be filtered, copied, exported, or cleared independently from translation caches.
+The Advanced tab also includes a bounded local subtitle event log. It records cue lifecycle, synchronization, captured-document, episode-naming, cache, and translation events so brief subtitle clears can be diagnosed after playback. Captured-document events include how the document related to the track in use, which cues the two documents shared, whether the timeline was already confirmed, and whether the line Netflix was rendering belonged to the incoming document or to the current track. Episode-naming events include which marker rule matched, whether the show and episode names were real names or placeholders and why, where a name came from, what the episode-page lookup returned, and why a name refresh was skipped — as kinds and reasons, never as the names themselves, so the log stays free of page titles. Mismatch events include DOM selector/node counts, anonymous page-session text IDs, text lengths, folded/simplified/joined-line match results, how the line was resolved (unique, nearest, or ambiguous), whether the timeline was trusted enough to use playback time, nearby cue timing, offsets, rendered state, and resolution outcomes. Translation-context events include the reason context was chosen or skipped, how many reference lines were sent, where each one sat relative to the nearest requested line, how many were left out and why, and the limits the choice was made under — never the subtitle text. The log stays in extension storage, omits subtitle text and complete request URLs, and can be filtered, copied, exported, or cleared independently from translation caches.
 
 An optional in-player transcript sidebar shows the complete captured subtitle track with locally cached translations as they become available. The current cue is highlighted and automatically scrolled into view; the sidebar can be toggled from Subtitle settings, the extension popup, or the compact Netflix player controls. The popup also exposes whether the compact in-player controls are visible, with direct shortcuts beside All settings.
 
-Surrounding subtitle context is also opt-in. When enabled, LST sends up to two nearby source cues before and after each new translation to the selected provider. These lines are marked as reference-only so the model can resolve names, pronouns, and sentence continuity without returning extra translations. Context can use more tokens and add latency, and enabling it does not replace translations that are already cached.
+Surrounding subtitle context is also opt-in. When enabled, LST sends up to 2 nearby source lines before and after each new translation, at most 6 lines per request, to the selected provider. Which lines those are is decided by `translation-context.js` from the cue timeline rather than from cue order: a candidate is judged by the silence between it and the nearest requested line, so a line that ends before its nearest requested line is labelled `before`, one that starts after it `after`, and one that overlaps it `overlapping`. A reference line is never taken across a silence longer than 8 seconds, because that is a scene break rather than a pause in the dialogue, and a 1200-character lyric is shortened to 240 characters instead of being sent whole. The per-request ceiling is shared between the requested lines, so a wide batch cannot spend the whole budget on its first cue and starve its last one. These lines are marked as reference-only so the model can resolve names, pronouns, and sentence continuity without returning extra translations. Every decision, and every line left out with the reason it was left out — too far from every requested line, past the per-request budget, or refused at the provider boundary — is written to the subtitle event log. Context can use more tokens and add latency, and enabling it does not replace translations that are already cached.
 
-An optional persistent LST pill sits in a coordinated top-left HUD. It shows Waiting, Ready, Realtime, Buffering, Cached, Precomputing, or Error status and opens a compact menu for toggling the LST translation, LST original text, and Netflix subtitles. Informational notices stack below the pill rather than overlapping it.
+An optional persistent LST pill sits in a HUD whose corner is the viewer's choice in Settings (automatic by default, with each service supplying a starting corner). It shows Waiting, Ready, Realtime, Buffering, Cached, Precomputing, or Error status and opens a compact menu for toggling the LST translation, LST original text, and the service's own subtitles. Informational notices stack below the pill rather than overlapping it.
 
 ## Subtitle customization, buffering, and cache management
 
@@ -210,14 +366,14 @@ Settings now includes a live preview and controls for:
 - separate original and translated font sizes
 - subtitle background strength
 - an optional in-player controls overlay for live adjustments
-- independent switches to hide Netflix subtitles, show LST's original text, and show the translation
+- independent switches to hide the service's own subtitles, show LST's original text, and show the translation
 - optional top-left informational messages for capture, fallback, precompute, and errors
 
-Saved appearance changes are pushed to open Netflix tabs immediately. The optional in-player controls overlay saves adjustments as you make them and shares the top-right area with the debug panel without covering it. Settings can also pull an Ollama model by name and show its download progress. The detailed debug panel is off by default for new installs.
+Saved appearance changes are pushed to open player tabs immediately. The optional in-player controls overlay saves adjustments as you make them and stays clear of the service's own controls. Settings can also pull an Ollama model by name and show its download progress. The detailed debug panel is off by default for new installs.
 
-When Netflix enters browser fullscreen, LST moves its subtitle overlay and optional player controls into the active fullscreen container. They return to the page root when fullscreen closes, preserving the same subtitle state and appearance in both modes.
+When the player enters browser fullscreen, LST moves its subtitle overlay and optional player controls into the active fullscreen container. This works on both services, because both use the standard Fullscreen API. They return to the page root when fullscreen closes, preserving the same subtitle state and appearance in both modes.
 
-The Translated episodes section in Settings groups locally cached episodes under their Netflix show, then lists each model/language combination with its translated cue count, estimated storage use, and last update time. Each episode can be previewed as timestamp, original text, and translated text, or exported as a UTF-8 TSV file. When a timed track becomes available, LST promotes uniquely matched DOM-fallback translations onto their timestamped cues and removes the redundant fallback records. Repeated or unmatched fallback text is preserved for playback recovery but omitted from previews and exports whenever timestamped cues exist. Individual caches or the entire local translation library can be removed there. Older caches remain readable and are migrated when their episode is revisited.
+The Translated episodes section in Settings groups locally cached episodes under their show, then lists each model/language combination with its translated cue count, estimated storage use, and last update time. Each episode can be previewed as timestamp, original text, and translated text, or exported as a UTF-8 TSV file. When a timed track becomes available, LST promotes uniquely matched DOM-fallback translations onto their timestamped cues and removes the redundant fallback records. Repeated or unmatched fallback text is preserved for playback recovery but omitted from previews and exports whenever timestamped cues exist. Individual caches or the entire local translation library can be removed there. Older caches remain readable and are migrated when their episode is revisited.
 
 When look-ahead is enabled, LST prepares every subtitle within the configured time window and the first cue after that boundary. The window cannot be set below 30 seconds. Optional top-left notices report when the buffer is being prepared, when it is ready, or when an upcoming cue could not be translated.
 
@@ -236,7 +392,7 @@ When look-ahead is enabled, LST prepares every subtitle within the configured ti
 - Ollama requests now have a configurable timeout (default 75 seconds).
 - Failed batches are recursively split. A single bad cue is recorded and skipped instead of freezing the whole episode.
 - LST requests `think: false` from Ollama for lower subtitle latency.
-- The visible Netflix subtitle DOM remains an active fallback even after a full timed-text track has been captured. This fixes cases where a captured track translates successfully but its timestamps do not line up with the current Netflix playback track.
+- The rendered subtitle DOM remains an active fallback even after a full timed-text track has been captured. This fixes cases where a captured track translates successfully but its timestamps do not line up with the playing track.
 - A Stop button stops precompute after the currently-running Ollama request completes.
 
 ### If progress repeatedly stalls on a batch
@@ -262,9 +418,9 @@ That could happen when a model returned the correct number of translations but r
 
 Settings now includes:
 
-- **Show detailed LST debug panel on Netflix**
+- **Show detailed LST debug panel**
 - **Keep debug panel pinned in the top-right corner**
 
-The panel displays model, cache progress, precompute batch, request time, translated/failed count, structured-vs-fallback mode, playback mode, video/cue timing, in-flight request count, timed-text source, current subtitle, last translation, returned IDs, raw Ollama response, and the latest error.
+The panel displays model, cache progress, precompute batch, request time, translated/failed count, structured-vs-fallback mode, playback mode, video/cue timing, in-flight request count, timed-text source, current subtitle, last translation, returned IDs, raw Ollama response, verification result, and the latest error.
 
-The panel is a separate `position: fixed` element with page-level maximum z-index so Netflix subtitle-container transforms do not move it.
+The panel is a separate `position: fixed` element with page-level maximum z-index so subtitle-container transforms do not move it.

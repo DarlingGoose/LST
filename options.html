@@ -48,7 +48,7 @@
             </section>
             <section class="card" aria-labelledby="behaviorHeading">
               <div class="section-heading"><div><h2 id="behaviorHeading">Playback behavior</h2><p>Tune responsiveness without crowding playback.</p></div></div>
-              <div class="switch-row"><div><span class="label">Enable translator</span><p class="help">Run subtitle translation on Netflix.</p></div><label class="switch" aria-label="Enable translator"><input id="enabled" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="switch-row"><div><span class="label">Enable translator</span><p class="help">Run subtitle translation on the services LST supports.</p></div><label class="switch" aria-label="Enable translator"><input id="enabled" type="checkbox"><span class="switch-ui"></span></label></div>
               <div class="switch-row"><div><span class="label">Maintain look-ahead</span><p class="help">Translate upcoming cues before they appear.</p></div><label class="switch" aria-label="Maintain look-ahead buffer"><input id="autoTranslateAhead" type="checkbox"><span class="switch-ui"></span></label></div>
               <div class="two-col compact-fields"><div class="field"><label for="lookAheadSeconds">Look-ahead</label><input id="lookAheadSeconds" type="number" min="30" max="600" value="30"><p class="help">Seconds; 30 minimum.</p></div><div class="field"><label for="batchSize">Batch size</label><input id="batchSize" type="number" min="1" max="50" value="8"></div></div>
             </section>
@@ -62,18 +62,19 @@
               <div class="field"><label for="maximumVisibleSubtitles">Maximum visible stack</label><input id="maximumVisibleSubtitles" type="number" min="1" max="4" step="1" value="2"><p class="help">Limits overlapping translated cues.</p></div>
               <div id="modelDownload" class="field model-download"><label for="pullModelName">Model to download</label><div class="action-field"><input id="pullModelName" data-transient type="text" placeholder="e.g. translategemma:4b" spellcheck="false"><button id="pullModel" class="secondary" type="button">Download model</button></div><p class="help">The model stays inside your local Ollama installation.</p><div id="pullProgress" class="pull-progress" aria-hidden="true"><div id="pullProgressBar"></div></div><div id="pullProgressText" role="status" aria-live="polite"></div></div>
             </div>
-            <div class="switch-row context-setting"><div><span class="label">Use surrounding subtitle context</span><p class="help">Sends two nearby lines before and after each new translation to the selected provider. This can improve pronouns, names, and sentence continuity, but uses more tokens and may add latency. Context is reference-only; only requested cues are translated. Existing cached translations are unchanged.</p></div><label class="switch" aria-label="Use surrounding subtitle context"><input id="useTranslationContext" type="checkbox"><span class="switch-ui"></span></label></div>
+            <div class="switch-row context-setting"><div><span class="label">Use surrounding subtitle context</span><p class="help">Sends up to 2 nearby source lines before and after each new translation, at most 6 lines per request, to the selected provider. A reference line is never taken across a silence longer than 8 seconds, so a line from the previous scene is not offered as context. This can improve pronouns, names, and sentence continuity, but uses more tokens and may add latency. Context is reference-only; only requested cues are translated. Existing cached translations are unchanged.</p></div><label class="switch" aria-label="Use surrounding subtitle context"><input id="useTranslationContext" type="checkbox"><span class="switch-ui"></span></label></div>
+            <div class="switch-row context-setting"><div><span class="label">Verify translations before caching</span><p class="help">Rejects a model result that is not written in the target language instead of caching it. The line is sent once more on its own, then reported as failed. Detection compares writing systems, so it catches an untranslated or romanized line, but it cannot catch a wrong language that shares the target's writing system. Turn this off to cache every result the model returns.</p></div><label class="switch" aria-label="Verify translations before caching"><input id="verifyTranslations" type="checkbox"><span class="switch-ui"></span></label></div>
           </section>
         </section>
 
         <section id="panel-subtitles" data-settings-panel="subtitles" role="tabpanel" aria-labelledby="tab-subtitles" hidden>
-          <section class="subtitle-stage card" aria-labelledby="previewHeading"><span class="section-chip">Live preview</span><div id="subtitlePreview"><div id="previewOriginal">雨が降っても、行かなければならない。</div><div id="previewTranslated">Even if it rains, we still have to go.</div></div><p id="previewHeading" class="preview-caption">Netflix source · LST original · LST translation</p></section>
+          <section class="subtitle-stage card" aria-labelledby="previewHeading"><span class="section-chip">Live preview</span><div id="subtitlePreview"><div id="previewOriginal">雨が降っても、行かなければならない。</div><div id="previewTranslated">Even if it rains, we still have to go.</div></div><p id="previewHeading" class="preview-caption">Service source · LST original · LST translation</p></section>
           <div class="subtitle-grid">
             <section class="card" aria-labelledby="layersHeading">
-              <div class="section-heading"><div><h2 id="layersHeading">Visible layers</h2><p>Keep Netflix loading source data while choosing what viewers see.</p></div></div>
-              <div class="switch-row"><div><span class="label">Show LST controls</span><p class="help">Show the compact in-player control center.</p></div><label class="switch" aria-label="Show LST controls on Netflix"><input id="showQuickPills" type="checkbox"><span class="switch-ui"></span></label></div>
-              <div class="switch-row"><div><span class="label">Show transcript sidebar</span><p class="help">Browse the full captured track and follow the current line.</p></div><label class="switch" aria-label="Show transcript sidebar on Netflix"><input id="showTranscriptSidebar" type="checkbox"><span class="switch-ui"></span></label></div>
-              <div class="switch-row"><div><span class="label">Hide Netflix subtitles</span><p class="help">Visually hide captions; the track stays active.</p></div><label class="switch" aria-label="Hide Netflix subtitles"><input id="hideNetflixSubtitles" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="section-heading"><div><h2 id="layersHeading">Visible layers</h2><p>Keep the service loading source data while choosing what viewers see.</p></div></div>
+              <div class="switch-row"><div><span class="label">Show LST controls</span><p class="help">Show the compact in-player control center.</p></div><label class="switch" aria-label="Show LST controls in the player"><input id="showQuickPills" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="switch-row"><div><span class="label">Show transcript sidebar</span><p class="help">Browse the full captured track and follow the current line.</p></div><label class="switch" aria-label="Show transcript sidebar in the player"><input id="showTranscriptSidebar" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="switch-row"><div><span class="label">Hide the service's own subtitles</span><p class="help">Visually hide captions; the track stays active.</p></div><label class="switch" aria-label="Hide the service's own subtitles"><input id="hideNativeSubtitles" type="checkbox"><span class="switch-ui"></span></label></div>
               <div class="switch-row"><div><span class="label">Show original text</span><p class="help">Display the captured source subtitle.</p></div><label class="switch" aria-label="Show original text in LST"><input id="showOriginal" type="checkbox"><span class="switch-ui"></span></label></div>
               <div class="switch-row"><div><span class="label">Show translated text</span><p class="help">Display the translated subtitle.</p></div><label class="switch" aria-label="Show translated text"><input id="showTranslated" type="checkbox"><span class="switch-ui"></span></label></div>
               <div class="recommendation"><span class="state-pill success">Recommended</span><span>Translation on · original remains independent</span></div>
@@ -88,10 +89,81 @@
                 <div class="field range-field"><div class="field-head"><label for="subtitleMaxWidth">Maximum width</label><output id="subtitleMaxWidthOutput">92%</output></div><input id="subtitleMaxWidth" type="range" min="40" max="96" step="1" value="92"></div>
                 <div class="field range-field"><div class="field-head"><label for="subtitleBackgroundOpacity">Background opacity</label><output id="subtitleBackgroundOpacityOutput">58%</output></div><input id="subtitleBackgroundOpacity" type="range" min="0" max="90" step="1" value="58"></div>
                 <div class="field range-field"><div class="field-head"><label for="subtitleTimingOffsetMs">Timing offset</label><output id="subtitleTimingOffsetMsOutput">0 ms</output></div><input id="subtitleTimingOffsetMs" type="range" min="-2000" max="2000" step="50" value="0"><p class="help">Negative is earlier; positive is later.</p></div>
+                <div class="field"><label for="hudPosition">LST control position</label><select id="hudPosition"><option value="">Automatic (per service)</option><option value="top-left">Top left</option><option value="top-right">Top right</option><option value="bottom-left">Bottom left</option><option value="bottom-right">Bottom right</option></select><p class="help">Where the LST control button and status sit inside the player.</p></div>
               </div>
               <div class="card-actions"><button id="resetAppearance" class="secondary" type="button">Reset style</button></div>
             </section>
           </div>
+          <section class="card" aria-labelledby="servicesHeading">
+            <div class="section-heading"><div><h2 id="servicesHeading">Services</h2><p>LST recognises the service from the page. Turn one off to keep LST out of it; the other is unaffected, and no page reload is needed.</p></div></div>
+            <div id="serviceList" class="service-list" role="list"></div>
+          </section>
+          <section id="importCard" class="card" aria-labelledby="importHeading">
+            <div class="section-heading">
+              <div>
+                <h2 id="importHeading">Import subtitles</h2>
+                <p>Attach a subtitle file to the episode you are watching, for a title the service does not subtitle: search Jimaku for the show, or bring a file you already downloaded. The file is kept on this device and becomes that episode's track. A file already written in your target language is shown as it is, without translating anything. A search also leaves a note about the show — what Jimaku held for it — that LST shows you when you open another episode of it, and the note is never something LST looked up on its own.</p>
+              </div>
+              <span class="state-pill info">Jimaku + your files</span>
+            </div>
+
+            <p id="importTarget" class="help import-target" role="status">Checking which episode is playing…</p>
+
+            <div id="importKnown" class="import-known" hidden>
+              <p id="importKnownText" class="help" role="status" aria-live="polite"></p>
+              <button id="forgetImportKnown" class="secondary" type="button">Forget this</button>
+            </div>
+
+            <div class="field">
+              <label for="importQuery">Show on Jimaku</label>
+              <div class="action-field">
+                <input id="importQuery" type="search" placeholder="Search Jimaku by show name" spellcheck="false" autocomplete="off">
+                <button id="importSearch" class="secondary" type="button">Search</button>
+              </div>
+              <p id="importHelp" class="help">The search goes to jimaku.cc through the anonymous search service subtitlebot.com publishes. No account is needed for it.</p>
+            </div>
+
+            <div id="importResults" class="import-results" role="list" aria-live="polite"></div>
+
+            <details id="importKeyDetails" class="import-key">
+              <summary>Jimaku API key</summary>
+              <p class="help">Jimaku asks for an API key before it will list an entry's files. LST stores the key in this browser profile only, and sends it to jimaku.cc and nowhere else.</p>
+              <div class="action-field">
+                <input id="importKey" data-transient type="password" autocomplete="off" spellcheck="false" placeholder="Enter a new key">
+                <button id="saveImportKey" class="secondary" type="button">Save key</button>
+                <button id="removeImportKey" class="secondary" type="button">Remove key</button>
+              </div>
+              <p id="importKeyStatus" class="help">No key saved.</p>
+            </details>
+
+            <div id="importFiles" class="import-files" role="list" aria-live="polite"></div>
+
+            <div id="importLocal" class="import-local">
+              <div class="action-field">
+                <span class="label" id="importLocalHeading">Or use a subtitle file you already have</span>
+                <input id="importFile" class="file-input" type="file" aria-labelledby="importLocalHeading" accept=".srt,.vtt,.webvtt,.ttml,.dfxp,.xml">
+              </div>
+              <p id="importFileName" class="help">Choose a SubRip (.srt), WebVTT, or TTML file, or drag one onto this box. It is read on this device, so this path needs no permission, no account, and no network.</p>
+            </div>
+
+            <div class="import-mode">
+              <label for="importTranslate">Imported file</label>
+              <select id="importTranslate">
+                <option value="auto">Automatic — decide from the file's language</option>
+                <option value="no">Show it as it is, never translate it</option>
+                <option value="yes">Always translate it</option>
+              </select>
+            </div>
+
+            <div id="importStatus" class="import-status help" role="status" aria-live="polite"></div>
+
+            <div class="imported-heading">
+              <h3>Imported episodes</h3>
+              <p id="importedSummary" class="help">Loading…</p>
+              <p class="help">A file that does not line up with the video is corrected in the player: <strong>Timing offset</strong> in the LST controls moves the imported file's own clock, and the popup's Control tab does the same away from the player. The correction is stored with the file, for that episode.</p>
+            </div>
+            <div id="importedList" class="cache-list" aria-live="polite"></div>
+          </section>
         </section>
 
         <section id="panel-storage" data-settings-panel="storage" role="tabpanel" aria-labelledby="tab-storage" hidden>
@@ -101,8 +173,8 @@
 
         <section id="panel-advanced" data-settings-panel="advanced" role="tabpanel" aria-labelledby="tab-advanced" hidden>
           <div class="advanced-grid">
-            <section class="card" aria-labelledby="diagnosticsHeading"><div class="section-heading"><div><h2 id="diagnosticsHeading">Diagnostics</h2><p>Useful detail when Netflix or Ollama changes.</p></div></div><div class="switch-row"><div><span class="label">Show info messages</span><p class="help">Brief status updates during translation.</p></div><label class="switch" aria-label="Show informational messages"><input id="showStatusMessages" type="checkbox"><span class="switch-ui"></span></label></div><div class="switch-row"><div><span class="label">Show debug panel</span><p class="help">Technical playback and cue diagnostics.</p></div><label class="switch" aria-label="Show debug panel"><input id="showDebugPanel" type="checkbox"><span class="switch-ui"></span></label></div><div class="switch-row"><div><span class="label">Keep panel on top</span><p class="help">Prevent Netflix overlays from covering diagnostics.</p></div><label class="switch" aria-label="Keep debug panel visible"><input id="debugPanelAlwaysOnTop" type="checkbox"><span class="switch-ui"></span></label></div><div class="recommendation"><span class="state-pill success">No telemetry</span><span>Diagnostics stay in your browser.</span></div></section>
-            <section class="card" aria-labelledby="environmentHeading"><div class="section-heading"><div><h2 id="environmentHeading">Environment</h2><p>Current extension and browser details.</p></div></div><dl class="environment-list"><div><dt>Extension version</dt><dd id="extensionVersion">—</dd></div><div><dt>Browser build</dt><dd>Shared source</dd></div><div><dt>Translation endpoint</dt><dd id="environmentEndpoint" class="success-text">Local Ollama</dd></div><div><dt>Permissions</dt><dd>Netflix + selected providers</dd></div></dl><span class="state-pill info">Privacy-first</span></section>
+            <section class="card" aria-labelledby="diagnosticsHeading"><div class="section-heading"><div><h2 id="diagnosticsHeading">Diagnostics</h2><p>Useful detail when a service or Ollama changes.</p></div></div><div class="switch-row"><div><span class="label">Show info messages</span><p class="help">Brief status updates during translation.</p></div><label class="switch" aria-label="Show informational messages"><input id="showStatusMessages" type="checkbox"><span class="switch-ui"></span></label></div><div class="switch-row"><div><span class="label">Show debug panel</span><p class="help">Technical playback and cue diagnostics.</p></div><label class="switch" aria-label="Show debug panel"><input id="showDebugPanel" type="checkbox"><span class="switch-ui"></span></label></div><div class="switch-row"><div><span class="label">Keep panel on top</span><p class="help">Prevent player overlays from covering diagnostics.</p></div><label class="switch" aria-label="Keep debug panel visible"><input id="debugPanelAlwaysOnTop" type="checkbox"><span class="switch-ui"></span></label></div><div class="recommendation"><span class="state-pill success">No telemetry</span><span>Diagnostics stay in your browser.</span></div></section>
+            <section class="card" aria-labelledby="environmentHeading"><div class="section-heading"><div><h2 id="environmentHeading">Environment</h2><p>Current extension and browser details.</p></div></div><dl class="environment-list"><div><dt>Extension version</dt><dd id="extensionVersion">—</dd></div><div><dt>Browser build</dt><dd>Shared source</dd></div><div><dt>Translation endpoint</dt><dd id="environmentEndpoint" class="success-text">Local Ollama</dd></div><div><dt>Permissions</dt><dd>Streaming services + selected providers</dd></div></dl><div class="card-actions"><button id="openSetup" class="secondary" type="button">Reopen setup guide</button></div><span class="state-pill info">Privacy-first</span></section>
           </div>
           <section class="card prompt-editor-card" aria-labelledby="promptEditorHeading">
             <div class="section-heading"><div><h2 id="promptEditorHeading">Translation prompt</h2><p>Advanced users can tune the instructions sent with each translation request.</p></div><span class="state-pill info">Advanced</span></div>
@@ -119,6 +191,9 @@
       </div>
     </section>
   </main>
+  <script src="playback-site.js"></script>
+  <script src="episode-identity.js"></script>
+  <script src="subtitle-import.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

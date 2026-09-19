@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LST — Local Subtitle Translate",
-  "version": "0.5.6",
-  "description": "Translate Netflix subtitles locally with Ollama, with customizable subtitle placement, sizing, realtime translation, and precompute.",
+  "version": "0.5.7",
+  "description": "Translate Netflix and Prime Video subtitles with local Ollama by default, or optional DeepSeek and Gemini providers, with realtime translation, caching, and customizable prompts.",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -24,6 +24,12 @@
   ],
   "background": {
     "scripts": [
+      "playback-site.js",
+      "episode-identity.js",
+      "subtitle-import.js",
+      "translation-context.js",
+      "translation-guard.js",
+      "structured-response.js",
       "background.js"
     ],
     "service_worker": "background.js"
@@ -42,9 +48,13 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.netflix.com/*"
+        "https://www.netflix.com/*",
+        "https://www.amazon.co.jp/*",
+        "https://www.amazon.com/*",
+        "https://www.primevideo.com/*"
       ],
       "js": [
+        "playback-site.js",
         "page-hook.js"
       ],
       "run_at": "document_start",
@@ -52,12 +62,19 @@
     },
     {
       "matches": [
-        "https://www.netflix.com/*"
+        "https://www.netflix.com/*",
+        "https://www.amazon.co.jp/*",
+        "https://www.amazon.com/*",
+        "https://www.primevideo.com/*"
       ],
       "css": [
         "styles.css"
       ],
       "js": [
+        "playback-site.js",
+        "episode-identity.js",
+        "subtitle-import.js",
+        "translation-context.js",
         "subtitle-sync.js",
         "translation-coordinator.js",
         "content.js"
@@ -80,5 +97,9 @@
       "strict_min_version": "142.0"
     }
   },
-  "short_name": "LST"
+  "short_name": "LST",
+  "optional_host_permissions": [
+    "https://jimaku.cc/*",
+    "https://www.subtitlebot.com/*"
+  ]
 }

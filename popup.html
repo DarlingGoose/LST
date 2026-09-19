@@ -21,11 +21,11 @@
     <button id="controlsTab" type="button" role="tab" aria-selected="false" aria-controls="controlsPanel" tabindex="-1"><span>Controls</span><small>Layers · Timing · Model</small></button>
   </nav>
 
-  <main>
+  <main id="popupScroll">
     <section id="statusPanel" role="tabpanel" aria-labelledby="statusTab">
       <section class="panel episode-panel">
         <p class="eyebrow">Current show</p>
-        <h2 id="showName">Netflix</h2>
+        <h2 id="showName">LST</h2>
         <p id="episodeName" class="episode-name">Open a watch page</p>
 
         <div class="divider"></div>
@@ -51,6 +51,7 @@
         </div>
         <button id="openTimingControls" class="summary-row summary-button" type="button"><span>Subtitle timing</span><strong id="timingSummary">0 ms</strong></button>
         <button id="openModelControls" class="summary-row summary-button model-summary-row" type="button"><span><small>Model</small><strong id="modelSummary">—</strong></span><span><small>Target</small><strong id="targetSummary">—</strong></span></button>
+        <button id="importSubtitles" class="summary-row summary-button" type="button"><span><small>Imported subtitles</small><strong id="importSummary">None</strong></span><small id="importDetail" class="summary-note"></small></button>
       </section>
     </section>
 
@@ -59,14 +60,26 @@
         <div class="section-heading"><div><h2>Subtitle layers</h2><p>Choose what stays visible while you watch.</p></div></div>
         <div class="control-row"><div><span>Translation</span><small>Show translated subtitles</small></div><label class="switch" aria-label="Show translated subtitles"><input id="controlTranslated" type="checkbox"><span class="switch-ui"></span></label></div>
         <div class="control-row"><div><span>Original text</span><small>Show the captured source line</small></div><label class="switch" aria-label="Show original subtitle text"><input id="controlOriginal" type="checkbox"><span class="switch-ui"></span></label></div>
-        <div class="control-row"><div><span>Netflix captions</span><small>Keep the source track active</small></div><label class="switch" aria-label="Show Netflix captions"><input id="controlNetflix" type="checkbox"><span class="switch-ui"></span></label></div>
-        <div class="control-row"><div><span>In-player controls</span><small>Show the LST subtitle control button on Netflix</small></div><label class="switch" aria-label="Show LST subtitle controls on Netflix"><input id="controlQuickPills" type="checkbox"><span class="switch-ui"></span></label></div>
-        <div class="control-row"><div><span>Transcript sidebar</span><small>Show the full transcript and follow the current line</small></div><label class="switch" aria-label="Show transcript sidebar on Netflix"><input id="controlTranscript" type="checkbox"><span class="switch-ui"></span></label></div>
+        <div class="control-row"><div><span>Service captions</span><small>Keep the source track active</small></div><label class="switch" aria-label="Show the service's own captions"><input id="controlNative" type="checkbox"><span class="switch-ui"></span></label></div>
+        <div class="control-row"><div><span>In-player controls</span><small>Show the LST subtitle control button in the player</small></div><label class="switch" aria-label="Show LST subtitle controls in the player"><input id="controlQuickPills" type="checkbox"><span class="switch-ui"></span></label></div>
+        <div class="control-row"><div><span>Transcript sidebar</span><small>Show the full transcript and follow the current line</small></div><label class="switch" aria-label="Show transcript sidebar in the player"><input id="controlTranscript" type="checkbox"><span class="switch-ui"></span></label></div>
       </section>
 
       <section id="timingSection" class="panel control-section">
-        <div class="section-heading"><div><h2>Timing offset</h2><p>Adjust LST subtitles in 100 ms steps.</p></div><output id="timingValue">0 ms</output></div>
-        <div class="segmented"><button id="timingEarlier" type="button">Earlier</button><button id="timingReset" type="button">Reset</button><button id="timingLater" type="button">Later</button></div>
+        <div class="section-heading"><div><h2>Timing offset</h2><p id="timingHelp">Adjust LST subtitles in 100 ms steps.</p></div><output id="timingValue">0 ms</output></div>
+        <div class="segmented" id="timingGlobalSteps"><button id="timingEarlier" type="button">Earlier</button><button id="timingReset" type="button">Reset</button><button id="timingLater" type="button">Later</button></div>
+        <div class="timing-file-grid" id="timingFileSteps" hidden>
+          <button type="button" data-file-timing-step="-30000" aria-label="Show the imported file 30 seconds earlier">−30 s</button>
+          <button type="button" data-file-timing-step="-5000" aria-label="Show the imported file 5 seconds earlier">−5 s</button>
+          <button type="button" data-file-timing-step="-1000" aria-label="Show the imported file 1 second earlier">−1 s</button>
+          <button type="button" data-file-timing-step="-100" aria-label="Show the imported file 100 milliseconds earlier">−0.1 s</button>
+          <button type="button" data-file-timing-step="100" aria-label="Show the imported file 100 milliseconds later">+0.1 s</button>
+          <button type="button" data-file-timing-step="1000" aria-label="Show the imported file 1 second later">+1 s</button>
+          <button type="button" data-file-timing-step="5000" aria-label="Show the imported file 5 seconds later">+5 s</button>
+          <button type="button" data-file-timing-step="30000" aria-label="Show the imported file 30 seconds later">+30 s</button>
+          <button type="button" data-file-timing-reset aria-label="Show the imported file where the file says">Reset</button>
+        </div>
+        <p id="timingNote" class="timing-note" hidden></p>
       </section>
 
       <section id="modelSection" class="panel control-section">
@@ -85,6 +98,9 @@
     <button id="toggleTranscript" class="settings-button toggle-shortcut" type="button" aria-pressed="false">Transcript: Off</button>
     <button id="settings" class="settings-button" type="button">All settings</button>
   </nav>
+  <script src="playback-site.js"></script>
+  <script src="episode-identity.js"></script>
+  <script src="subtitle-import.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

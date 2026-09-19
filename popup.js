@@ -1,12 +1,49 @@
 const ext = globalThis.browser || globalThis.chrome;
 const $ = (id) => document.getElementById(id);
 const hasExtensionApi = Boolean(ext?.runtime?.sendMessage && ext?.tabs?.query);
+const LEGACY_HIDE_SUBTITLES_KEY = "hideNetflixSubtitles";
+
+// Episode identity — which names are real and which are placeholders — is
+// decided by episode-identity.js so the popup shows the same answer the page
+// and the background reached.
+function episodeIdentity() {
+  return globalThis.LSTEpisodeIdentity || null;
+}
+
+function displayShowName(value, fallback = "LST") {
+  const api = episodeIdentity();
+  return api ? api.preferredName(value, fallback).name : value || fallback;
+}
+
+// Which service the active tab is comes from the page itself, through the
+// adapter the page uses: the popup asks the content script and reads the
+// `siteId` it reports. Reading a tab's URL would need host permission for every
+// service, and a popup that guessed from a hostname of its own could disagree
+// with the page it is describing.
+function siteLabelFor(siteId, fallback = "LST") {
+  return globalThis.LSTPlaybackSite?.labelFor?.(siteId) || fallback;
+}
+
+// The renamed setting is read through, so an install from before the rename
+// keeps its answer. `??` and not `||`: a stored `false` is a real answer.
+function hidesNativeSubtitles(settings) {
+  if (settings?.hideNativeSubtitles !== undefined) return settings.hideNativeSubtitles;
+  if (settings?.[LEGACY_HIDE_SUBTITLES_KEY] !== undefined) {
+    return settings[LEGACY_HIDE_SUBTITLES_KEY];
+  }
+  return true;
+}
+
+function isNamedEpisode(value) {
+  const api = episodeIdentity();
+  return api ? api.isSpecificName(value) : Boolean(value);
+}
 
 const state = {
   settings: {
     showTranslated: true,
     showOriginal: false,
-    hideNetflixSubtitles: true,
+    hideNativeSubtitles: true,
     showQuickPills: true,
     showTranscriptSidebar: false,
     subtitleTimingOffsetMs: 0,
@@ -15,6 +52,9 @@ const state = {
     targetLanguage: "English",
     ollamaUrl: "http://localhost:11434"
   },
+  // The imported track this episode is using, as the page reports it, so the
+  // timing controls know which clock they move.
+  imported: null,
   pollTimer: null
 };
 
@@ -30,12 +70,18 @@ async function tabMessage(tabId, message) {
   return response;
 }
 
-async function activeNetflixTab() {
+// The active tab must be a page LST is actually running on. Asking it for its
+// status is the test: a tab with no LST content script cannot answer, which is
+// the same as "not a watch page" for the popup's purposes.
+async function activePlaybackTab() {
   const [tab] = await ext.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !/^https:\/\/www\.netflix\.com\/watch\/\d+(?:[/?#]|$)/.test(tab.url || "")) {
-    throw new Error("Open a Netflix watch page first.");
+  if (!tab?.id) throw new Error("Open a Netflix or Prime Video watch page first.");
+  try {
+    const response = await tabMessage(tab.id, { type: "GET_PAGE_STATUS" });
+    return { tab, status: response.status };
+  } catch {
+    throw new Error("Open a Netflix or Prime Video watch page first.");
   }
-  return tab;
 }
 
 function formatElapsed(startedAt) {
@@ -50,9 +96,58 @@ function formatTiming(value = state.settings.subtitleTimingOffsetMs) {
   return `${timing > 0 ? "+" : ""}${timing} ms`;
 }
 
+// The timing controls point at one clock: an imported file's own, when one is in
+// use for this episode, and the global setting otherwise. Which clock that is
+// comes from the module the player asks too, so the two cannot point at different
+// ones; the popup only has to know which row to show.
+function timingTarget() {
+  const api = globalThis.LSTSubtitleImport;
+  const imported = state.imported || null;
+  if (api?.timingTargetFor) {
+    return api.timingTargetFor(imported, {
+      globalOffsetMs: Number(state.settings.subtitleTimingOffsetMs) || 0,
+    });
+  }
+  return imported
+    ? { scope: "imported-file", episodeKey: imported.episodeKey || "", offsetMs: 0, limitMs: 0 }
+    : { scope: "global", episodeKey: "", offsetMs: Number(state.settings.subtitleTimingOffsetMs) || 0, limitMs: 2000 };
+}
+
+function renderTiming() {
+  const target = timingTarget();
+  const importedScope = target.scope !== "global";
+  $("timingGlobalSteps").hidden = importedScope;
+  $("timingFileSteps").hidden = !importedScope;
+  const described = importedScope
+    ? globalThis.LSTSubtitleImport?.describeFileTiming?.(target.offsetMs)
+    : null;
+  const label = described?.label || formatTiming(target.offsetMs);
+  $("timingValue").textContent = label;
+  $("timingSummary").textContent = importedScope ? `${label} · file` : label;
+  $("timingHelp").textContent = importedScope
+    ? "Adjust the imported file for this episode."
+    : "Adjust LST subtitles in 100 ms steps.";
+  const note = $("timingNote");
+  note.hidden = !importedScope;
+  if (!importedScope) return;
+  // The global setting still applies while a file is in use, so a viewer who set
+  // it for the service's own track is told it is part of the sum.
+  const global = Number(state.settings.subtitleTimingOffsetMs) || 0;
+  note.textContent =
+    `${described?.sentence || ""}` +
+    (global
+      ? ` The global timing offset (${global > 0 ? "+" : ""}${global} ms) also applies.`
+      : "");
+}
+
 function resetPopupScroll() {
+  // The document itself never scrolls: the popup is a fixed panel whose middle
+  // scrolls, so switching tabs or arriving with a result starts that region at
+  // the top rather than leaving it where the last one was scrolled to.
   document.documentElement.scrollTop = 0;
   document.body.scrollTop = 0;
+  const scroller = $("popupScroll") || document.querySelector("main");
+  if (scroller) scroller.scrollTop = 0;
 }
 
 function activatePopupTab(tabName, focus = false) {
@@ -79,7 +174,7 @@ function syncSettingsControls() {
   $("statusTranslated").checked = state.settings.showTranslated !== false;
   $("controlTranslated").checked = state.settings.showTranslated !== false;
   $("controlOriginal").checked = state.settings.showOriginal === true;
-  $("controlNetflix").checked = state.settings.hideNetflixSubtitles === false;
+  $("controlNative").checked = hidesNativeSubtitles(state.settings) === false;
   $("controlQuickPills").checked = state.settings.showQuickPills !== false;
   $("controlTranscript").checked = state.settings.showTranscriptSidebar === true;
   $("toggleTranscript").setAttribute(
@@ -89,8 +184,7 @@ function syncSettingsControls() {
   $("toggleTranscript").textContent = state.settings.showTranscriptSidebar
     ? "Transcript: On"
     : "Transcript: Off";
-  $("timingValue").textContent = formatTiming();
-  $("timingSummary").textContent = formatTiming();
+  renderTiming();
   $("modelSummary").textContent = state.settings.model || "Not selected";
   $("targetSummary").textContent = state.settings.targetLanguage || "English";
   $("targetLanguage").value = state.settings.targetLanguage || "English";
@@ -99,21 +193,36 @@ function syncSettingsControls() {
   }
 }
 
-async function notifyNetflixTabs() {
+// Every open tab is offered the reload; the ones without an LST content script
+// reject the message and are ignored. Filtering by URL instead would need host
+// permission for each service, and messaging needs none.
+async function notifyOpenTabs() {
   try {
-    const tabs = await ext.tabs.query({ url: "https://www.netflix.com/*" });
+    const tabs = await ext.tabs.query({});
     await Promise.all(tabs.map((tab) => tab.id
       ? ext.tabs.sendMessage(tab.id, { type: "RELOAD_SETTINGS" }).catch(() => {})
       : Promise.resolve()));
   } catch {}
 }
 
-async function saveQuickSettings(patch, message = "Saved") {
+// The tab showing that episode moves with the correction immediately: the viewer
+// nudged until the line landed, so the player has to apply it now rather than at
+// the next episode change. Tabs without an LST content script reject the message
+// and are ignored.
+async function notifyImportChanged() {
   try {
+    const tabs = await ext.tabs.query({});
+    await Promise.all(tabs.map((tab) => tab.id
+      ? ext.tabs.sendMessage(tab.id, { type: "IMPORT_CHANGED" }).catch(() => {})
+      : Promise.resolve()));
+  } catch {}
+}
+
+async function saveQuickSettings(patch, message = "Saved") {  try {
     const response = await runtimeMessage({ type: "SAVE_SETTINGS", settings: patch });
     state.settings = { ...state.settings, ...response.settings };
     syncSettingsControls();
-    await notifyNetflixTabs();
+    await notifyOpenTabs();
     $("controlsMessage").textContent = message;
   } catch (error) {
     syncSettingsControls();
@@ -187,13 +296,31 @@ function renderStatus(status) {
   );
   const percent = Math.max(0, Math.min(100, Number(status.progressPercent || 0)));
 
-  $("showName").textContent = status.showName || "Netflix";
-  const genericEpisodeName = /^(?:Episode|Video) \d{6,}$/.test(
-    status.episodeName || "",
-  );
-  $("episodeName").textContent = genericEpisodeName
-    ? "Finding episode details…"
-    : status.episodeName || "Finding episode details…";
+  const serviceLabel = siteLabelFor(status.siteId);
+  $("showName").textContent = displayShowName(status.showName, serviceLabel);
+  const episodeName = status.episodeName || "";
+  $("episodeName").textContent = isNamedEpisode(episodeName)
+    ? episodeName
+    : "Finding episode details…";
+  // What the episode is playing from: the service's own track, or a subtitle
+  // file the viewer imported. The click target is the import card itself.
+  const imported = status.imported || null;
+  state.imported = imported;
+  $("importSummary").textContent = imported
+    ? `${imported.fileName || "Imported file"}${imported.translate ? "" : " (as is)"}`
+    : "None";
+  // What Jimaku held for this show the last time the viewer asked. It comes from
+  // the page rather than from a request, so opening the popup asks nobody
+  // anything.
+  const described = imported
+    ? null
+    : globalThis.LSTSubtitleImport?.describeJimakuFinding?.(status.jimaku, { now: Date.now() }) || null;
+  $("importDetail").textContent = described ? described.headline : "";
+  $("importDetail").dataset.tone = described ? described.tone : "";
+  // The timing controls follow the track: this episode's imported file has its own
+  // clock, and the panel says so rather than showing the global number as if it
+  // were the whole story.
+  renderTiming();
   $("cueCount").textContent =
     `${remainingTranslatedCount} / ${remainingCueCount} cues ahead`;
   $("progressBar").style.width = `${percent}%`;
@@ -266,11 +393,10 @@ function renderStatus(status) {
 
 async function refresh() {
   try {
-    const tab = await activeNetflixTab();
-    const response = await tabMessage(tab.id, { type: "GET_PAGE_STATUS" });
-    renderStatus(response.status);
+    const { status } = await activePlaybackTab();
+    renderStatus(status);
   } catch (error) {
-    $("showName").textContent = "Netflix";
+    $("showName").textContent = "LST";
     $("episodeName").textContent = "Open a watch page";
     $("message").textContent = error.message;
     $("statePill").textContent = "Not connected";
@@ -306,8 +432,8 @@ $("controlTranslated").addEventListener("change", async (event) => {
 $("controlOriginal").addEventListener("change", async (event) => {
   await saveQuickSettings({ showOriginal: event.target.checked }, "Original-text setting saved.");
 });
-$("controlNetflix").addEventListener("change", async (event) => {
-  await saveQuickSettings({ hideNetflixSubtitles: !event.target.checked }, "Netflix-caption setting saved.");
+$("controlNative").addEventListener("change", async (event) => {
+  await saveQuickSettings({ hideNativeSubtitles: !event.target.checked }, "Caption setting saved.");
 });
 $("controlQuickPills").addEventListener("change", async (event) => {
   await saveQuickSettings({ showQuickPills: event.target.checked }, "In-player control setting saved.");
@@ -317,6 +443,42 @@ $("controlTranscript").addEventListener("change", async (event) => {
 });
 
 async function changeTiming(delta) {
+  const target = timingTarget();
+  if (target.scope !== "global") {
+    // A file the viewer imported carries its own correction, so a nudge lands
+    // with the file and the player is told to move with it. Nothing about the
+    // file is re-read: the page applies the number and the line moves.
+    const step = delta === null ? -target.offsetMs : delta;
+    const limit = target.limitMs || 600000;
+    const next = Math.max(-limit, Math.min(limit, target.offsetMs + step));
+    try {
+      const response = await runtimeMessage({
+        type: "SET_IMPORTED_TRACK_TIMING",
+        episodeKey: target.episodeKey,
+        offsetMs: next,
+      });
+      const timingOffsetMs = Number(response?.track?.timingOffsetMs) || 0;
+      if (!response?.track) {
+        // The file was removed while the popup was open, so there is nothing for
+        // this correction to belong to.
+        state.imported = null;
+        renderTiming();
+        $("controlsMessage").textContent =
+          "This episode no longer uses an imported file, so there is no file to time.";
+        return;
+      }
+      state.imported = { ...state.imported, timingOffsetMs };
+      renderTiming();
+      const described = globalThis.LSTSubtitleImport?.describeFileTiming?.(timingOffsetMs);
+      $("controlsMessage").textContent = described
+        ? `${described.sentence} It applies to this episode from the player too.`
+        : "Timing saved for this imported file.";
+      await notifyImportChanged();
+    } catch (error) {
+      $("controlsMessage").textContent = `Could not save the timing: ${error.message}`;
+    }
+    return;
+  }
   const current = Number(state.settings.subtitleTimingOffsetMs) || 0;
   const next = delta === null ? 0 : Math.max(-2000, Math.min(2000, current + delta));
   await saveQuickSettings({ subtitleTimingOffsetMs: next }, `Timing set to ${formatTiming(next)}.`);
@@ -324,13 +486,21 @@ async function changeTiming(delta) {
 $("timingEarlier").addEventListener("click", () => changeTiming(-100));
 $("timingReset").addEventListener("click", () => changeTiming(null));
 $("timingLater").addEventListener("click", () => changeTiming(100));
+$("timingFileSteps").addEventListener("click", (event) => {
+  if (event.target.closest("[data-file-timing-reset]")) {
+    changeTiming(null);
+    return;
+  }
+  const step = event.target.closest("[data-file-timing-step]");
+  if (step) changeTiming(Number(step.dataset.fileTimingStep) || 0);
+});
 
 $("modelSelect").addEventListener("change", async (event) => {
   const provider = state.settings.provider || "ollama";
   await saveQuickSettings({
     model: event.target.value,
     [`${provider}Model`]: event.target.value
-  }, "Model changed for Netflix playback.");
+  }, "Model changed for playback.");
 });
 $("targetLanguage").addEventListener("change", async () => {
   const targetLanguage = $("targetLanguage").value.trim() || "English";
@@ -339,7 +509,7 @@ $("targetLanguage").addEventListener("change", async () => {
 
 $("precompute").addEventListener("click", async () => {
   try {
-    const tab = await activeNetflixTab();
+    const { tab } = await activePlaybackTab();
     await tabMessage(tab.id, { type: "START_PRECOMPUTE" });
     await refresh();
   } catch (error) {
@@ -349,7 +519,7 @@ $("precompute").addEventListener("click", async () => {
 
 $("cancel").addEventListener("click", async () => {
   try {
-    const tab = await activeNetflixTab();
+    const { tab } = await activePlaybackTab();
     await tabMessage(tab.id, { type: "CANCEL_PRECOMPUTE" });
     $("message").textContent = "Stopping after the current translation request finishes…";
   } catch (error) {
@@ -362,10 +532,21 @@ $("toggleTranscript").addEventListener("click", async () => {
   const visible = state.settings.showTranscriptSidebar !== true;
   await saveQuickSettings(
     { showTranscriptSidebar: visible },
-    visible ? "Transcript opened on Netflix." : "Transcript hidden on Netflix.",
+    visible ? "Transcript opened in the player." : "Transcript hidden in the player.",
   );
 });
 $("settings").addEventListener("click", () => ext?.runtime?.openOptionsPage());
+
+// Opening the import card directly, so a viewer who clicked here does not have
+// to find it in the settings page.
+$("importSubtitles").addEventListener("click", () => {
+  try {
+    const created = ext.tabs.create({ url: ext.runtime.getURL("options.html#import") });
+    Promise.resolve(created).catch(() => ext?.runtime?.openOptionsPage());
+  } catch {
+    ext?.runtime?.openOptionsPage();
+  }
+});
 
 activatePopupTab(new URLSearchParams(location.search).get("tab") === "controls" ? "controls" : "status");
 if (hasExtensionApi) {
@@ -380,7 +561,7 @@ if (hasExtensionApi) {
     targetLanguage: "English",
     showTranslated: true,
     showOriginal: false,
-    hideNetflixSubtitles: true,
+    hideNativeSubtitles: true,
     showQuickPills: true,
     showTranscriptSidebar: false
   };
@@ -399,7 +580,7 @@ if (hasExtensionApi) {
     episodeName: "Season 1 · Episode 1 — Pilot",
     model: "translategemma:4b",
     targetLanguage: "English",
-    message: "Precompute continues in the Netflix tab."
+    message: "Precompute continues in the player tab."
   });
   setTimeout(resetPopupScroll, 0);
 }
