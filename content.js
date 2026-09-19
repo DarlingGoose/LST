@@ -7,7 +7,9 @@
     provider: "ollama",
     model: "translategemma:4b",
     targetLanguage: "English",
-    hideNetflixSubtitles: true,
+    hideNativeSubtitles: true,
+    enabledSites: { netflix: true, primevideo: true },
+    hudPosition: "",
     showOriginal: false,
     showTranslated: true,
     minimumSubtitleDisplaySeconds: 2,
@@ -15,6 +17,8 @@
     showStatusMessages: true,
     autoTranslateAhead: true,
     useTranslationContext: false,
+    contextLevel: "standard",
+    verifyTranslations: true,
     lookAheadSeconds: 30,
     cacheWhilePaused: true,
     batchSize: 8,
@@ -32,7 +36,7 @@
     subtitleBackgroundOpacity: 58,
     subtitleTimingOffsetMs: 0,
   };
-  const NETFLIX_SUBTITLE_STABILITY_MS = 90;
+  const RENDERED_SUBTITLE_STABILITY_MS = 90;
   const TIMED_TRACK_MISMATCH_GRACE_MS = 300;
   const DEBUG_FLUSH_MS = 500;
 
@@ -43,6 +47,12 @@
   const titleMetadataByVideoId = new Map();
   const titleMetadataRequestsByVideoId = new Map();
   const storedTitleSignaturesByCacheId = new Map();
+  let lastTitleResolution = {};
+  // The episode number the page states, when it states one. Importing a file
+  // needs it: it is what the file names are matched against.
+  let lastEpisodeNumber = null;
+  let lastEpisodeMetadataSignature = "";
+  let lastEpisodeMetadataBlock = "";
 
   let overlay;
   let subtitleStack;
@@ -65,11 +75,11 @@
   let renderedSubtitles = [];
   let lastFallbackText = "";
   let fallbackTimer = null;
-  let netflixSubtitleCandidate = "";
-  let netflixSubtitleCandidateSince = 0;
+  let renderedSubtitleCandidate = "";
+  let renderedSubtitleCandidateSince = 0;
   let timedTrackSyncState = "unverified";
   let automaticCueTimeOffsetSeconds = 0;
-  let lastNetflixSyncText = "";
+  let lastRenderedSyncText = "";
   let timedTrackMismatchSince = 0;
   let lastTimedTrackMismatch = "";
   let timedTrackMismatchSequence = 0;
@@ -78,6 +88,7 @@
   let lastTitleMetadataRefreshAt = 0;
   let titleMetadataRefreshTimer = null;
 
+  let warnedMissingTranslationContext = false;
   let translationCoordinator;
   let knownCachedKeys = new Set();
   let knownCachedTranslations = new Map();
@@ -134,7 +145,11 @@
     lastOllamaMode: "",
     lastOllamaRaw: "",
     lastDiagnostics: [],
-    message: "Waiting for Netflix subtitles…",
+    message: "Waiting for subtitles…",
+    // Which track is playing: the service's own captions, or a subtitle file the
+    // viewer imported for this episode.
+    subtitleSource: "none",
+    importedFileName: "",
   };
 
   async function runtimeMessage(message) {
@@ -163,7 +178,7 @@
   }
 
   function logDiagnostic(level, category, event, details = {}, key = "") {
-    const videoTime = Number(document.querySelector("video")?.currentTime);
+    const videoTime = Number(activeVideo()?.currentTime);
     diagnosticEvents.push({
       timestamp: Date.now(),
       level,
@@ -180,13 +195,139 @@
     }
   }
 
-  function getVideoId() {
-    const match = location.pathname.match(/\/watch\/(\d+)/);
-    return match ? match[1] : "unknown";
+  // Which service this page is, and every site-specific fact about it, belongs
+  // to playback-site.js so this file, the page hook, the background and the
+  // extension's pages answer those questions the same way. The manifest loads it
+  // before this file; the fallbacks below only exist so a broken load order
+  // reports itself instead of throwing or guessing a site.
+  let warnedMissingPlaybackSite = false;
+
+  function playbackSite() {
+    const api = globalThis.LSTPlaybackSite;
+    if (api) return api;
+    if (!warnedMissingPlaybackSite) {
+      warnedMissingPlaybackSite = true;
+      console.warn(
+        "[LST] playback-site.js is missing; LST cannot tell which service this page is.",
+      );
+    }
+    return null;
+  }
+
+  // Site detection is cached per URL, because the playback loop asks for it many
+  // times per second and both services navigate without reloading the document.
+  let playbackSiteCache = { href: null, detected: null };
+
+  function detectedSite() {
+    const href = String(location.href || `${location.pathname || ""}${location.search || ""}`);
+    if (playbackSiteCache.href !== href) {
+      const api = playbackSite();
+      playbackSiteCache = {
+        href,
+        detected: api
+          ? api.detect(location)
+          : {
+              site: null,
+              siteId: "",
+              matchPattern: "",
+              view: { href, pathname: String(location.pathname || ""), search: "", host: "" },
+              reason: "playback-site-unavailable",
+            },
+      };
+    }
+    return playbackSiteCache.detected;
+  }
+
+  function currentSite() {
+    return detectedSite().site || null;
+  }
+
+  function currentSiteId() {
+    return detectedSite().siteId || "";
+  }
+
+  // What to call the service in a sentence the viewer reads. Falling back to a
+  // neutral phrase is deliberate: an unknown site must not be called Netflix.
+  function siteName() {
+    return currentSite()?.label || "this service";
+  }
+
+  // A service the viewer has switched off behaves like the global switch: LST
+  // stays idle and leaves native subtitles alone. A site that is absent from the
+  // map is enabled, because an unknown key is not a reason to disable something
+  // the viewer never touched.
+  function siteEnabled(siteId) {
+    const map = settings.enabledSites;
+    if (!siteId || !map || typeof map !== "object") return true;
+    return map[siteId] !== false;
+  }
+
+  // Is a player actually in use on this page? A playback path is not the same
+  // question: a Prime Video detail page is a storefront with a trailer on it
+  // until the viewer presses play, and LST must not paint its overlay over a
+  // storefront. Each service answers for itself, and a service that cannot
+  // answer leaves LST idle rather than guessed-on.
+  function playerPresence() {
+    const site = currentSite();
+    if (!site?.playerPresence) return { present: false, reason: "adapter-unavailable" };
+    try {
+      return site.playerPresence(document);
+    } catch {
+      return { present: false, reason: "adapter-error" };
+    }
   }
 
   function isWatchPage() {
-    return /^\/watch\/\d+(?:\/|$)/.test(location.pathname);
+    const site = currentSite();
+    if (!site) return false;
+    return Boolean(site.isPlaybackPage(detectedSite().view).ok);
+  }
+
+  function getVideoId() {
+    const site = currentSite();
+    if (!site) return "unknown";
+    try {
+      return site.videoIdFrom(detectedSite().view).videoId || "unknown";
+    } catch {
+      // The adapter is the only place a URL is read, so a throw here means the
+      // id is unavailable rather than that some other rule should be tried.
+      return "unknown";
+    }
+  }
+
+  // Which <video> element the viewer is watching. Prime renders several (main
+  // playback plus ad and preview slots), so "the first video on the page" is not
+  // the same question. The answer is cached briefly because the playback loop
+  // asks once per frame.
+  const ACTIVE_VIDEO_CACHE_MS = 250;
+  let activeVideoCache = { at: 0, element: null };
+  let lastActiveVideoReason = "";
+
+  function activeVideo() {
+    const now = performance.now();
+    if (
+      activeVideoCache.element?.isConnected &&
+      now - activeVideoCache.at < ACTIVE_VIDEO_CACHE_MS
+    ) {
+      return activeVideoCache.element;
+    }
+    const site = currentSite();
+    let video = null;
+    if (site) {
+      try {
+        const result = site.activeVideo(document);
+        video = result?.video || null;
+        lastActiveVideoReason = result?.reason || "";
+      } catch (error) {
+        video = document.querySelector("video") || null;
+        lastActiveVideoReason = "adapter-error";
+      }
+    } else {
+      video = document.querySelector("video") || null;
+      lastActiveVideoReason = "site-unavailable";
+    }
+    activeVideoCache = { at: now, element: video };
+    return video;
   }
 
   function normalizeText(text) {
@@ -201,7 +342,26 @@
     return normalizeText(text).replace(/\s+/g, " ");
   }
 
+  // Cue identity is decided by subtitle-sync.js so that every place a rendered
+  // line is matched against the captured track uses the same folded comparison.
+  // The helper is read lazily because content.js also runs in contexts that load
+  // it on its own, where these degrade to the previous comparable-text test.
+  function foldedSubtitleText(text) {
+    const api = globalThis.LSTSubtitleSync;
+    return api?.foldSubtitleText
+      ? api.foldSubtitleText(text)
+      : comparableSubtitleText(text);
+  }
+
+  function foldedMatchTier() {
+    return Number(globalThis.LSTSubtitleSync?.MATCH_TIER?.folded ?? 2);
+  }
+
   function subtitleTextsMatch(left, right) {
+    const api = globalThis.LSTSubtitleSync;
+    if (api?.matchTier) {
+      return api.matchTier(left, right) === api.MATCH_TIER.folded;
+    }
     const comparableLeft = comparableSubtitleText(left);
     return Boolean(
       comparableLeft && comparableLeft === comparableSubtitleText(right),
@@ -213,7 +373,7 @@
   }
 
   function diagnosticTextId(text) {
-    const normalized = comparableSubtitleText(text);
+    const normalized = foldedSubtitleText(text);
     if (!normalized) return "empty";
     if (!diagnosticTextIds.has(normalized)) {
       diagnosticTextIds.set(normalized, `text-${nextDiagnosticTextId++}`);
@@ -246,7 +406,8 @@
 
     const timedCuesByText = new Map();
     for (const cue of cues) {
-      const text = comparableSubtitleText(cue.text);
+      const text = foldedSubtitleText(cue.text);
+      if (!text) continue;
       const matches = timedCuesByText.get(text) || [];
       matches.push(cue);
       timedCuesByText.set(text, matches);
@@ -259,7 +420,7 @@
         continue;
       }
       const matches = timedCuesByText.get(
-        comparableSubtitleText(key.slice("fallback:".length)),
+        foldedSubtitleText(key.slice("fallback:".length)),
       );
       if (matches?.length === 1) {
         promoted[cueKey(matches[0])] = translation;
@@ -271,20 +432,38 @@
   }
 
   function cacheId() {
+    const videoId = cueVideoId || getVideoId();
+    const siteId = currentSiteId();
+    const api = episodeIdentity();
+    if (api) {
+      return api.encodeCacheId({
+        videoId,
+        siteId,
+        provider: settings.provider,
+        model: settings.model,
+        targetLanguage: settings.targetLanguage,
+      });
+    }
     const model = encodeURIComponent(
       settings.provider === "ollama"
         ? settings.model || "none"
-        : `${settings.provider}/${settings.model || "none"}`
+        : `${settings.provider}/${settings.model || "none"}`,
     );
     const language = encodeURIComponent(settings.targetLanguage || "English");
-    return `${cueVideoId || getVideoId()}:${model}:${language}`;
+    // Without episode-identity.js the id is assembled here, and the namespace
+    // rule is the same one: only a non-default service is prefixed, so Netflix
+    // keys stay readable by a build that has the module.
+    const namespace = siteId && siteId !== "netflix" ? `${siteId}~` : "";
+    return `${namespace}${videoId}:${model}:${language}`;
   }
 
-  function cleanNetflixPageTitle(value) {
-    return normalizeText(value)
-      .replace(/^Watch\s+/i, "")
-      .replace(/\s*(?:\||-|–|—)\s*Netflix(?: Official Site)?.*$/i, "")
-      .trim();
+  // How a service words its own document title, and which parts of it are
+  // boilerplate, belongs to the adapter: "Amazon.co.jp: Show : Prime Video" and
+  // "Watch Show | Netflix Official Site" are the same question asked twice.
+  function cleanSitePageTitle(value) {
+    const site = currentSite();
+    if (site?.cleanPageTitle) return normalizeText(site.cleanPageTitle(value));
+    return normalizeText(value);
   }
 
   function metadataTexts(selectors, attribute = "") {
@@ -302,73 +481,104 @@
     return values;
   }
 
-  function isGenericNetflixTitle(value) {
-    return (
-      !value ||
-      /^(?:Netflix(?:\s*[-–—|:].*)?|Netflix episode \S+|Unknown Netflix episode)$/i.test(
-        value,
-      )
-    );
-  }
+  // Episode identity — which names Netflix actually gave us, which are the
+  // placeholders it renders when it has nothing better, where the episode
+  // marker sits inside a title, and what the title block embedded in the
+  // episode page says — belongs to episode-identity.js, so this file, the
+  // background, and the extension's own pages answer those questions the same
+  // way. The manifest loads it first; the fallbacks below only exist so a
+  // broken load order reports itself instead of throwing.
+  let warnedMissingEpisodeIdentity = false;
 
-  function fallbackEpisodeName(videoId) {
-    return videoId && videoId !== "unknown"
-      ? `Video ${videoId}`
-      : "Episode details unavailable";
-  }
-
-  function isFallbackEpisodeName(value, videoId) {
-    return (
-      !value ||
-      value === `Episode ${videoId}` ||
-      value === fallbackEpisodeName(videoId)
-    );
-  }
-
-  function episodeMarker(text) {
-    const value = normalizeText(text);
-    const seasonEpisode = value.match(
-      /\bS(?:eason)?\s*(\d+)\s*[:·-]?\s*E(?:pisode)?\s*(\d+)\b/i,
-    );
-    if (seasonEpisode) {
-      return `Season ${Number(seasonEpisode[1])} · Episode ${Number(seasonEpisode[2])}`;
+  function episodeIdentity() {
+    const api = globalThis.LSTEpisodeIdentity;
+    if (api) return api;
+    if (!warnedMissingEpisodeIdentity) {
+      warnedMissingEpisodeIdentity = true;
+      console.warn(
+        "[LST] episode-identity.js is missing; episode names will not be classified.",
+      );
     }
-    const episode = value.match(/\bE(?:pisode)?\s*(\d+)\b/i);
-    return episode ? `Episode ${Number(episode[1])}` : "";
+    return null;
   }
 
-  function decodeEmbeddedMetadataText(value) {
-    return normalizeText(value)
-      .replace(/\\x20/g, " ")
-      .replace(/\\n/g, " ")
-      .replace(/\\'/g, "'")
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, "\\");
-  }
-
-  function episodeMetadataFromHtml(html, videoId) {
-    const normalizedHtml = String(html || "").replace(/\\"/g, '"');
-    const match = normalizedHtml.match(
-      new RegExp(
-        `"videoId":${videoId},"title":"((?:\\\\.|[^"\\\\])*)"` +
-          `[^}]{0,3000}?"number":(\\d+)`,
-      ),
-    );
-    if (!match) return null;
-
-    const parsed = new DOMParser().parseFromString(String(html), "text/html");
-    const showName = cleanNetflixPageTitle(
-      parsed.title || parsed.querySelector('meta[property="og:title"]')?.content,
-    );
-    const number = Number(match[2]);
-    const title = decodeEmbeddedMetadataText(match[1]);
+  function classifiedName(value) {
+    const api = episodeIdentity();
+    if (api) return api.classifyName(value);
+    // Without the classifier a scraped name is trusted exactly as it was
+    // before the classifier existed, and the reason says why.
+    const name = normalizeText(value);
     return {
-      showName: isGenericNetflixTitle(showName) ? "" : showName,
-      episodeName: [`Episode ${number}`, title].filter(Boolean).join(" · "),
+      name,
+      kind: name ? "specific" : "empty",
+      reason: "episode-identity-unavailable",
+      shape: "",
     };
   }
 
-  function requestNetflixTitleMetadata(videoId) {
+  function isSpecificName(value) {
+    return classifiedName(value).kind === "specific";
+  }
+
+  function fallbackEpisodeName(videoId) {
+    const api = episodeIdentity();
+    if (api) return api.fallbackEpisodeName(videoId);
+    return videoId && videoId !== "unknown"
+      ? `Episode ${videoId}`
+      : "Episode details unavailable";
+  }
+
+  function isFallbackEpisodeName(value) {
+    return !isSpecificName(value);
+  }
+
+  function episodeMarkerInfo(text) {
+    const api = episodeIdentity();
+    if (api) return api.episodeMarker(text);
+    return {
+      marker: "",
+      season: null,
+      episode: null,
+      shape: "",
+      reason: "episode-identity-unavailable",
+    };
+  }
+
+  function episodeMarker(text) {
+    return episodeMarkerInfo(text).marker;
+  }
+
+  function episodeMetadataFromHtml(html, videoId) {
+    const api = episodeIdentity();
+    if (!api) return { metadata: null, reason: "episode-identity-unavailable" };
+
+    const found = api.findEpisodeMetadataInHtml(html, videoId);
+    if (!found.title && found.episodeNumber == null) {
+      return { metadata: null, reason: found.reason };
+    }
+    // The show name is a separate question, and the page's own title is the
+    // only place Netflix states it for an episode page.
+    const parsed = new DOMParser().parseFromString(String(html), "text/html");
+    const showName = classifiedName(
+      cleanSitePageTitle(
+        parsed.title || parsed.querySelector('meta[property="og:title"]')?.content,
+      ),
+    );
+    return {
+      reason: found.reason,
+      episodeNumber: Number.isInteger(found.episodeNumber) ? found.episodeNumber : null,
+      metadata: {
+        showName: showName.kind === "specific" ? showName.name : "",
+        episodeName: api.episodeNameFromParts(found),
+      },
+    };
+  }
+
+  // Netflix publishes an episode's title and number in the HTML of its own
+  // /title/<id> page. Amazon has no equivalent, so this lookup is gated on the
+  // service rather than attempted and failed everywhere.
+  function requestSiteTitleMetadata(videoId) {
+    if (currentSiteId() !== "netflix") return;
     if (
       !videoId ||
       videoId === "unknown" ||
@@ -385,74 +595,87 @@
         return response.text();
       })
       .then((html) => {
-        const metadata = episodeMetadataFromHtml(html, videoId);
-        if (!metadata?.episodeName) return;
+        const { metadata, reason, episodeNumber } = episodeMetadataFromHtml(html, videoId);
+        if (Number.isInteger(episodeNumber) && episodeNumber > 0) {
+          lastEpisodeNumber = episodeNumber;
+        }
+        if (!metadata?.episodeName) {
+          logEpisodeMetadata("episode-metadata-lookup-empty", { videoId, reason });
+          return;
+        }
         const previous = titleMetadataByVideoId.get(videoId) || {};
         titleMetadataByVideoId.set(videoId, {
-          showName: metadata.showName || previous.showName || "Netflix",
+          showName: metadata.showName || previous.showName || siteName(),
           episodeName: metadata.episodeName,
         });
+        lastTitleResolution = {
+          ...lastTitleResolution,
+          lookupReason: reason,
+          lookupSource: "episode-page",
+          episodeNameKind: classifiedName(metadata.episodeName).kind,
+          episodeNameReason: classifiedName(metadata.episodeName).reason,
+        };
         persistImprovedCacheMetadata();
       })
       .catch((error) => {
         console.warn("[LST] Could not load Netflix episode details:", error);
+        logEpisodeMetadata("episode-metadata-lookup-failed", {
+          videoId,
+          reason: "request-failed",
+        });
       });
     titleMetadataRequestsByVideoId.set(videoId, request);
   }
 
-  function netflixTitleMetadata() {
-    const titleContainers = document.querySelectorAll(
-      '[data-uia="video-title"], [data-uia="player-title"], ' +
-        '[data-uia*="video-title"], .watch-video--player-view .video-title, ' +
-        ".player-status",
-    );
+  // Where a service shows the title inside its player, and which of its
+  // elements name the show rather than the episode, belongs to the adapter. A
+  // service that publishes neither — Prime Video's player chrome is unverified —
+  // answers with empty lists and the document title stands in.
+  const EMPTY_TITLE_SELECTORS = Object.freeze({
+    containers: [],
+    show: [],
+    showAttributes: [],
+    episode: [],
+    episodeAttributes: [],
+  });
+
+  function siteTitleSelectors() {
+    const selectors = currentSite()?.titleSelectors;
+    return selectors || EMPTY_TITLE_SELECTORS;
+  }
+
+  function siteTitleElements() {
+    const site = currentSite();
+    if (!site?.titleElements) return [];
+    try {
+      return site.titleElements(document).elements || [];
+    } catch {
+      return [];
+    }
+  }
+
+  // The selector the title observer watches. It is derived from the adapter so a
+  // service the observer knows nothing about still reports its document title.
+  function siteTitleObserverSelector() {
+    const selectors = siteTitleSelectors();
+    return [
+      "title",
+      ...(selectors.containers || []),
+      ...(selectors.show || []),
+      ...(selectors.episode || []),
+    ].join(", ");
+  }
+
+  function siteTitleMetadata() {
+    const selectors = siteTitleSelectors();
     const explicitShowCandidates = [
-      ...metadataTexts([
-        '[data-uia="video-title"] [data-uia="series-title"]',
-        '[data-uia="series-title"]',
-        '[data-uia*="video-title"] [data-uia*="series-title"]',
-        '[data-uia*="series-title"]',
-        '[data-uia="video-title"] h4',
-        '[data-uia="player-title"] h4',
-        '[data-uia*="video-title"] h1',
-        '[data-uia*="video-title"] h2',
-        '[data-uia*="video-title"] h3',
-        '[data-uia*="video-title"] h4',
-        ".watch-video--player-view .video-title h4",
-        ".ellipsize-text h4",
-        ".player-status-main-title",
-      ]),
-      ...metadataTexts(
-        [
-          '[data-uia="video-title"] img[alt]',
-          ".watch-video--player-view .video-title img[alt]",
-        ],
-        "alt",
-      ),
+      ...metadataTexts(selectors.show || []),
+      ...metadataTexts(selectors.showAttributes || [], "alt"),
     ];
-    const explicitEpisodeCandidates = metadataTexts([
-      '[data-uia="video-title"] [data-uia="episode-title"]',
-      '[data-uia="episode-title"]',
-      '[data-uia*="video-title"] [data-uia*="episode-title"]',
-      '[data-uia*="episode-title"]',
-      ".watch-video--player-view .video-title .episode-title",
-      ".player-status-subtitle",
-      '[data-uia*="episode"][aria-label*="Episode"]',
-      '[data-uia*="episode"][aria-label*="episode"]',
-    ]);
-    explicitEpisodeCandidates.push(
-      ...metadataTexts(
-        [
-          '[data-uia*="episode"][aria-label*="Episode"]',
-          '[data-uia*="episode"][aria-label*="episode"]',
-        ],
-        "aria-label",
-      ),
-      ...metadataTexts(
-        ['[aria-label^="Episode "]', '[aria-label^="episode "]'],
-        "aria-label",
-      ),
-    );
+    const explicitEpisodeCandidates = [
+      ...metadataTexts(selectors.episode || []),
+      ...metadataTexts(selectors.episodeAttributes || [], "aria-label"),
+    ];
     const pageTitleCandidates = [
       document.title,
       ...metadataTexts(
@@ -464,9 +687,9 @@
         "content",
       ),
     ]
-      .map(cleanNetflixPageTitle)
-      .filter((value) => !isGenericNetflixTitle(value));
-    const parts = [...titleContainers]
+      .map(cleanSitePageTitle)
+      .filter((value) => isSpecificName(value));
+    const parts = siteTitleElements()
       .flatMap((container) => [
         ...container.querySelectorAll("h1, h2, h3, h4, span"),
       ])
@@ -482,10 +705,14 @@
     const markerSource = [...explicitEpisodeCandidates, ...parts].find(
       (value) => episodeMarker(value),
     );
-    const normalizedEpisodeMarker = episodeMarker(markerSource);
+    const marker = episodeMarkerInfo(markerSource);
+    if (Number.isInteger(marker.episode) && marker.episode > 0) {
+      lastEpisodeNumber = marker.episode;
+    }
+    const normalizedEpisodeMarker = marker.marker;
     const usableExplicitShow = explicitShowCandidates.find(
       (value) =>
-        !isGenericNetflixTitle(value) &&
+        isSpecificName(value) &&
         !episodeMarker(value) &&
         !explicitEpisodeCandidates.includes(value),
     );
@@ -495,7 +722,7 @@
       usablePageTitle ||
       parts.find(
         (value) =>
-          !isGenericNetflixTitle(value) &&
+          isSpecificName(value) &&
           !episodeMarker(value) &&
           !explicitEpisodeCandidates.includes(value),
       ) ||
@@ -520,31 +747,49 @@
     ].join(" · ");
     const videoId = getVideoId();
     const previous = titleMetadataByVideoId.get(videoId) || {};
-    const previousEpisodeName = isFallbackEpisodeName(
-      previous.episodeName,
-      videoId,
-    )
+    const previousEpisodeName = isFallbackEpisodeName(previous.episodeName)
       ? ""
       : previous.episodeName;
     const discovered = {
-      showName: showName || previous.showName || "Netflix",
+      showName: showName || previous.showName || siteName(),
       episodeName:
         episodeName || previousEpisodeName || fallbackEpisodeName(videoId),
     };
 
-    const hasSpecificEpisode = !isFallbackEpisodeName(
-      discovered.episodeName,
-      videoId,
-    );
-    if (!hasSpecificEpisode) requestNetflixTitleMetadata(videoId);
+    const hasSpecificEpisode = !isFallbackEpisodeName(discovered.episodeName);
+    if (!hasSpecificEpisode) requestSiteTitleMetadata(videoId);
     if (
-      !isGenericNetflixTitle(discovered.showName) ||
+      isSpecificName(discovered.showName) ||
       !previous.showName ||
       hasSpecificEpisode
     ) {
       titleMetadataByVideoId.set(videoId, discovered);
     }
     const remembered = titleMetadataByVideoId.get(videoId) || discovered;
+
+    // What was decided about the episode's name, and why. The names themselves
+    // are page content, so only their kind and the rule that produced it are
+    // recorded here; see logEpisodeMetadata.
+    lastTitleResolution = {
+      episodeMarkerShape: marker.shape || "none",
+      episodeMarkerReason: marker.reason,
+      markerFoundInCandidates: Boolean(markerSource),
+      explicitEpisodeCandidateCount: explicitEpisodeCandidates.length,
+      explicitShowCandidateCount: explicitShowCandidates.length,
+      pageTitleCandidateCount: pageTitleCandidates.length,
+      showNameKind: classifiedName(remembered.showName).kind,
+      showNameReason: classifiedName(remembered.showName).reason,
+      episodeNameKind: classifiedName(remembered.episodeName).kind,
+      episodeNameReason: classifiedName(remembered.episodeName).reason,
+      episodeTitleKind: classifiedName(episodeTitle).kind,
+      episodeTitleReason: classifiedName(episodeTitle).reason,
+      episodeNameFrom:
+        episodeName ? "page" : previousEpisodeName ? "previous" : "placeholder",
+      lookupSource:
+        lastTitleResolution.lookupSource ||
+        (hasSpecificEpisode ? "player" : "episode-page-pending"),
+      lookupReason: lastTitleResolution.lookupReason || "no-lookup-yet",
+    };
 
     return {
       ...remembered,
@@ -554,24 +799,32 @@
     };
   }
 
+  // The service a cache belongs to is part of the id it is written under, so a
+  // Prime Video episode can never be filed as a Netflix one. The id travels with
+  // the metadata as well, so the background reconciles names against the same
+  // service the key names.
   function cacheMetadata() {
     const videoId = cueVideoId || getVideoId();
     const currentVideoId = getVideoId();
     const remembered = titleMetadataByVideoId.get(videoId);
-    const titleMetadata =
-      videoId === currentVideoId
-        ? netflixTitleMetadata()
-        : {
-            showName: remembered?.showName || "Netflix",
-            episodeName:
-              remembered?.episodeName || fallbackEpisodeName(videoId),
-            title:
-              [remembered?.showName, remembered?.episodeName]
-                .filter(Boolean)
-                .join(" — ") || `Netflix episode ${videoId}`,
-          };
+    let titleMetadata;
+    if (videoId === currentVideoId) {
+      titleMetadata = siteTitleMetadata();
+    } else {
+      // The title UI is no longer on screen. What was remembered for that video
+      // is all we have, plus the placeholders that name the video id.
+      const showName = remembered?.showName || siteName();
+      const episodeName =
+        remembered?.episodeName || fallbackEpisodeName(videoId);
+      titleMetadata = {
+        showName,
+        episodeName,
+        title: [showName, episodeName].filter(Boolean).join(" — "),
+      };
+    }
     return {
       videoId,
+      siteId: currentSiteId(),
       ...titleMetadata,
       url: location.href,
       provider: settings.provider || "ollama",
@@ -581,11 +834,66 @@
     };
   }
 
+  // Episode naming is reported as the decision that was made and the rule that
+  // made it, never as the names themselves: show and episode titles are page
+  // content, and the event log is meant to stay safe to share when something
+  // goes wrong.
+  function logEpisodeMetadata(event, details) {
+    logDiagnostic("info", "episode", event, details);
+  }
+
   function persistImprovedCacheMetadata() {
-    if (!cues.length || !knownCachedKeys.size || cueVideoId !== getVideoId())
+    // A title that just resolved is the first moment the show's name is known,
+    // which is also the first moment LST can look up what Jimaku holds for it.
+    // That happens even when nothing can be cached, because the case that needs
+    // it most — a title the service does not subtitle — has no cues at all.
+    refreshJimakuFinding({ reason: "title-resolved" }).catch((error) => {
+      console.warn("[LST] Could not read what Jimaku holds for this show:", error);
+    });
+    const blocked = !cues.length
+      ? "no-cues"
+      : !knownCachedKeys.size
+        ? "nothing-cached"
+        : cueVideoId !== getVideoId()
+          ? "different-video"
+          : "";
+    if (blocked) {
+      // A cache that is not being written cannot carry a name either. Say why
+      // nothing was saved, once per reason, instead of staying silent.
+      if (lastEpisodeMetadataBlock !== blocked) {
+        lastEpisodeMetadataBlock = blocked;
+        logEpisodeMetadata("episode-metadata-refresh-skipped", {
+          reason: blocked,
+        });
+      }
       return;
+    }
+    lastEpisodeMetadataBlock = "";
     const metadata = cacheMetadata();
-    if (!metadata.showName || metadata.showName === "Netflix") return;
+    const showName = classifiedName(metadata.showName);
+    const episodeName = classifiedName(metadata.episodeName);
+    const detail = {
+      videoId: metadata.videoId,
+      showNameKind: showName.kind,
+      showNameReason: showName.reason,
+      episodeNameKind: episodeName.kind,
+      episodeNameReason: episodeName.reason,
+      ...lastTitleResolution,
+      lookupSource: lastTitleResolution.lookupSource || "player",
+    };
+    const resolved =
+      showName.kind === "specific" || episodeName.kind === "specific";
+    const detailSignature = JSON.stringify(detail);
+    if (detailSignature !== lastEpisodeMetadataSignature) {
+      lastEpisodeMetadataSignature = detailSignature;
+      logEpisodeMetadata(
+        resolved ? "episode-name-resolved" : "episode-name-unresolved",
+        detail,
+      );
+    }
+    // Only a real name is worth writing back. A placeholder adds nothing to a
+    // cache that already names its episode.
+    if (!resolved) return;
 
     const signature = `${metadata.showName}|${metadata.episodeName}`;
     const currentCacheId = cacheId();
@@ -605,10 +913,9 @@
   }
 
   function startTitleMetadataObserver() {
-    const titleSelector =
-      'title, [data-uia="video-title"], [data-uia="player-title"], ' +
-      '[data-uia*="video-title"], [data-uia*="series-title"], ' +
-      '[data-uia*="episode-title"], .video-title, .player-status';
+    // The watched selector comes from the adapter, so a service the observer
+    // knows nothing about still reports a change of its own document title.
+    const titleSelector = siteTitleObserverSelector();
     const observer = new MutationObserver((mutations) => {
       if (!playbackActive || !isWatchPage()) return;
       const titleChanged = mutations.some((mutation) => {
@@ -627,7 +934,7 @@
 
       clearTimeout(titleMetadataRefreshTimer);
       titleMetadataRefreshTimer = setTimeout(() => {
-        netflixTitleMetadata();
+        siteTitleMetadata();
         persistImprovedCacheMetadata();
       }, 50);
     });
@@ -649,8 +956,13 @@
     currentStatus.episodeProgressPercent = total
       ? Math.min(100, Number(((translated / total) * 100).toFixed(1)))
       : 0;
+    // The pill's number and bar are drawn here rather than only where the rest of
+    // the pill is refreshed, because progress moves between those moments — a
+    // precompute batch, a cue translated ahead — and a number that only moves when
+    // something else happens to change is worse than no number at all.
+    updatePillProgress();
 
-    const video = document.querySelector("video");
+    const video = activeVideo();
     const rawTime = Number.isFinite(Number(videoTime))
       ? Number(videoTime)
       : Number(video?.currentTime);
@@ -825,19 +1137,34 @@
     return result;
   }
 
+  // Subtitle formats belong to the module that knows where an imported file
+  // comes from, so the same SubRip file is read the same way whether the player
+  // delivered it or a viewer imported it. The parsers here stay the ones that
+  // need a DOM: TTML and WebVTT arrive from the service and are read as
+  // documents.
   function parseSubtitleDocument(text) {
     const trimmed = String(text || "").trim();
     if (/^WEBVTT\b/i.test(trimmed)) return parseVtt(trimmed);
     if (/<tt[\s>]/i.test(trimmed)) return parseTtml(trimmed);
+    const api = subtitleImport();
+    if (api?.parseSrt && /-->/.test(trimmed)) return api.parseSrt(trimmed);
     return [];
   }
 
   async function loadSettings() {
     try {
-      settings = {
-        ...DEFAULTS,
-        ...(await runtimeMessage({ type: "GET_SETTINGS" })).settings,
-      };
+      const stored = (await runtimeMessage({ type: "GET_SETTINGS" })).settings || {};
+      settings = { ...DEFAULTS, ...stored };
+      // The renamed key is read through here as well as in the background, so a
+      // viewer whose saved preference predates the rename keeps it even if the
+      // background answering this message is an older build. `??` semantics
+      // matter: a stored `false` is a real answer.
+      if (
+        stored.hideNativeSubtitles === undefined &&
+        stored.hideNetflixSubtitles !== undefined
+      ) {
+        settings.hideNativeSubtitles = stored.hideNetflixSubtitles;
+      }
     } catch (error) {
       console.warn("[LST] Could not load settings:", error);
     }
@@ -855,7 +1182,7 @@
 
   function overlayHost() {
     const fullscreen = activeFullscreenElement();
-    // Netflix normally fullscreens a player container. A native fullscreen
+    // Players normally fullscreen a container. A native fullscreen
     // <video> cannot render arbitrary child overlays, so retain the regular
     // host in that uncommon browser-controlled mode.
     return fullscreen?.tagName !== "VIDEO"
@@ -907,6 +1234,7 @@
       hud = document.createElement("div");
       hud.id = "lst-hud";
       document.documentElement.appendChild(hud);
+      applyHudPosition();
     }
 
     if (!statusLine?.isConnected) {
@@ -917,6 +1245,32 @@
       hud.appendChild(statusLine);
     }
 
+    if (!jimakuNote?.isConnected) {
+      // A note about Jimaku outlives the status line, which is where every other
+      // message goes and is replaced by the next one — often within a second of
+      // arriving. What the viewer asked for is something they can read after the
+      // episode has settled, so it is its own element with its own dismiss.
+      jimakuNote = document.createElement("div");
+      jimakuNote.id = "lst-jimaku-note";
+      jimakuNote.hidden = true;
+      jimakuNote.setAttribute("role", "status");
+      jimakuNote.setAttribute("aria-live", "polite");
+      jimakuNote.innerHTML = `
+        <span id="lst-jimaku-note-text"></span>
+        <button type="button" data-jimaku-action="dismiss" aria-label="Dismiss what LST knows about this show">×</button>
+      `;
+      jimakuNote.addEventListener("click", (event) => {
+        if (event.target.closest("[data-jimaku-action]")?.dataset.jimakuAction !== "dismiss") return;
+        // Dismissal lasts as long as the page does, and one show's dismissal is
+        // not another's.
+        if (jimakuFinding?.showKey) jimakuNoteDismissed.add(jimakuFinding.showKey);
+        logDiagnostic("info", "import", "jimaku-note-dismissed", {});
+        updatePillSubtitleSource();
+      });
+      hud.appendChild(jimakuNote);
+      jimakuNoteText = jimakuNote.querySelector("#lst-jimaku-note-text");
+    }
+
     if (!quickPillsPanel?.isConnected) {
       quickPillsPanel = document.createElement("div");
       quickPillsPanel.id = "lst-quick-pills";
@@ -925,8 +1279,11 @@
           <span class="lst-pill-dot" aria-hidden="true"></span>
           <strong>LST</strong>
           <span id="lst-pill-state">Waiting</span>
+          <span id="lst-pill-percent" class="lst-pill-percent" hidden></span>
           <span id="lst-pill-ahead" class="lst-pill-ahead"></span>
+          <span id="lst-pill-source" class="lst-pill-source" hidden></span>
           <span class="lst-pill-controls-label">Controls</span>
+          <span id="lst-pill-progress" class="lst-pill-progress" aria-hidden="true" hidden><span id="lst-pill-progress-fill" class="lst-pill-progress-fill"></span></span>
         </button>
         <div id="lst-pill-menu" hidden>
           <div class="lst-pill-menu-header">
@@ -936,20 +1293,42 @@
             </div>
             <button type="button" data-pill-action="collapse">Collapse</button>
           </div>
+          <p id="lst-pill-load-note" class="lst-pill-load-note" hidden></p>
+          <section class="lst-pill-section lst-pill-subtitles" aria-labelledby="lst-subtitles-heading">
+            <h3 id="lst-subtitles-heading">Subtitles</h3>
+            <p id="lst-pill-source-note" class="lst-pill-note">Waiting for the service's subtitles.</p>
+            <p id="lst-pill-jimaku-note" class="lst-pill-note lst-pill-jimaku" hidden></p>
+            <div class="lst-pill-actions">
+              <button type="button" data-pill-action="import">Import subtitles…</button>
+              <button type="button" data-pill-action="check-jimaku">Check Jimaku</button>
+            </div>
+          </section>
           <section class="lst-pill-section" aria-labelledby="lst-visibility-heading">
             <h3 id="lst-visibility-heading">Visibility</h3>
             <label><span>Translation</span><span class="lst-pill-switch"><input data-pill-setting="showTranslated" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Original text</span><span class="lst-pill-switch"><input data-pill-setting="showOriginal" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
-            <label><span>Hide Netflix subtitles</span><span class="lst-pill-switch"><input data-pill-setting="hideNetflixSubtitles" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
+            <label><span>Hide the service's own subtitles</span><span class="lst-pill-switch"><input data-pill-setting="hideNativeSubtitles" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Transcript sidebar</span><span class="lst-pill-switch"><input data-pill-setting="showTranscriptSidebar" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
           </section>
           <section class="lst-pill-section lst-pill-timing" aria-labelledby="lst-timing-heading">
             <span><h3 id="lst-timing-heading">Timing offset</h3><output id="lst-pill-timing-value">0 ms</output></span>
-            <div>
+            <div id="lst-pill-timing-global">
               <button type="button" data-pill-action="earlier" aria-label="Show subtitles 100 milliseconds earlier">−100 ms</button>
               <button type="button" data-pill-action="timing-reset">Reset</button>
               <button type="button" data-pill-action="later" aria-label="Show subtitles 100 milliseconds later">+100 ms</button>
             </div>
+            <div class="lst-pill-timing-grid" id="lst-pill-timing-file" hidden>
+              <button type="button" data-file-timing-step="-30000" aria-label="Show this imported file 30 seconds earlier">−30 s</button>
+              <button type="button" data-file-timing-step="-5000" aria-label="Show this imported file 5 seconds earlier">−5 s</button>
+              <button type="button" data-file-timing-step="-1000" aria-label="Show this imported file 1 second earlier">−1 s</button>
+              <button type="button" data-file-timing-step="-100" aria-label="Show this imported file 100 milliseconds earlier">−0.1 s</button>
+              <button type="button" data-file-timing-step="100" aria-label="Show this imported file 100 milliseconds later">+0.1 s</button>
+              <button type="button" data-file-timing-step="1000" aria-label="Show this imported file 1 second later">+1 s</button>
+              <button type="button" data-file-timing-step="5000" aria-label="Show this imported file 5 seconds later">+5 s</button>
+              <button type="button" data-file-timing-step="30000" aria-label="Show this imported file 30 seconds later">+30 s</button>
+              <button type="button" data-pill-action="file-timing-reset" aria-label="Show this imported file where the file says">Reset</button>
+            </div>
+            <p class="lst-pill-note" id="lst-pill-timing-note" hidden></p>
           </section>
           <section class="lst-pill-section" aria-labelledby="lst-readability-heading">
             <h3 id="lst-readability-heading">Readability</h3>
@@ -1059,7 +1438,7 @@
     document.documentElement.classList.toggle("lst-transcript-open", visible);
     if (visible && wasHidden) {
       transcriptActiveIndex = -1;
-      const video = document.querySelector("video");
+      const video = activeVideo();
       focusTranscriptCue(
         video ? findCueAt(subtitleLookupTime(video.currentTime)) : null,
       );
@@ -1077,7 +1456,7 @@
     if (!cues.length) {
       const empty = document.createElement("p");
       empty.className = "lst-transcript-empty";
-      empty.textContent = "Turn on a Netflix subtitle track to load its transcript.";
+      empty.textContent = `Turn on a ${siteName()} subtitle track to load its transcript.`;
       transcriptList.appendChild(empty);
       updateTranscriptVisibility();
       return;
@@ -1143,7 +1522,7 @@
     updateTranscriptVisibility();
     updateQuickPills();
     if (visible) {
-      const video = document.querySelector("video");
+      const video = activeVideo();
       focusTranscriptCue(
         video ? findCueAt(subtitleLookupTime(video.currentTime)) : null,
       );
@@ -1157,13 +1536,50 @@
     );
   }
 
+  // The four corners the HUD and its control pill can occupy. The viewer's
+  // choice is stored once and applies to every service, so a viewer who moves
+  // LST out of the way is not surprised by a different corner elsewhere. Until
+  // they choose, the service supplies a starting corner — the service's own
+  // title and controls occupy different corners, and this is how LST stays off
+  // them on the first run rather than by accident.
+  const HUD_POSITIONS = Object.freeze([
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+  ]);
+
+  function hudPosition() {
+    const chosen = String(settings.hudPosition || "");
+    if (HUD_POSITIONS.includes(chosen)) {
+      return { position: chosen, reason: "viewer-choice" };
+    }
+    const preferred = currentSite()?.defaultHudPosition;
+    if (HUD_POSITIONS.includes(preferred)) {
+      return { position: preferred, reason: "service-default" };
+    }
+    return { position: "top-right", reason: "built-in-default" };
+  }
+
+  function applyHudPosition() {
+    if (!hud) return;
+    const resolved = hudPosition();
+    if (hud.dataset.position !== resolved.position) {
+      hud.dataset.position = resolved.position;
+    }
+  }
+
   function applySubtitleAppearance() {
     if (!overlay || !subtitleStack) return;
 
+    // Hiding a service's own captions is a stylesheet rule carrying !important,
+    // driven by one shared class. An inline style would not survive on Prime
+    // Video, which rewrites the caption element's inline style periodically.
     document.documentElement.classList.toggle(
-      "lst-hide-netflix-subtitles",
-      settings.enabled && settings.hideNetflixSubtitles,
+      "lst-hide-native-subtitles",
+      settings.enabled && settings.hideNativeSubtitles !== false,
     );
+    applyHudPosition();
 
     const alignment = ["left", "center", "right"].includes(
       settings.subtitleHorizontalPosition,
@@ -1251,6 +1667,115 @@
     return { label: "Waiting", state: "waiting" };
   }
 
+  // How much of this episode is loaded, worked out in one place so the number in
+  // the pill, the bar under it and the sentence in the panel cannot answer
+  // differently. The share is the whole episode's — of the cues LST holds for the
+  // episode, the ones already translated and cached — because "how much is
+  // loaded" is a question about the episode. How far ahead the cache reaches is a
+  // different question, and the pill answers that one in seconds beside it.
+  function loadProgress() {
+    const total = Math.max(0, currentStatus.cueCount || 0);
+    const cached = Math.max(0, currentStatus.translatedCount || 0);
+    // A file already written in the viewer's language is not loaded from
+    // anywhere: it is all there, and none of it is translated. A percentage of
+    // nothing would only look like a failure.
+    const visible =
+      Boolean(currentStatus.captured) && total > 0 && trackNeedsTranslation();
+    const percent = visible
+      ? clamp(currentStatus.episodeProgressPercent, 0, 100, 0)
+      : 0;
+    return {
+      visible,
+      percent,
+      cached,
+      total,
+      complete: visible && cached >= total,
+    };
+  }
+
+  function formatLoadPercent(percent) {
+    // Whole percent, and never 100 while a cue is still missing: a share that
+    // rounds up to the whole episode would claim the episode is loaded when it is
+    // not, and the last percent is reached by the last cue.
+    const value = Math.floor(clamp(percent, 0, 100, 0));
+    return `${value >= 100 ? 100 : Math.min(value, 99)}%`;
+  }
+
+  function describeLoadProgress(progress) {
+    if (!progress.visible) return "";
+    return progress.complete
+      ? `The whole episode is cached: ${progress.total} of ${progress.total} cues.`
+      : `${formatLoadPercent(progress.percent)} of this episode's subtitles cached · ` +
+          `${progress.cached} of ${progress.total} cues.`;
+  }
+
+  function updatePillProgress() {
+    if (!quickPillsPanel) return;
+    const progress = loadProgress();
+    const percent = quickPillsPanel.querySelector("#lst-pill-percent");
+    const bar = quickPillsPanel.querySelector("#lst-pill-progress");
+    const fill = quickPillsPanel.querySelector("#lst-pill-progress-fill");
+    const note = quickPillsPanel.querySelector("#lst-pill-load-note");
+    // One string is the whole readout: the number beside the state and the width
+    // of the bar below it cannot drift apart if they are the same text.
+    const figure = progress.visible ? formatLoadPercent(progress.percent) : "";
+    if (percent) {
+      percent.hidden = !progress.visible;
+      percent.textContent = figure ? `· ${figure}` : "";
+      percent.title = figure
+        ? `${figure} of this episode's subtitles cached`
+        : "";
+    }
+    if (bar) bar.hidden = !progress.visible;
+    if (fill) fill.style.width = figure || "0%";
+    if (note) {
+      note.hidden = !progress.visible;
+      note.textContent = describeLoadProgress(progress);
+    }
+  }
+
+  // Where the subtitles on screen come from, said in the player rather than only
+  // in the extension's own pages: an imported file is a different thing from the
+  // service's own track, and the viewer should not have to open a settings page
+  // to find out which one they are watching.
+  function updatePillSubtitleSource() {
+    if (!quickPillsPanel) return;
+    const chip = quickPillsPanel.querySelector("#lst-pill-source");
+    const sourceNote = quickPillsPanel.querySelector("#lst-pill-source-note");
+    const jimakuPillNote = quickPillsPanel.querySelector("#lst-pill-jimaku-note");
+    const imported = trackIsImported();
+    if (chip) {
+      chip.hidden = !imported;
+      chip.textContent = imported ? "Imported" : "";
+      chip.title = imported ? importedTrack?.fileName || "" : "";
+    }
+    quickPillsPanel.dataset.source = imported ? "imported" : "service";
+    if (sourceNote) {
+      if (imported && importedTrack.translate !== false) {
+        sourceNote.textContent =
+          `Using ${importedTrack.fileName || "an imported file"}, imported for this episode.`;
+      } else if (imported) {
+        sourceNote.textContent =
+          `Using ${importedTrack.fileName || "an imported file"} — already ` +
+          `${importedTrack.language || settings.targetLanguage}, so it is shown as it is.`;
+      } else if (currentStatus.captured) {
+        sourceNote.textContent = `Using ${siteName()}'s own subtitles.`;
+      } else {
+        sourceNote.textContent = `Waiting for ${siteName()}'s subtitles.`;
+      }
+    }
+    if (!jimakuPillNote) return;
+    // A note about Jimaku is only worth showing when there is no imported file
+    // in use: the file in use is the answer, and the note adds nothing to it.
+    const described = imported ? null : jimakuFindingText();
+    jimakuPillNote.hidden = !described;
+    if (described) {
+      jimakuPillNote.textContent = `${described.headline}. ${described.detail}`;
+      jimakuPillNote.dataset.tone = described.tone;
+    }
+    updateJimakuNote();
+  }
+
   function updateQuickPills() {
     if (!quickPillsPanel || !quickPillsState) return;
     quickPillsPanel.style.display = settings.showQuickPills ? "block" : "none";
@@ -1258,6 +1783,9 @@
     const status = quickPillStatus();
     quickPillsPanel.dataset.state = status.state;
     quickPillsState.textContent = status.label;
+    updatePillSubtitleSource();
+    updateQuickPillsTiming();
+    updatePillProgress();
     const panelStatus = quickPillsPanel.querySelector("#lst-pill-panel-status");
     const ahead = quickPillsPanel.querySelector("#lst-pill-ahead");
     const aheadLabel =
@@ -1283,22 +1811,147 @@
       if (control.type === "checkbox") control.checked = value !== false;
       else control.value = String(value);
     }
-    const timing = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0);
-    const timingOutput = quickPillsPanel.querySelector(
-      "#lst-pill-timing-value",
+  }
+
+  // The timing controls point at one clock: an imported file's own, when one is
+  // in use, and the global setting otherwise. Which clock that is comes from the
+  // module the popup asks too, so the two pages cannot point at different ones.
+  function timingTarget() {
+    const api = subtitleImport();
+    const globalOffsetMs = clamp(
+      settings.subtitleTimingOffsetMs,
+      -2000,
+      2000,
+      0,
     );
-    if (timingOutput)
-      timingOutput.textContent = `${timing > 0 ? "+" : ""}${timing} ms`;
+    if (api?.timingTargetFor) {
+      return api.timingTargetFor(trackIsImported() ? importedTrack : null, {
+        globalOffsetMs,
+      });
+    }
+    return trackIsImported()
+      ? {
+          scope: "imported-file",
+          episodeKey: importedTrack?.episodeKey || "",
+          offsetMs: 0,
+          limitMs: 0,
+        }
+      : { scope: "global", episodeKey: "", offsetMs: globalOffsetMs, limitMs: 2000 };
+  }
+
+  function updateQuickPillsTiming() {
+    if (!quickPillsPanel) return;
+    const target = timingTarget();
+    const importedScope = target.scope !== "global";
+    const output = quickPillsPanel.querySelector("#lst-pill-timing-value");
+    const globalRow = quickPillsPanel.querySelector("#lst-pill-timing-global");
+    const fileRow = quickPillsPanel.querySelector("#lst-pill-timing-file");
+    const note = quickPillsPanel.querySelector("#lst-pill-timing-note");
+    if (globalRow) globalRow.hidden = importedScope;
+    if (fileRow) fileRow.hidden = !importedScope;
+
+    if (!importedScope) {
+      if (output)
+        output.textContent = `${target.offsetMs > 0 ? "+" : ""}${target.offsetMs} ms`;
+      if (note) note.hidden = true;
+      return;
+    }
+
+    const described = subtitleImport()?.describeFileTiming?.(target.offsetMs);
+    if (output) output.textContent = described?.label || `${target.offsetMs} ms`;
+    if (!note) return;
+    note.hidden = false;
+    // The global setting still applies while a file is in use, so a viewer who
+    // tuned it for the service's own track is told it is part of the sum rather
+    // than left to wonder why the file is still off by what they set.
+    const global = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0);
+    note.textContent =
+      `${described?.sentence || ""}` +
+      (global
+        ? ` The global timing offset (${global > 0 ? "+" : ""}${global} ms) also applies.`
+        : "");
+  }
+
+  // A file the viewer imported carries its own correction, so this is where the
+  // timing controls write while one is in use: with the file, in the background,
+  // for the episode it was imported for.
+  function nudgeImportedFileTiming(deltaMs) {
+    const episodeKey = importedTrack?.episodeKey;
+    if (!episodeKey) return;
+    const api = subtitleImport();
+    const current = api?.normalizeFileTiming
+      ? api.normalizeFileTiming(importedTrack?.timingOffsetMs)
+      : Number(importedTrack?.timingOffsetMs) || 0;
+    const limit = api?.FILE_TIMING_LIMIT_MS || 600000;
+    const next = clamp(current + deltaMs, -limit, limit, 0);
+    if (next === current) {
+      // Either the file is already where the viewer wants it, or the correction
+      // has reached the end of the range. A file further out than ten minutes is
+      // a file for another release, and pressing on will not help.
+      showUnifiedControlsStatus(
+        deltaMs === 0
+          ? "Already where the file says"
+          : "That is as far as LST moves a file (10 minutes)",
+      );
+      return;
+    }
+    runtimeMessage({
+      type: "SET_IMPORTED_TRACK_TIMING",
+      episodeKey,
+      offsetMs: next,
+    })
+      .then((response) => {
+        applyImportedFileTiming(response?.track?.timingOffsetMs ?? next);
+        showUnifiedControlsStatus("Saved");
+      })
+      .catch((error) =>
+        showUnifiedControlsStatus(`Could not save the timing: ${error.message}`, true),
+      );
+  }
+
+  // Applying a correction is local and immediate: the viewer nudged until the
+  // line landed, so the line has to move under their eyes, not at the next
+  // episode change. The file is the same file, so nothing is re-read.
+  function applyImportedFileTiming(offsetMs) {
+    if (!trackIsImported()) return;
+    const api = subtitleImport();
+    const next = api?.normalizeFileTiming
+      ? api.normalizeFileTiming(offsetMs)
+      : Number(offsetMs) || 0;
+    if (next === fileTimingOffsetMs()) return;
+    importedTrack.timingOffsetMs = next;
+    // The line that belongs at this moment may be a different one now, and the
+    // one on screen may have to go.
+    removeRenderedSubtitlesBySource("timed", "file-timing-changed");
+    lastRenderedCueKey = "";
+    renderTranscript();
+    updateQuickPillsTiming();
+    setStatus(importedTrackStatusText(), true);
+    logDiagnostic("info", "import", "imported-track-timing-changed", {
+      offsetMs: next,
+      reason: next ? "corrected" : "in-step",
+    });
   }
 
   function bindQuickPills() {
     quickPillsPanel.addEventListener("click", (event) => {
+      const fileStep = event.target.closest("[data-file-timing-step]");
+      if (fileStep) {
+        nudgeImportedFileTiming(Number(fileStep.dataset.fileTimingStep) || 0);
+        return;
+      }
       const action =
         event.target.closest("[data-pill-action]")?.dataset.pillAction;
       if (action === "toggle") {
         setQuickPillsMenu(quickPillsMenu.hidden);
       } else if (action === "collapse") {
         setQuickPillsMenu(false);
+      } else if (action === "file-timing-reset") {
+        nudgeImportedFileTiming(
+          -(
+            subtitleImport()?.normalizeFileTiming?.(importedTrack?.timingOffsetMs) || 0
+          ),
+        );
       } else if (["earlier", "timing-reset", "later"].includes(action)) {
         const current = clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0);
         settings.subtitleTimingOffsetMs =
@@ -1323,6 +1976,25 @@
         setQuickPillsMenu(false);
         runtimeMessage({ type: "OPEN_OPTIONS" }).catch((error) => {
           setStatus(`Could not open settings: ${error.message}`, true);
+        });
+      } else if (action === "import") {
+        // The card that chooses a file, opened at the card itself. A subtitle
+        // file is chosen from a list, so it needs the page rather than a pill.
+        setQuickPillsMenu(false);
+        runtimeMessage({ type: "OPEN_OPTIONS", hash: "#import" }).catch((error) => {
+          setStatus(`Could not open the import card: ${error.message}`, true);
+        });
+      } else if (action === "check-jimaku") {
+        // The viewer's own click, which is what makes asking Jimaku here allowed:
+        // nothing is sent for a page they only opened.
+        checkJimakuForShow().catch((error) => {
+          logDiagnostic("warning", "import", "jimaku-check-failed", {
+            reason: "request-failed",
+          });
+          setStatus(
+            `Could not ask Jimaku: ${error.message} The import card is where access to Jimaku is granted.`,
+            true,
+          );
         });
       } else if (action === "hide-overlay") {
         settings.showQuickPills = false;
@@ -1443,11 +2115,22 @@
     const latest = diagnostics.length
       ? diagnostics[diagnostics.length - 1]
       : null;
+    const verification = [...diagnostics]
+      .reverse()
+      .find((entry) => entry?.verification)?.verification;
+    const alignment = [...diagnostics]
+      .reverse()
+      .find((entry) => entry?.alignment)?.alignment;
 
     const lines = [
       `model       ${settings.model || "—"}`,
       `target      ${settings.targetLanguage || "—"}`,
-      `context     ${settings.useTranslationContext ? "2 cues before/after" : "off"}`,
+      `context     ${
+        settings.useTranslationContext
+          ? translationContextApi()?.describeLimits(settings.contextLevel) ||
+            "on (limits unknown)"
+          : "off"
+      }`,
       `track       ${currentStatus.cueCount || 0} cues`,
       `episode     ${currentStatus.translatedCount || 0}/${currentStatus.cueCount || 0} (${currentStatus.episodeProgressPercent || 0}%)`,
       `remaining   ${currentStatus.remainingTranslatedCount || 0}/${currentStatus.remainingCueCount || 0} (${currentStatus.progressPercent || 0}%)`,
@@ -1458,7 +2141,7 @@
       `ollama      ${currentStatus.lastOllamaMode || "—"}`,
       `playback    ${currentStatus.playbackMode || "waiting"}`,
       `video       ${Number(currentStatus.videoTime || 0).toFixed(2)}s`,
-      `sync offset ${clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0)}ms`,
+      `sync offset ${clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0)}ms · file ${fileTimingOffsetMs()}ms`,
       `track sync  ${timedTrackSyncState} · auto ${automaticCueTimeOffsetSeconds.toFixed(2)}s`,
       `cue         ${currentStatus.activeCueStart == null ? "—" : `${Number(currentStatus.activeCueStart).toFixed(2)}–${Number(currentStatus.activeCueEnd).toFixed(2)}s`}`,
       `in-flight   ${translationCoordinator?.inFlight.size || 0}`,
@@ -1479,9 +2162,20 @@
     if (latest?.idRecovery) {
       lines.push(`id match    ${latest.idRecovery}`);
     }
-    if (latest?.returnedIds?.length) {
+    if (alignment) {
       lines.push(
-        `return ids  ${truncate(latest.returnedIds.join(" | "), 150)}`,
+        `aligned     ${alignment.matched} by id · ${alignment.unanswered} re-asked`,
+      );
+    }
+    if (verification) {
+      lines.push(
+        `verify      ${verification.checked} checked · ${verification.rejected} rejected` +
+          `${verification.reason ? ` (${verification.reason})` : ""}`,
+      );
+    }
+    if (latest?.unexpectedIds?.length) {
+      lines.push(
+        `odd ids     ${truncate(latest.unexpectedIds.join(" | "), 150)}`,
       );
     }
     if (latest?.error) {
@@ -1724,10 +2418,11 @@
     return null;
   }
 
-  function findCueMatchingText(text, expectedTime) {
-    let best = null;
-    let bestDistance = Infinity;
-
+  // Conservative fallback for contexts that run content.js without the matching
+  // helper: only a unique folded match is resolved, and duplicates are left
+  // unresolved rather than guessed. Production always loads the helper.
+  function findCueMatchingComparableText(text, expectedTime) {
+    const matches = [];
     for (let index = 0; index < cues.length; index++) {
       const cue = cues[index];
       if (!subtitleTextsMatch(cue.text, text)) continue;
@@ -1737,17 +2432,79 @@
           : expectedTime >= cue.end
             ? expectedTime - cue.end
             : 0;
-      if (distance < bestDistance) {
-        best = { cue, index };
-        bestDistance = distance;
-      }
+      matches.push({ cue, index, distance });
     }
-
-    return best;
+    if (!matches.length) return null;
+    const tier = foldedMatchTier();
+    if (matches.length === 1) {
+      return {
+        cue: matches[0].cue,
+        index: matches[0].index,
+        tier,
+        reason: "folded",
+        resolvedBy: "unique",
+        ambiguous: false,
+        candidateCount: 1,
+      };
+    }
+    return {
+      cue: null,
+      index: -1,
+      tier,
+      reason: "ambiguous",
+      resolvedBy: "none",
+      ambiguous: true,
+      candidateCount: matches.length,
+    };
   }
 
-  function findUniqueCueMatchingSimplifiedText(text) {
-    return globalThis.LSTSubtitleSync.findUniqueSimplifiedCue(cues, text);
+  // Ranks the captured cues that could be the line the player is showing. Folded
+  // text wins over punctuation-insensitive text, a two-cue join is only used when
+  // no single cue matches, and equally good candidates are separated by playback
+  // time only while the track timeline is already trusted. Anything else stays
+  // unresolved so the caller can report the ambiguity instead of guessing.
+  function findCueResolution(text, expectedTime) {
+    const api = globalThis.LSTSubtitleSync;
+    if (api?.resolveCue) {
+      return api.resolveCue(cues, text, expectedTime, {
+        trustTime: timedTrackSyncState === "verified",
+      });
+    }
+    return findCueMatchingComparableText(text, expectedTime);
+  }
+
+  function findCueMatchingText(text, expectedTime) {
+    const resolution = findCueResolution(text, expectedTime);
+    return resolution?.cue
+      ? { cue: resolution.cue, index: resolution.index }
+      : null;
+  }
+
+  function matchQualityForResolution(resolution) {
+    if (!resolution?.cue) return "none";
+    if (resolution.reason === "joined") return "joined";
+    return resolution.tier === foldedMatchTier() ? "folded" : "loose";
+  }
+
+  function matchQualityOf(exactMatchingCue, approximatedCue) {
+    return exactMatchingCue
+      ? "exact"
+      : matchQualityForResolution(approximatedCue);
+  }
+
+  function matchResolutionDiagnostics(resolution) {
+    if (!resolution) return {};
+    return {
+      matchTier: resolution.tier,
+      matchReason: resolution.reason,
+      matchResolvedBy: resolution.resolvedBy,
+      matchAmbiguous: Boolean(resolution.ambiguous),
+      matchTimeTrusted: Boolean(resolution.timeTrusted),
+      matchCandidateCount: resolution.candidateCount,
+      matchJoinedWith: Number.isInteger(resolution.secondIndex)
+        ? resolution.secondIndex
+        : null,
+    };
   }
 
   function isInterCueGapMatch(match, naturalTime, naturalMatch) {
@@ -1759,46 +2516,106 @@
     );
   }
 
-  function cueListContainsText(selectedCues, text) {
-    return Boolean(
-      text && selectedCues.some((cue) => subtitleTextsMatch(cue.text, text)),
-    );
+  function trackDecisionDiagnostics(decision) {
+    if (!decision) return {};
+    return {
+      trackDecision: decision.accept ? "accept" : "keep",
+      trackUnion: Boolean(decision.union),
+      trackRelationship: String(decision.relationship || ""),
+      trackReason: String(decision.reason || ""),
+      trackCurrentTrusted: Boolean(decision.trustExisting),
+      trackCurrentCueCount: Number(decision.existingCueCount) || 0,
+      trackIncomingCueCount: Number(decision.incomingCueCount) || 0,
+      trackSharedCueCount: Number(decision.sharedCueCount) || 0,
+      trackIncomingOnlyCueCount: Number(decision.incomingOnlyCueCount) || 0,
+      trackCurrentOnlyCueCount: Number(decision.existingOnlyCueCount) || 0,
+      trackTimingMatchCount: Number(decision.timingMatchCount) || 0,
+      trackTimeRangesOverlap: Boolean(decision.timeRangesOverlap),
+      trackCurrentSpanSeconds: Math.round(
+        Number(decision.existingSpanSeconds) || 0,
+      ),
+      trackIncomingSpanSeconds: Math.round(
+        Number(decision.incomingSpanSeconds) || 0,
+      ),
+      renderedLineInIncoming: Boolean(decision.renderedMatchesIncoming),
+      renderedLineInCurrent: Boolean(decision.renderedMatchesExisting),
+    };
   }
 
-  function cueListSpan(selectedCues) {
-    if (!selectedCues.length) return 0;
-    return Math.max(
-      0,
-      Number(selectedCues.at(-1)?.end) - Number(selectedCues[0]?.start),
-    );
-  }
-
-  function cueTrackSignature(selectedCues) {
-    let hash = 2166136261;
-    for (const cue of selectedCues) {
-      const value = cueKey(cue);
-      for (let index = 0; index < value.length; index++) {
-        hash ^= value.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-      }
+  function resolveTrackDecision(existingCues, incomingCues, renderedText) {
+    const api = globalThis.LSTSubtitleSync;
+    if (api?.resolveTrackDocument) {
+      return api.resolveTrackDocument(existingCues, incomingCues, {
+        trustExisting: timedTrackSyncState === "verified",
+        renderedText: renderedText,
+      });
     }
-    return `${selectedCues.length}:${(hash >>> 0).toString(16)}`;
+    // subtitle-sync.js always loads before this script. Without it LST cannot
+    // tell a duplicate document from a new track, so it keeps what it has.
+    return {
+      accept: !existingCues.length,
+      relationship: existingCues.length ? "unknown" : "none",
+      reason: existingCues.length
+        ? "track-identity-unavailable"
+        : "no-existing-track",
+      existingCueCount: existingCues.length,
+      incomingCueCount: incomingCues.length,
+    };
+  }
+
+  function adoptCapturedTrack(existingCues, incomingCues, decision) {
+    const api = globalThis.LSTSubtitleSync;
+    if (!api?.adoptTrackDocument) return incomingCues.slice();
+    return api.adoptTrackDocument(existingCues, incomingCues, {
+      union: Boolean(decision?.union),
+    });
   }
 
   function naturalSubtitleLookupTime(videoTime) {
     return Number(videoTime) + automaticCueTimeOffsetSeconds;
   }
 
-  function subtitleLookupTime(videoTime) {
-    // Positive values delay LST subtitles; negative values show them earlier.
-    return (
-      naturalSubtitleLookupTime(videoTime) -
-      clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000
-    );
+  // The correction that applies right now: the global setting, which the
+  // service's own track moves with, plus — while a file the viewer imported is in
+  // use — that file's own correction. A file made for another release of the same
+  // episode can be seconds or minutes away from the copy being watched, which is
+  // why the file's number exists at all and why it is stored with the file rather
+  // than in one setting. Both are "positive is later"; the module adds them and
+  // states the direction once, so the lookup and the render cannot disagree.
+  function fileTimingOffsetMs() {
+    if (!trackIsImported()) return 0;
+    const api = subtitleImport();
+    const value = importedTrack?.timingOffsetMs;
+    return api?.normalizeFileTiming ? api.normalizeFileTiming(value) : Number(value) || 0;
   }
 
-  function netflixSubtitleDomDiagnostics(netflixText) {
-    const selectors = [
+  function syncOffsetSeconds() {
+    const api = subtitleImport();
+    const globalOffsetMs = clamp(
+      settings.subtitleTimingOffsetMs,
+      -2000,
+      2000,
+      0,
+    );
+    if (api?.timingLookupOffsetSeconds) {
+      return api.timingLookupOffsetSeconds({
+        fileTimingMs: fileTimingOffsetMs(),
+        globalOffsetMs,
+      });
+    }
+    return (fileTimingOffsetMs() + globalOffsetMs) / 1000;
+  }
+
+  function subtitleLookupTime(videoTime) {
+    // Positive values delay LST subtitles; negative values show them earlier.
+    return naturalSubtitleLookupTime(videoTime) - syncOffsetSeconds();
+  }
+
+  function renderedSubtitleDomDiagnostics(renderedText) {
+    // The selectors come from the adapter, so the diagnostics describe the
+    // containers this service actually renders into instead of one service's
+    // markup measured on the other service's page.
+    const selectors = currentSite()?.nativeCaptionSelectors || [
       ".player-timedtext",
       '[data-uia="player-subtitle-text"]',
       ".player-timedtext-text-container",
@@ -1827,12 +2644,12 @@
       .flatMap(({ lengths }) => lengths)
       .filter(({ length }) => length > 0)
       .map(({ textId }) => textId);
-    const simplifiedSelected = simplifiedDiagnosticText(netflixText);
+    const simplifiedSelected = simplifiedDiagnosticText(renderedText);
     const midpoint = simplifiedSelected.length / 2;
     return {
       chosenSelector,
-      selectedTextId: diagnosticTextId(netflixText),
-      selectedTextLength: normalizeText(netflixText).length,
+      selectedTextId: diagnosticTextId(renderedText),
+      selectedTextLength: normalizeText(renderedText).length,
       representationCount: new Set(nonEmptyTextIds).size,
       representationsDisagree: new Set(nonEmptyTextIds).size > 1,
       selectedLooksDuplicated: Number.isInteger(midpoint) && midpoint > 0 &&
@@ -1843,14 +2660,19 @@
 
   function timedTrackMismatchDiagnostics(
     video,
-    netflixText,
+    renderedText,
     naturalMatch,
     matchingCue,
     matchQuality,
+    resolution = null,
   ) {
-    const simplifiedNetflix = simplifiedDiagnosticText(netflixText);
-    const simplifiedMatches = simplifiedNetflix
-      ? cues.filter((cue) => simplifiedDiagnosticText(cue.text) === simplifiedNetflix)
+    const foldedRendered = foldedSubtitleText(renderedText);
+    const foldedMatches = foldedRendered
+      ? cues.filter((cue) => foldedSubtitleText(cue.text) === foldedRendered)
+      : [];
+    const simplifiedRendered = simplifiedDiagnosticText(renderedText);
+    const simplifiedMatches = simplifiedRendered
+      ? cues.filter((cue) => simplifiedDiagnosticText(cue.text) === simplifiedRendered)
       : [];
     let nearbyIndex = naturalMatch?.index ?? cues.findIndex(
       (cue) => cue.start > naturalSubtitleLookupTime(video.currentTime),
@@ -1878,26 +2700,31 @@
     const combinedNearbyMatch = nearbySimplified.some(
       (value, index) =>
         nearbySimplified[index + 1] &&
-        `${value}${nearbySimplified[index + 1]}` === simplifiedNetflix,
+        `${value}${nearbySimplified[index + 1]}` === simplifiedRendered,
     );
     const partialNearbyMatch = Boolean(
-      simplifiedNetflix.length >= 4 &&
+      simplifiedRendered.length >= 4 &&
       nearbySimplified.some(
-        (value) => value.includes(simplifiedNetflix) || simplifiedNetflix.includes(value),
+        (value) => value.includes(simplifiedRendered) || simplifiedRendered.includes(value),
       ),
     );
     const naturalTime = naturalSubtitleLookupTime(video.currentTime);
     const nextMatchedCue = matchingCue ? cues[matchingCue.index + 1] : null;
 
     return {
-      ...netflixSubtitleDomDiagnostics(netflixText),
-      stableForMs: Math.max(0, Math.round(performance.now() - netflixSubtitleCandidateSince)),
+      ...renderedSubtitleDomDiagnostics(renderedText),
+      stableForMs: Math.max(0, Math.round(performance.now() - renderedSubtitleCandidateSince)),
       trackCueCount: cues.length,
       naturalLookupMs: Math.round(naturalTime * 1000),
       userTimingOffsetMs: clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0),
       automaticTimingOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
       matchQuality: matchQuality || "none",
       exactTrackMatch: matchQuality === "exact",
+      ...matchResolutionDiagnostics(resolution),
+      foldedTrackMatchCount: foldedMatches.length,
+      foldedMatchCue: foldedMatches.length === 1
+        ? diagnosticCue(cueKey(foldedMatches[0]))
+        : "",
       simplifiedTrackMatchCount: simplifiedMatches.length,
       simplifiedMatchCue: simplifiedMatches.length === 1
         ? diagnosticCue(cueKey(simplifiedMatches[0]))
@@ -1921,17 +2748,17 @@
     };
   }
 
-  function validateTimedTrackAgainstNetflix(video, netflixText) {
+  function validateTimedTrackAgainstRendering(video, renderedText) {
     if (!video || !cues.length) return false;
 
     const naturalTime = naturalSubtitleLookupTime(video.currentTime);
     const naturalMatch = findCueAt(naturalTime);
 
-    if (!netflixText) {
+    if (!renderedText) {
       if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
         logDiagnostic("info", "synchronization", "timed-track-mismatch-ended", {
           mismatchId: activeTimedTrackMismatchId,
-          outcome: "netflix-subtitle-gap",
+          outcome: "rendered-subtitle-gap",
           durationMs: timedTrackMismatchSince
             ? Math.round(performance.now() - timedTrackMismatchSince)
             : null,
@@ -1947,7 +2774,7 @@
 
     if (
       naturalMatch &&
-      subtitleTextsMatch(naturalMatch.cue.text, netflixText)
+      subtitleTextsMatch(naturalMatch.cue.text, renderedText)
     ) {
       if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
         logDiagnostic("info", "synchronization", "timed-track-mismatch-resolved", {
@@ -1957,52 +2784,56 @@
             ? Math.round(performance.now() - timedTrackMismatchSince)
             : null,
           previousReason: lastTimedTrackMismatch || "confirmed-mismatch",
-          netflixTextId: diagnosticTextId(netflixText),
+          renderedTextId: diagnosticTextId(renderedText),
         }, cueKey(naturalMatch.cue));
       }
       timedTrackSyncState = "verified";
-      lastNetflixSyncText = netflixText;
+      lastRenderedSyncText = renderedText;
       timedTrackMismatchSince = 0;
       lastTimedTrackMismatch = "";
       activeTimedTrackMismatchId = 0;
       return true;
     }
 
-    const exactMatchingCue = findCueMatchingText(netflixText, naturalTime);
-    const simplifiedMatchingCue = exactMatchingCue
+    const resolution = findCueResolution(renderedText, naturalTime);
+    const exactMatchingCue =
+      resolution?.cue && resolution.tier === foldedMatchTier()
+        ? { cue: resolution.cue, index: resolution.index }
+        : null;
+    const approximatedCue = exactMatchingCue
       ? null
-      : findUniqueCueMatchingSimplifiedText(netflixText);
-    const matchingCue = exactMatchingCue || simplifiedMatchingCue;
-    const matchQuality = exactMatchingCue
-      ? "exact"
-      : simplifiedMatchingCue
-        ? "simplified-unique"
-        : "none";
+      : resolution?.cue
+        ? resolution
+        : null;
+    const matchingCue = exactMatchingCue || approximatedCue;
+    const matchQuality = matchQualityOf(exactMatchingCue, approximatedCue);
 
     if (
       naturalMatch &&
-      simplifiedMatchingCue &&
-      simplifiedMatchingCue.index === naturalMatch.index
+      approximatedCue &&
+      approximatedCue.index === naturalMatch.index
     ) {
       if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
         logDiagnostic("info", "synchronization", "timed-track-mismatch-resolved", {
           mismatchId: activeTimedTrackMismatchId,
-          outcome: "unique-simplified-current-cue-match",
+          outcome: "formatting-current-cue-match",
           durationMs: timedTrackMismatchSince
             ? Math.round(performance.now() - timedTrackMismatchSince)
             : null,
           previousReason: lastTimedTrackMismatch || "confirmed-mismatch",
+          ...matchResolutionDiagnostics(approximatedCue),
         }, cueKey(naturalMatch.cue));
       }
-      if (!subtitleTextsMatch(lastNetflixSyncText, netflixText)) {
+      if (!subtitleTextsMatch(lastRenderedSyncText, renderedText)) {
         logDiagnostic("info", "synchronization", "formatting-match-accepted", {
           matchQuality,
-          netflixTextLength: normalizeText(netflixText).length,
+          ...matchResolutionDiagnostics(approximatedCue),
+          renderedTextLength: normalizeText(renderedText).length,
           capturedTextLength: normalizeText(naturalMatch.cue.text).length,
         }, cueKey(naturalMatch.cue));
       }
       timedTrackSyncState = "verified";
-      lastNetflixSyncText = netflixText;
+      lastRenderedSyncText = renderedText;
       timedTrackMismatchSince = 0;
       lastTimedTrackMismatch = "";
       activeTimedTrackMismatchId = 0;
@@ -2011,7 +2842,7 @@
 
     if (isInterCueGapMatch(matchingCue, naturalTime, naturalMatch)) {
       timedTrackSyncState = "verified";
-      lastNetflixSyncText = netflixText;
+      lastRenderedSyncText = renderedText;
       timedTrackMismatchSince = 0;
       lastTimedTrackMismatch = "";
       activeTimedTrackMismatchId = 0;
@@ -2024,15 +2855,16 @@
     ) {
       // Captured subtitle fragments can use a timeline starting at zero even when
       // playback began in the middle of an episode. Anchor that timeline to the
-      // line Netflix is displaying. A later visible line will refine the anchor.
+      // line the player is displaying. A later visible line will refine the anchor.
       automaticCueTimeOffsetSeconds =
         matchingCue.cue.start + 0.04 - Number(video.currentTime);
       timedTrackSyncState = "verified";
-      lastNetflixSyncText = netflixText;
+      lastRenderedSyncText = renderedText;
       timedTrackMismatchSince = 0;
       lastTimedTrackMismatch = "";
       logDiagnostic("info", "synchronization", "timed-track-anchored", {
         matchQuality,
+        ...matchResolutionDiagnostics(resolution),
         automaticOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
       }, cueKey(matchingCue.cue));
       return true;
@@ -2041,7 +2873,7 @@
     if (timedTrackSyncState === "verified") {
       const mismatch = exactMatchingCue
         ? "known-cue-boundary"
-        : simplifiedMatchingCue
+        : approximatedCue
           ? "formatting-cue-boundary"
           : "unknown-text";
       const now = performance.now();
@@ -2055,10 +2887,11 @@
           graceMs: TIMED_TRACK_MISMATCH_GRACE_MS,
           ...timedTrackMismatchDiagnostics(
             video,
-            netflixText,
+            renderedText,
             naturalMatch,
             matchingCue,
             matchQuality,
+            resolution,
           ),
         }, naturalMatch ? cueKey(naturalMatch.cue) : "");
       }
@@ -2085,7 +2918,7 @@
         timedTrackMismatchSince = 0;
         lastTimedTrackMismatch = "";
         activeTimedTrackMismatchId = 0;
-        lastNetflixSyncText = netflixText;
+        lastRenderedSyncText = renderedText;
         logDiagnostic("warning", "synchronization", "timed-track-reanchored", {
           reason: mismatchReason,
           mismatchId,
@@ -2093,6 +2926,7 @@
           automaticOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
           cueDistance: Number.isFinite(cueDistance) ? cueDistance : null,
           matchQuality,
+          ...matchResolutionDiagnostics(resolution),
         }, cueKey(matchingCue.cue));
         return true;
       }
@@ -2103,7 +2937,7 @@
         mismatchId: activeTimedTrackMismatchId,
         reason: exactMatchingCue
           ? "known-cue-boundary"
-          : simplifiedMatchingCue
+          : approximatedCue
             ? "formatting-cue-boundary"
             : "unknown-text",
         retainedTimedSubtitle: true,
@@ -2112,20 +2946,21 @@
           : null,
         ...timedTrackMismatchDiagnostics(
           video,
-          netflixText,
+          renderedText,
           naturalMatch,
           matchingCue,
           matchQuality,
+          resolution,
         ),
       }, naturalMatch ? cueKey(naturalMatch.cue) : "");
     }
     timedTrackSyncState = "mismatch";
-    lastNetflixSyncText = netflixText;
+    lastRenderedSyncText = renderedText;
     return false;
   }
 
   function isTimedCueStillCurrent(key) {
-    const video = document.querySelector("video");
+    const video = activeVideo();
     if (!video || !renderedSubtitles.some((entry) => entry.key === key))
       return false;
     const match = findCueAt(subtitleLookupTime(video.currentTime));
@@ -2155,7 +2990,7 @@
 
   function rememberCachedEntries(entries) {
     let renderedChanged = false;
-    const videoTime = Number(document.querySelector("video")?.currentTime);
+    const videoTime = Number(activeVideo()?.currentTime);
     for (const [key, translation] of Object.entries(entries || {})) {
       knownCachedKeys.add(key);
       if (!translation) continue;
@@ -2187,7 +3022,7 @@
       0,
     );
 
-    const video = document.querySelector("video");
+    const video = activeVideo();
     const rawTime = Number.isFinite(Number(videoTime))
       ? Number(videoTime)
       : Number(video?.currentTime);
@@ -2208,6 +3043,25 @@
     currentStatus.cachedAheadSeconds = Math.max(0, coveredUntil - time);
   }
 
+  // Which surrounding lines travel with a request — and why — belongs to
+  // translation-context.js, so the reference lines sent to the provider are the
+  // ones the options page and the README describe: judged by the silence
+  // between them and the nearest requested line rather than by how many cue
+  // indexes away they are. This file contributes the one thing the module cannot
+  // know: which cue indexes the requested cues are, because what makes two cues
+  // the same cue is decided by cue identity.
+  function translationContextApi() {
+    const api = globalThis.LSTTranslationContext;
+    if (api) return api;
+    if (!warnedMissingTranslationContext) {
+      warnedMissingTranslationContext = true;
+      console.warn(
+        "[LST] translation-context.js is missing; translations are sent without surrounding context.",
+      );
+    }
+    return null;
+  }
+
   function surroundingTranslationContext(selectedCues) {
     if (!settings.useTranslationContext || !cues.length || !selectedCues.length) {
       return [];
@@ -2218,29 +3072,58 @@
       .map((cue) => cueIndexes.get(cueKey(cue)))
       .filter(Number.isInteger)
       .sort((left, right) => left - right);
-    if (!targetIndexes.length) return [];
 
-    const targetSet = new Set(targetIndexes);
-    const first = targetIndexes[0];
-    const last = targetIndexes.at(-1);
-    const candidates = cues
-      .map((cue, index) => ({ cue, index }))
-      .filter(({ index }) => !targetSet.has(index))
-      .map(({ cue, index }) => ({
-        cue,
-        index,
-        distance: Math.min(...targetIndexes.map((target) => Math.abs(target - index))),
-      }))
-      .filter(({ distance }) => distance <= 2)
-      .sort((left, right) => left.distance - right.distance || left.index - right.index)
-      .slice(0, 12)
-      .sort((left, right) => left.index - right.index);
+    const api = translationContextApi();
+    if (!api) {
+      // Without the module there is no rule to apply, and guessing one from cue
+      // indexes is exactly what used to send a line from another scene as
+      // context. The request goes out without context, and says so.
+      logDiagnostic(
+        "warning",
+        "translation",
+        "translation-context-skipped",
+        {
+          reason: "translation-context-unavailable",
+          requestedCues: selectedCues.length,
+          targetCues: targetIndexes.length,
+        },
+        cueKey(selectedCues[0]),
+      );
+      return [];
+    }
 
-    return candidates.map(({ cue, index }) => ({
-      position: index < first ? "before" : index > last ? "after" : "between",
-      startMs: Math.round(cue.start * 1000),
-      text: cue.text,
-    }));
+    const selection = api.selectContext({
+      scope: cues,
+      targetIndexes,
+      requestedCount: selectedCues.length,
+      // How much context to send is the viewer's choice; the module resolves the
+      // stored value, so an unknown one falls back to the default level rather
+      // than to a rule invented here.
+      level: settings.contextLevel,
+      // The setting is checked above so that a feature which is off by default
+      // does not write an event for every request.
+      enabled: true,
+    });
+
+    logDiagnostic(
+      selection.items.length ? "info" : "warning",
+      "translation",
+      "translation-context-selected",
+      {
+        reason: selection.reason,
+        requestedCues: selectedCues.length,
+        targetCues: selection.targets,
+        contextCues: selection.items.length,
+        before: selection.positions.before,
+        after: selection.positions.after,
+        overlapping: selection.positions.overlapping,
+        refused: selection.refused,
+        limits: api.describeLimits(settings.contextLevel),
+      },
+      cueKey(selectedCues[0]),
+    );
+
+    return selection.items;
   }
 
   async function translateOwnedCues(selectedCues) {
@@ -2259,7 +3142,7 @@
     }
 
     // Keep an in-flight request tied to the episode/track that started it. A
-    // Netflix navigation must not write late results into the next episode.
+    // A navigation must not write late results into the next episode.
     const requestedCacheId = cacheId();
     const requestedCacheMetadata = cacheMetadata();
     const cached = await getCachedTranslations(deduped, requestedCacheId);
@@ -2299,6 +3182,9 @@
           text: cue.text,
         })),
         contextItems,
+        // The level the context above was chosen under, so the background checks
+        // the list against the amount the viewer asked for rather than a guess.
+        contextLevel: settings.contextLevel,
       });
 
       currentStatus.requestState = "done";
@@ -2323,6 +3209,41 @@
         cueKey(missing[0]),
       );
       currentStatus.lastDiagnostics = response.diagnostics || [];
+
+      // The background is the last check before a request reaches a provider. If
+      // it refused or shortened the context this request sent, the reason travels
+      // back with the response and is recorded here.
+      const contextReport = response.summary || {};
+      if (
+        contextItems.length &&
+        contextReport.contextReason &&
+        contextReport.contextReason !== "ok"
+      ) {
+        logDiagnostic(
+          "warning",
+          "translation",
+          "translation-context-rejected",
+          {
+            reason: contextReport.contextReason,
+            sentCues: contextReport.contextSentCues || contextItems.length,
+            usedCues: contextReport.contextCueCount || 0,
+            refusedCues: contextReport.contextRefusedCues || 0,
+            queue: precomputeInProgress ? "precompute" : "playback",
+          },
+          cueKey(missing[0]),
+        );
+      }
+
+      const rejectedFailures = (response.failures || []).filter(
+        (failure) => failure?.verification,
+      );
+      if (rejectedFailures.length) {
+        logDiagnostic("warning", "translation", "translation-verification-failed", {
+          count: rejectedFailures.length,
+          reason: rejectedFailures[0].verification,
+          error: rejectedFailures[0].error || "",
+        }, cueKey(missing[0]));
+      }
 
       const latestDiag = currentStatus.lastDiagnostics.length
         ? currentStatus.lastDiagnostics[
@@ -2402,6 +3323,8 @@
 
   async function ensureCueTranslated(cue, index) {
     if (!cue || !settings.model) return;
+    // Nothing is asked of a provider for a track that needs no translation.
+    if (!trackNeedsTranslation()) return;
 
     const key = cueKey(cue);
     logDiagnostic("info", "translation", "active-cue-translation-requested", {
@@ -2419,7 +3342,7 @@
           key,
           cue.text,
           cached[key],
-          document.querySelector("video")?.currentTime,
+          activeVideo()?.currentTime,
         );
       } else {
         logDiagnostic("warning", "translation", "translation-not-rendered", {
@@ -2437,7 +3360,7 @@
             key,
             cue.text,
             currentResult.entries[key],
-            document.querySelector("video")?.currentTime,
+            activeVideo()?.currentTime,
           );
         } else {
           logDiagnostic("warning", "translation", "translation-not-rendered", {
@@ -2462,7 +3385,7 @@
   async function maintainLookAhead(currentCue, index) {
     const generation = cacheGeneration;
     const seconds = Math.max(30, Number(settings.lookAheadSeconds) || 30);
-    const playbackTime = Number(document.querySelector("video")?.currentTime);
+    const playbackTime = Number(activeVideo()?.currentTime);
     const deadline =
       Math.max(
         currentCue.start,
@@ -2522,6 +3445,7 @@
       !settings.cacheWhilePaused ||
       !settings.model ||
       !cues.length ||
+      !trackNeedsTranslation() ||
       precomputeInProgress
     )
       return;
@@ -2601,11 +3525,11 @@
 
     if (Date.now() - lastTitleMetadataRefreshAt >= 2000) {
       lastTitleMetadataRefreshAt = Date.now();
-      netflixTitleMetadata();
+      siteTitleMetadata();
       persistImprovedCacheMetadata();
     }
 
-    const video = document.querySelector("video");
+    const video = activeVideo();
     if (!video || !settings.enabled) {
       requestAnimationFrame(playbackLoop);
       return;
@@ -2629,14 +3553,14 @@
       lastPlaybackWasPaused = false;
       timedTrackSyncState = "unverified";
       automaticCueTimeOffsetSeconds = 0;
-      lastNetflixSyncText = "";
+      lastRenderedSyncText = "";
       timedTrackMismatchSince = 0;
       lastTimedTrackMismatch = "";
       timedTrackMismatchSequence = 0;
       activeTimedTrackMismatchId = 0;
       lastFallbackText = "";
-      netflixSubtitleCandidate = "";
-      netflixSubtitleCandidateSince = 0;
+      renderedSubtitleCandidate = "";
+      renderedSubtitleCandidateSince = 0;
       diagnosticTextIds = new Map();
       nextDiagnosticTextId = 1;
       currentStatus.captured = false;
@@ -2651,9 +3575,24 @@
       currentStatus.playbackMode = "waiting";
       clearRenderedSubtitle("episode-changed");
       renderTranscript();
+      lastEpisodeNumber = null;
       logDiagnostic("info", "track", "episode-changed", {});
       setStatus("Episode changed — waiting for its subtitle track…", true);
       handleFallbackRenderedSubtitle();
+      // The next episode has its own episode key, so an import made for the
+      // episode that just ended is not carried over to this one.
+      cueTrackKind = "none";
+      importedTrack = null;
+      currentStatus.subtitleSource = "none";
+      currentStatus.importedFileName = "";
+      refreshImportedTrack({ reason: "episode-changed", force: true }).catch((error) => {
+        console.warn("[LST] Could not check for imported subtitles:", error);
+      });
+      // Another episode may be another show, and a show LST already knows
+      // something about should say so on the episode the viewer moved to.
+      refreshJimakuFinding({ reason: "episode-changed" }).catch((error) => {
+        console.warn("[LST] Could not read what Jimaku holds for this show:", error);
+      });
       requestAnimationFrame(playbackLoop);
       return;
     }
@@ -2682,31 +3621,37 @@
     }
 
     currentStatus.videoTime = video.currentTime;
-    const netflixObservation = observeNetflixRenderedSubtitle();
-    const netflixText = netflixObservation.text;
-    if (
-      !netflixObservation.stable &&
-      timedTrackSyncState !== "verified"
-    ) {
-      currentStatus.playbackMode = "waiting for stable Netflix subtitle";
-      updateDebugPanel();
-      requestAnimationFrame(playbackLoop);
-      return;
-    }
-    if (
-      netflixObservation.stable &&
-      !validateTimedTrackAgainstNetflix(video, netflixText)
-    ) {
-      currentStatus.activeCueStart = null;
-      currentStatus.activeCueEnd = null;
-      currentStatus.playbackMode = netflixText
-        ? "DOM fallback (unverified timed track)"
-        : "waiting for subtitle sync";
-      updateDebugPanel();
-      focusTranscriptCue(findCueMatchingText(netflixText, subtitleLookupTime(video.currentTime)));
-      if (netflixText) handleFallbackRenderedSubtitle();
-      requestAnimationFrame(playbackLoop);
-      return;
+    // An imported track brings its own timeline, so the player is not asked to
+    // render anything for LST to know which cue is playing. This is the case an
+    // imported track exists for: a title the service does not subtitle at all.
+    const importedNow = trackIsImported();
+    if (!importedNow) {
+      const renderedObservation = observeRenderedSubtitle();
+      const renderedText = renderedObservation.text;
+      if (
+        !renderedObservation.stable &&
+        timedTrackSyncState !== "verified"
+      ) {
+        currentStatus.playbackMode = `waiting for stable ${siteName()} subtitle`;
+        updateDebugPanel();
+        requestAnimationFrame(playbackLoop);
+        return;
+      }
+      if (
+        renderedObservation.stable &&
+        !validateTimedTrackAgainstRendering(video, renderedText)
+      ) {
+        currentStatus.activeCueStart = null;
+        currentStatus.activeCueEnd = null;
+        currentStatus.playbackMode = renderedText
+          ? "DOM fallback (unverified timed track)"
+          : "waiting for subtitle sync";
+        updateDebugPanel();
+        focusTranscriptCue(findCueMatchingText(renderedText, subtitleLookupTime(video.currentTime)));
+        if (renderedText) handleFallbackRenderedSubtitle();
+        requestAnimationFrame(playbackLoop);
+        return;
+      }
     }
 
     const lookupTime = subtitleLookupTime(video.currentTime);
@@ -2719,12 +3664,12 @@
       updateDebugPanel();
       focusTranscriptCue(null);
       // Give the DOM fallback a short handoff window, then clear a stale line
-      // when Netflix is also between subtitles.
+      // when the service is also between subtitles.
       if (
         lastRenderedCueKey &&
         !shouldRetainRenderedSubtitle(lastRenderedCueKey, video.currentTime) &&
         performance.now() - noTimedCueSince > 220 &&
-        !findNetflixRenderedSubtitle()
+        !findRenderedSubtitle()
       ) {
         removeExpiredRenderedSubtitles(video.currentTime);
       }
@@ -2741,20 +3686,31 @@
     removeExpiredRenderedSubtitles(video.currentTime);
 
     if (key !== lastRenderedCueKey) {
-      const timingOffsetSeconds =
-        clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0) / 1000;
       const cachedTranslation = knownCachedTranslations.get(key) || "";
+      // A track that needs no translation displays itself: the line the viewer
+      // reads is the line in the file, and no provider is asked for anything.
+      const needsTranslation = trackNeedsTranslation();
+      // Without translation the line shown is the line in the file. A cached
+      // translation is deliberately not used here: it may belong to a language
+      // the viewer has since changed away from.
+      const displayed = needsTranslation ? cachedTranslation : match.cue.text;
       beginRenderedSubtitle({
         key,
         original: match.cue.text,
-        translated: cachedTranslation,
+        translated: displayed,
         naturalEndVideoTime:
           match.cue.end -
           automaticCueTimeOffsetSeconds +
-          timingOffsetSeconds,
+          syncOffsetSeconds(),
         videoTime: video.currentTime,
         source: "timed",
       });
+      if (!needsTranslation) {
+        currentStatus.playbackMode = "imported track (no translation)";
+        currentStatus.lastTranslatedText = truncate(match.cue.text);
+        requestAnimationFrame(playbackLoop);
+        return;
+      }
       currentStatus.playbackMode = cachedTranslation
         ? "timed-text cache"
         : "timed-text pending";
@@ -2771,7 +3727,21 @@
     requestAnimationFrame(playbackLoop);
   }
 
-  function findNetflixRenderedSubtitle() {
+  // What subtitle text is on screen right now. The adapter decides how a
+  // service renders a line: Netflix puts a whole cue in one timed-text
+  // container, Prime Video rewrites one span per line in place. Reading a
+  // container on Prime would harvest player title and timer text as if it were
+  // a subtitle, which is why the question belongs to the adapter.
+  function findRenderedSubtitle() {
+    const site = currentSite();
+    if (site) {
+      try {
+        return normalizeText(site.renderedSubtitleLines(document).text || "");
+      } catch {
+        // Fall through to the legacy read rather than reporting a subtitle that
+        // is not there.
+      }
+    }
     const candidates = [
       document.querySelector(".player-timedtext"),
       document.querySelector('[data-uia="player-subtitle-text"]'),
@@ -2788,32 +3758,41 @@
     return "";
   }
 
-  function observeNetflixRenderedSubtitle() {
-    const text = findNetflixRenderedSubtitle();
+  // Prime reuses one caption element and rewrites its text, so a cue boundary is
+  // a text change and not a new element. The stable-text window already produces
+  // that boundary, and the state between cues is the zero-length text the
+  // adapter reports when no caption span carries anything.
+  function observeRenderedSubtitle() {
+    const text = findRenderedSubtitle();
     const now = performance.now();
-    if (text !== netflixSubtitleCandidate) {
-      netflixSubtitleCandidate = text;
-      netflixSubtitleCandidateSince = now;
+    if (text !== renderedSubtitleCandidate) {
+      renderedSubtitleCandidate = text;
+      renderedSubtitleCandidateSince = now;
     }
     return {
       text,
       stable:
-        now - netflixSubtitleCandidateSince >=
-        NETFLIX_SUBTITLE_STABILITY_MS,
+        now - renderedSubtitleCandidateSince >=
+        RENDERED_SUBTITLE_STABILITY_MS,
     };
   }
 
   async function handleFallbackRenderedSubtitle() {
     if (!playbackActive || !isWatchPage() || !settings.enabled || !settings.model) return;
+    // The DOM fallback exists because a captured track can fail to be confirmed
+    // against what the player draws. An imported track needs no confirmation —
+    // it is a file — so reading the service's captions here would only add a
+    // second, unrelated subtitle to the screen.
+    if (trackIsImported()) return;
     const generation = playbackGeneration;
 
-    const observation = observeNetflixRenderedSubtitle();
+    const observation = observeRenderedSubtitle();
     const text = observation.text;
     if (!observation.stable) {
       clearTimeout(fallbackTimer);
       fallbackTimer = setTimeout(
         handleFallbackRenderedSubtitle,
-        NETFLIX_SUBTITLE_STABILITY_MS,
+        RENDERED_SUBTITLE_STABILITY_MS,
       );
       return;
     }
@@ -2822,25 +3801,26 @@
         lastFallbackText &&
         String(currentStatus.playbackMode).startsWith("DOM")
       ) {
-        const video = document.querySelector("video");
+        const video = activeVideo();
         const fallbackKey = cueKey(fallbackCueForText(lastFallbackText));
         if (shouldRetainRenderedSubtitle(fallbackKey, video?.currentTime))
           return;
         lastFallbackText = "";
-        removeRenderedSubtitle(fallbackKey, "netflix-subtitle-ended");
+        removeRenderedSubtitle(fallbackKey, "rendered-subtitle-ended");
       }
       return;
     }
     if (text === lastFallbackText) return;
 
-    const video = document.querySelector("video");
+    const video = activeVideo();
     // Only let timed text take over after its underlying line has been checked
-    // against Netflix. This also respects a user timing offset, which may make
-    // the intentionally rendered LST cue differ from Netflix's current cue.
+    // against what the player renders. This also respects a user timing offset,
+    // which may make the intentionally rendered LST cue differ from the
+    // player's current cue.
     if (
       video &&
       timedTrackSyncState !== "mismatch" &&
-      validateTimedTrackAgainstNetflix(video, text)
+      validateTimedTrackAgainstRendering(video, text)
     ) {
       return;
     }
@@ -2859,7 +3839,7 @@
           ? "DOM fallback (timing mismatch)"
           : "DOM realtime";
         currentStatus.lastTranslatedText = truncate(translated);
-        const videoTime = document.querySelector("video")?.currentTime;
+        const videoTime = activeVideo()?.currentTime;
         beginRenderedSubtitle({
           key,
           original: text,
@@ -2903,7 +3883,7 @@
       characterData: true,
     });
 
-    // Netflix sometimes updates subtitle layout without a useful mutation on the
+    // The player sometimes updates subtitle layout without a useful mutation on the
     // exact text node we observed. This lightweight poll keeps the fallback honest.
     const interval = setInterval(handleFallbackRenderedSubtitle, 350);
     return () => {
@@ -2914,56 +3894,65 @@
     };
   }
 
-  async function acceptSubtitleDocument(url, text) {
+  // `details` is how the document was found, not what is in it: the page world
+  // says whether it captured a document as it went past or fetched a whole track
+  // from a playback-resources listing, which language that track declared, and
+  // which rule chose it. It is recorded with the track so the event log can
+  // explain a Prime capture, and it never carries the caption text.
+  async function acceptSubtitleDocument(url, text, details = {}) {
     if (!playbackActive || !isWatchPage()) return;
+    // A track the viewer imported is the track this episode uses. Captured
+    // documents keep arriving while it plays, and they are refused by name
+    // rather than allowed to replace a file the viewer chose.
+    if (trackIsImported()) {
+      logDiagnostic("info", "track", "subtitle-track-ignored", {
+        reason: "imported-track-in-use",
+        incomingUrl: shortUrl(url),
+      });
+      return;
+    }
     const generation = playbackGeneration;
     const parsed = parseSubtitleDocument(text);
     if (!parsed.length) return;
 
     parsed.sort((a, b) => a.start - b.start);
 
-    const signature = cueTrackSignature(parsed);
-    const currentSignature = cueTrackSignature(cues);
+    // A captured document is either the track already in use, another part of
+    // it, or a different track. Membership and time coverage decide which, and
+    // the decision is reported either way.
+    const sameVideo = cueVideoId === getVideoId();
+    const existingCues = sameVideo ? cues : [];
+    const renderedText = existingCues.length ? findRenderedSubtitle() : "";
+    const decision = resolveTrackDecision(existingCues, parsed, renderedText);
 
-    if (signature === currentSignature) {
-      logDiagnostic("info", "track", "equivalent-subtitle-track-ignored", {
-        cueCount: parsed.length,
+    if (!decision.accept) {
+      logDiagnostic("info", "track", "subtitle-track-kept", {
+        incomingUrl: shortUrl(url),
+        ...trackDecisionDiagnostics(decision),
       });
       return;
     }
 
-    const sameVideo = cueVideoId === getVideoId();
-    if (sameVideo && cues.length) {
-      const netflixText = findNetflixRenderedSubtitle();
-      const currentMatchesNetflix = cueListContainsText(cues, netflixText);
-      const parsedMatchesNetflix = cueListContainsText(parsed, netflixText);
-      const looksLikeFragment =
-        parsed.length < Math.max(10, cues.length * 0.5) &&
-        cueListSpan(parsed) < cueListSpan(cues) * 0.5;
-
-      // Netflix may fetch short timed-text fragments, metadata XML, or another
-      // subtitle representation while an episode is playing. Never let one of
-      // those displace the full/verified track whose cue keys back the cache.
-      if (
-        looksLikeFragment ||
-        (timedTrackSyncState === "verified" && !parsedMatchesNetflix) ||
-        (currentMatchesNetflix && !parsedMatchesNetflix)
-      ) {
-        return;
-      }
-    }
-
-    cues = parsed;
+    cues = adoptCapturedTrack(existingCues, parsed, decision);
     cueSourceUrl = url || "captured";
     cueVideoId = getVideoId();
-    timedTrackSyncState = "unverified";
-    automaticCueTimeOffsetSeconds = 0;
-    lastNetflixSyncText = "";
-    timedTrackMismatchSince = 0;
-    lastTimedTrackMismatch = "";
-    activeTimedTrackMismatchId = 0;
-    translationCoordinator = null;
-    removeRenderedSubtitlesBySource("timed", "new-subtitle-track");
+    cueTrackKind = "captured";
+    importedTrack = null;
+    currentStatus.subtitleSource = "captured";
+    currentStatus.importedFileName = "";
+    // A document that still contains every cue of the current track cannot
+    // invalidate the synchronization already confirmed for it, so only
+    // a replacement re-derives the timeline.
+    if (!decision.union) {
+      timedTrackSyncState = "unverified";
+      automaticCueTimeOffsetSeconds = 0;
+      lastRenderedSyncText = "";
+      timedTrackMismatchSince = 0;
+      lastTimedTrackMismatch = "";
+      activeTimedTrackMismatchId = 0;
+      translationCoordinator = null;
+      removeRenderedSubtitlesBySource("timed", "new-subtitle-track");
+    }
     knownCachedKeys = new Set();
     knownCachedTranslations = new Map();
     pausedCacheFailedKeys = new Set();
@@ -2975,6 +3964,10 @@
       cueCount: cues.length,
       firstCueStartMs: Math.round((cues[0]?.start || 0) * 1000),
       lastCueEndMs: Math.round((cues.at(-1)?.end || 0) * 1000),
+      incomingUrl: shortUrl(url),
+      capture: details.capture || "document",
+      sourceLanguage: details.language || "unknown",
+      ...trackDecisionDiagnostics(decision),
     });
 
     try {
@@ -3005,14 +3998,485 @@
     );
   }
 
+  // Imported tracks ----------------------------------------------------------
+  //
+  // A viewer watching a title the service does not subtitle can attach a
+  // subtitle file instead, and that file becomes the episode's track: its cues
+  // drive the overlay and the transcript, and the service's own captions stop
+  // being the source of anything. Because the file carries its own timeline, a
+  // service that draws no captions at all still gets subtitles — the clock
+  // decides which cue is on screen instead of a rendered line, which is exactly
+  // the case an imported track exists for.
+  //
+  // A file already written in the language the viewer asked for is displayed
+  // without asking any translation provider for anything. That decision is made
+  // when the file is imported, stored with it, and reported in its reason.
+
+  let importedTrack = null;
+  let cueTrackKind = "none";
+  let warnedMissingSubtitleImport = false;
+
+  function subtitleImport() {
+    const api = globalThis.LSTSubtitleImport;
+    if (api) return api;
+    if (!warnedMissingSubtitleImport) {
+      warnedMissingSubtitleImport = true;
+      console.warn(
+        "[LST] subtitle-import.js is missing; imported subtitles cannot be used.",
+      );
+    }
+    return null;
+  }
+
+  // An imported track is keyed by episode rather than by cache id, because the
+  // cache id also names the model and the target language, and changing either
+  // must not lose the file the viewer imported.
+  function importedEpisodeKey() {
+    const api = subtitleImport();
+    if (!api) return "";
+    const videoId = cueVideoId || getVideoId();
+    const identity = episodeIdentity();
+    if (identity?.encodeEpisodeKey) {
+      return identity.encodeEpisodeKey({ videoId, siteId: currentSiteId() });
+    }
+    return api.episodeKeyFor(videoId, currentSiteId());
+  }
+
+  function trackIsImported() {
+    return cueTrackKind === "imported" && Boolean(importedTrack);
+  }
+
+  // Whether this track has to reach a translation provider at all. Everything
+  // that would spend a request asks this first.
+  function trackNeedsTranslation() {
+    if (!trackIsImported()) return true;
+    return importedTrack.translate !== false;
+  }
+
+  // Whether an imported file has to be translated, for the language the viewer
+  // asks for now. A decision the viewer made stands forever; one LST made is made
+  // again against the language they want now, because the file has not changed but
+  // the question has. One owner, so adopting a file and re-checking one already in
+  // use cannot answer it differently.
+  function resolveTranslateDecision(track) {
+    const api = subtitleImport();
+    if (track?.translateReason === "viewer-choice" || !api?.needsTranslation) {
+      return {
+        translate: track?.translate !== false,
+        translateReason: track?.translateReason || "",
+      };
+    }
+    const decision = api.needsTranslation({
+      language: track.language,
+      targetLanguage: settings.targetLanguage,
+      sampleText: String(track.text || "").slice(0, 4000),
+    });
+    return { translate: decision.translate, translateReason: decision.reason };
+  }
+
+  function importedTrackSummary() {
+    if (!importedTrack) return null;
+    return {
+      source: "imported",
+      episodeKey: importedTrack.episodeKey,
+      fileName: importedTrack.fileName,
+      entryName: importedTrack.entryName,
+      entryId: importedTrack.entryId,
+      language: importedTrack.language,
+      languageCode: importedTrack.languageCode,
+      format: importedTrack.format,
+      cueCount: importedTrack.cueCount,
+      importedAt: importedTrack.importedAt,
+      translate: importedTrack.translate !== false,
+      translateReason: importedTrack.translateReason,
+      // Where this file's own timeline sits on the video's clock, so the popup
+      // and the player move the same number and describe it the same way.
+      timingOffsetMs: fileTimingOffsetMs(),
+    };
+  }
+
+  function importedTrackStatusText() {
+    const name = importedTrack?.fileName || "imported subtitles";
+    const cueCount = `${cues.length} cue${cues.length === 1 ? "" : "s"}`;
+    const described = subtitleImport()?.describeFileTiming?.(fileTimingOffsetMs());
+    const timing = described?.offsetMs ? ` · timing ${described.label}` : "";
+    return trackNeedsTranslation()
+      ? `Imported subtitles: ${name} · ${cueCount}${timing}.`
+      : `Imported subtitles: ${name} · ${cueCount}${timing} · already ` +
+          `${importedTrack.language || "in your language"}, so nothing is translated.`;
+  }
+
+  // What Jimaku held for this show when LST last asked, and which show the answer
+  // belongs to. Its whole point is that reading it asks nobody: the note was
+  // written when the viewer searched Jimaku, and the player reads it when an
+  // episode starts, so arriving at a title can be told what exists for it
+  // without a request leaving the browser. The one exception is the viewer
+  // pressing "Check Jimaku", which is their request and not a page's.
+  let jimakuFinding = null;
+  let jimakuFindingKey = "";
+  let jimakuCheckPending = false;
+  // The shows whose note the viewer has closed. It lasts as long as the page
+  // does, and one show's dismissal is never another's.
+  const jimakuNoteDismissed = new Set();
+  let jimakuNote;
+  let jimakuNoteText;
+  function showKey() {
+    const identity = episodeIdentity();
+    if (!identity?.encodeShowKey) return "";
+    const metadata = cacheMetadata();
+    return identity.encodeShowKey({
+      showName: metadata.showName,
+      siteId: metadata.siteId,
+    });
+  }
+
+  function jimakuFindingText() {
+    const api = subtitleImport();
+    if (!api?.describeJimakuFinding || !jimakuFinding) return null;
+    return api.describeJimakuFinding(jimakuFinding, { now: Date.now() });
+  }
+
+  // Read what is known about this show. Called where the episode is, rather than
+  // on a timer, so a viewer who never settles on a title asks nothing.
+  async function refreshJimakuFinding({ reason = "episode", force = false } = {}) {
+    if (!playbackActive || !isWatchPage()) return;
+    const api = subtitleImport();
+    if (!api?.normalizeJimakuFinding) return;
+    const key = showKey();
+    if (!key) {
+      if (jimakuFinding || jimakuFindingKey) {
+        jimakuFinding = null;
+        jimakuFindingKey = "";
+        updateQuickPills();
+      }
+      return;
+    }
+    if (!force && key === jimakuFindingKey) return;
+    jimakuFindingKey = key;
+    let response;
+    try {
+      response = await runtimeMessage({ type: "GET_JIMAKU_FINDING", showKey: key });
+    } catch (error) {
+      logDiagnostic("warning", "import", "jimaku-finding-unavailable", {
+        reason: "background-unavailable",
+      });
+      return;
+    }
+    // The viewer may have moved on to another show while the answer was in
+    // flight, in which case the note belongs to a show that is no longer on
+    // screen.
+    if (jimakuFindingKey !== key) return;
+    jimakuFinding = api.normalizeJimakuFinding(response?.finding) || null;
+    logDiagnostic("info", "import", "jimaku-finding-read", {
+      reason: jimakuFindingText()?.reason || response?.reason || api.FINDING_REASON.none,
+      entryCount: jimakuFinding?.entryCount ?? 0,
+      fileCount: jimakuFinding?.fileCount ?? null,
+      episode: jimakuFinding?.episode ?? null,
+      source: reason,
+    });
+    updateQuickPills();
+  }
+
+  // A note about Jimaku outlives the status line, which every other message
+  // replaces — often within a second of arriving, which is exactly what makes a
+  // notice there useless. This is the sentence on screen, dismissed by the viewer
+  // and by nothing else, and never drawn over subtitles the viewer is reading.
+  function updateJimakuNote() {
+    if (!jimakuNote || !jimakuNoteText) return;
+    const show = jimakuFinding?.showKey || "";
+    const described = trackIsImported() ? null : jimakuFindingText();
+    jimakuNote.hidden =
+      !described ||
+      jimakuNoteDismissed.has(show) ||
+      settings.showStatusMessages === false;
+    if (jimakuNote.hidden) return;
+    jimakuNoteText.textContent =
+      described.tone === "warn"
+        ? `${described.headline}. Try another spelling in the LST controls.`
+        : `${described.headline}. Import one from the LST controls.`;
+    jimakuNote.dataset.tone = described.tone;
+  }
+
+  // The note the background just wrote, adopted here so the player can say the
+  // answer without asking for it a second time.
+  function adoptJimakuFinding(finding) {
+    const api = subtitleImport();
+    const normalized = api?.normalizeJimakuFinding
+      ? api.normalizeJimakuFinding(finding)
+      : null;
+    if (!normalized) return null;
+    // A note is this tab's note only when it names the show this tab is on. The
+    // same message reaches every tab, and the others are watching something else.
+    if (normalized.showKey !== showKey()) return null;
+    jimakuFinding = normalized;
+    jimakuFindingKey = normalized.showKey;
+    updateQuickPills();
+    return jimakuFindingText();
+  }
+
+  // The one request LST sends about a show the viewer only opened, and it is
+  // sent because they pressed a button. Nothing else asks Jimaku on arrival, so a
+  // page that is merely opened cannot tell anyone which shows are being watched.
+  async function checkJimakuForShow() {
+    if (jimakuCheckPending) return;
+    const api = subtitleImport();
+    const metadata = cacheMetadata();
+    const query = api?.queryFromShowName ? api.queryFromShowName(metadata.showName) : "";
+    if (!query) {
+      setStatus(
+        "LST has no show name to search for yet. Wait for the title to load, then press Check Jimaku again.",
+        true,
+      );
+      return;
+    }
+    jimakuCheckPending = true;
+    setStatus(`Asking Jimaku about “${query}”…`, true);
+    try {
+      const response = await runtimeMessage({
+        type: "IMPORT_SEARCH",
+        query,
+        showKey: showKey(),
+        showName: metadata.showName,
+        siteId: metadata.siteId,
+      });
+      const described = adoptJimakuFinding(response?.finding);
+      const entryCount = Number(response?.entries?.length) || 0;
+      logDiagnostic("info", "import", "jimaku-checked", {
+        reason: described?.reason || api?.FINDING_REASON?.none || "no-finding-yet",
+        entryCount,
+      });
+      if (described) {
+        setStatus(`${described.headline}.`, true);
+      } else if (entryCount) {
+        setStatus(
+          `Jimaku lists ${entryCount} entr${entryCount === 1 ? "y" : "ies"} for “${query}”.`,
+          true,
+        );
+      } else {
+        setStatus(`Jimaku lists nothing for “${query}”.`, true);
+      }
+    } finally {
+      jimakuCheckPending = false;
+      updateQuickPills();
+    }
+  }
+
+  // An imported track replaces the captured one through the same adoption path a
+  // captured document takes, with the two differences that matter: the timeline
+  // is trusted because it came from a file rather than from the player, and the
+  // source is recorded as imported.
+  async function adoptImportedTrack(track) {
+    const api = subtitleImport();
+    const normalized = api ? api.normalizeImportedTrack(track) : null;
+    if (!normalized) {
+      logDiagnostic("warning", "import", "imported-track-unreadable", {
+        reason: "not-a-track",
+      });
+      return false;
+    }
+
+    let parsed = [];
+    try {
+      parsed = parseSubtitleDocument(normalized.text);
+    } catch (error) {
+      logDiagnostic("warning", "import", "imported-track-unreadable", {
+        reason: "parse-failed",
+        format: normalized.format,
+      });
+      return false;
+    }
+    if (!parsed.length) {
+      logDiagnostic("warning", "import", "imported-track-unreadable", {
+        reason: "no-readable-cues",
+        format: normalized.format,
+      });
+      return false;
+    }
+    parsed.sort((left, right) => left.start - right.start);
+
+    // The decision about translating was stored with the track so it survives a
+    // reload, but the viewer's target language can change after an import. A
+    // decision the viewer made stands; one LST made is made again against the
+    // language they want now.
+    Object.assign(normalized, resolveTranslateDecision(normalized));
+
+    cacheGeneration++;
+    precomputeCancelled = true;
+    cues = parsed;
+    cueTrackKind = "imported";
+    importedTrack = normalized;
+    cueSourceUrl = normalized.fileUrl || "imported";
+    cueVideoId = getVideoId();
+    translationCoordinator = null;
+    knownCachedKeys = new Set();
+    knownCachedTranslations = new Map();
+    pausedCacheFailedKeys = new Set();
+    lookAheadQueued = new Set();
+    lookAheadNoticeShown = false;
+    lookAheadReadyNoticeShown = false;
+    pausedCacheNoticeShown = false;
+    pausedCacheCompleteNoticeShown = false;
+    // The file states its own timeline, so there is nothing to synchronize and
+    // nothing to auto-align; the viewer's timing offset is the only adjustment.
+    timedTrackSyncState = "verified";
+    automaticCueTimeOffsetSeconds = 0;
+    lastRenderedSyncText = "";
+    timedTrackMismatchSince = 0;
+    lastTimedTrackMismatch = "";
+    activeTimedTrackMismatchId = 0;
+    lastRenderedCueKey = "";
+    removeRenderedSubtitlesBySource("timed", "imported-track");
+    currentStatus.captured = true;
+    currentStatus.cueCount = cues.length;
+    currentStatus.translatedCount = 0;
+    currentStatus.subtitleSource = "imported";
+    currentStatus.importedFileName = normalized.fileName;
+    currentStatus.playbackMode = trackNeedsTranslation()
+      ? "imported track"
+      : "imported track (no translation)";
+    renderTranscript();
+    updateProgress();
+    logDiagnostic("info", "import", "imported-track-adopted", {
+      cueCount: cues.length,
+      format: normalized.format,
+      language: normalized.language || "unknown",
+      translate: trackNeedsTranslation(),
+      translateReason: normalized.translateReason || "unspecified",
+      entryId: normalized.entryId,
+    });
+    setStatus(importedTrackStatusText(), true);
+    // The timing controls point at this file's own clock from now on, so the
+    // panel switches with the track rather than waiting for the next refresh.
+    updateQuickPills();
+
+    // Lines of this file that were translated for this episode before are
+    // already cached under the same cache id, so they render immediately and
+    // the progress figure starts from what is really left.
+    if (trackNeedsTranslation()) {
+      try {
+        await getCachedTranslations(cues);
+      } catch (error) {
+        console.warn("[LST] Could not read this episode's cached translations:", error);
+      }
+    }
+    return true;
+  }
+
+  // Returning to the captured track is the same teardown an episode change does,
+  // minus the episode change.
+  function releaseImportedTrack(reason) {
+    if (cueTrackKind !== "imported") return;
+    cacheGeneration++;
+    precomputeCancelled = true;
+    cues = [];
+    cueSourceUrl = "";
+    cueTrackKind = "none";
+    importedTrack = null;
+    translationCoordinator = null;
+    knownCachedKeys = new Set();
+    knownCachedTranslations = new Map();
+    pausedCacheFailedKeys = new Set();
+    timedTrackSyncState = "unverified";
+    automaticCueTimeOffsetSeconds = 0;
+    lastRenderedSyncText = "";
+    currentStatus.captured = false;
+    currentStatus.cueCount = 0;
+    currentStatus.translatedCount = 0;
+    currentStatus.subtitleSource = "none";
+    currentStatus.importedFileName = "";
+    clearRenderedSubtitle(reason);
+    renderTranscript();
+    // The timing controls point at the global setting again now that no file is
+    // in use, so the panel has to say so.
+    updateQuickPills();
+    logDiagnostic("info", "import", "imported-track-released", { reason });
+  }
+
+  // Ask the background what was imported for this episode. Called when playback
+  // starts, when the episode changes, and when an import is added or removed on
+  // another page, so the player never keeps a track the viewer has deleted.
+  async function refreshImportedTrack({ reason = "playback-start", force = false } = {}) {
+    if (!playbackActive || !isWatchPage()) return;
+    const generation = playbackGeneration;
+    const episodeKey = importedEpisodeKey();
+    if (!episodeKey) {
+      if (cueTrackKind === "imported") releaseImportedTrack("no-episode-key");
+      return;
+    }
+    if (
+      !force &&
+      cueTrackKind === "imported" &&
+      importedTrack?.episodeKey === episodeKey
+    ) {
+      return;
+    }
+
+    let response;
+    try {
+      response = await runtimeMessage({ type: "GET_IMPORTED_TRACK", episodeKey });
+    } catch (error) {
+      logDiagnostic("warning", "import", "imported-track-unavailable", {
+        reason: "background-unavailable",
+      });
+      return;
+    }
+    if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
+    // The viewer may have moved to another episode while the answer was in
+    // flight, in which case the answer describes a track that is not this
+    // page's track.
+    if (importedEpisodeKey() !== episodeKey) return;
+
+    const track = response?.track;
+    if (!track) {
+      if (cueTrackKind === "imported") releaseImportedTrack(response?.reason || "removed");
+      return;
+    }
+    const unchanged =
+      importedTrack?.episodeKey === track.episodeKey &&
+      importedTrack?.importedAt === track.importedAt;
+    if (unchanged && !force) return;
+    if (unchanged) {
+      // The same file, from the same import: the only thing that can have moved is
+      // where its timeline sits — the number the viewer moves from the player — or
+      // the language they asked for, which decides whether the file needs
+      // translating at all. A correction is applied in place, so the line on
+      // screen is not re-read and re-adopted under them; a different decision about
+      // translating takes the whole path, because it changes what the player does
+      // with every line of the file.
+      const decision = resolveTranslateDecision(track);
+      if (Boolean(decision.translate) === (importedTrack.translate !== false)) {
+        applyImportedFileTiming(track.timingOffsetMs);
+        return;
+      }
+    }
+
+    if (await adoptImportedTrack(track)) {
+      logDiagnostic("info", "import", "imported-track-loaded", { reason });
+      return;
+    }
+    // An unreadable file must not leave LST silent with no way back to the
+    // track the service is still delivering.
+    if (cueTrackKind === "imported") releaseImportedTrack("unreadable");
+  }
+
   async function precomputeAll() {
     if (precomputeInProgress) return;
-    if (!settings.model) {
+    if (!settings.model && trackNeedsTranslation()) {
       throw new Error("Choose a translation model in extension settings first.");
+    }
+    if (!trackNeedsTranslation()) {
+      // The imported file is already written in the language the viewer asked
+      // for, so there is nothing to precompute and nothing to spend.
+      setStatus(
+        `This episode uses imported subtitles already in ` +
+          `${importedTrack?.language || settings.targetLanguage}, so no translation is needed.`,
+        true,
+      );
+      return;
     }
     if (!cues.length) {
       throw new Error(
-        "No full subtitle track captured yet. Turn on a Netflix subtitle track, then retry.",
+        `No full subtitle track captured yet. Turn on a ${siteName()} subtitle track, then retry.`,
       );
     }
 
@@ -3028,7 +4492,7 @@
       const cached = await getCachedTranslations(cues);
       currentStatus.translatedCount = Object.keys(cached).length;
 
-      const videoTime = Number(document.querySelector("video")?.currentTime);
+      const videoTime = Number(activeVideo()?.currentTime);
       const precomputeStartTime = Number.isFinite(videoTime)
         ? subtitleLookupTime(videoTime)
         : -Infinity;
@@ -3088,7 +4552,7 @@
 
         // translateCues records successful keys in knownCachedKeys. Recount from
         // that set so progress cannot double-count the just-finished batch.
-        refreshCacheCoverage(document.querySelector("video")?.currentTime);
+        refreshCacheCoverage(activeVideo()?.currentTime);
         currentStatus.failedCount += result.failures.length;
 
         if (result.failures.length) {
@@ -3147,7 +4611,7 @@
 
   function startPrecomputeDetached() {
     if (!playbackActive || !isWatchPage()) {
-      throw new Error("Open a Netflix watch page first.");
+      throw new Error(`Open a ${siteName()} watch page first.`);
     }
     if (precomputeInProgress) {
       return { started: false, alreadyRunning: true };
@@ -3166,36 +4630,122 @@
     return { started: true, alreadyRunning: false };
   }
 
-  window.addEventListener("message", (event) => {
-    if (!playbackActive || !isWatchPage()) return;
-    if (event.source !== window) return;
-    if (event.data?.source !== SOURCE) return;
-    if (event.data?.type !== "SUBTITLE_DOCUMENT") return;
+  // A track can be captured before LST has noticed that a player is in use. The
+  // player asks for its resources the moment it starts, and LST notices a
+  // player on its next pass — so the request that names the episode's subtitles
+  // can arrive first, and it is not repeated on demand. The newest document is
+  // therefore held here and adopted as soon as playback starts, rather than
+  // dropped and waited for again.
+  let pendingSubtitleDocument = null;
 
-    const { url, text } = event.data.payload || {};
-    acceptSubtitleDocument(url, text).catch((error) => {
+  function handleCapturedDocument(payload) {
+    const { url, text, site, capture = "", language = "", reason = "" } = payload || {};
+    // A document captured on one service is never adopted by the other: the
+    // page hook tags what it publishes, and a mismatch is reported rather than
+    // trusted, because a subtitle track from another site would be filed under
+    // this one's cache id.
+    if (site && site !== currentSiteId()) {
+      logDiagnostic("info", "track", "subtitle-document-other-site", {
+        documentSiteId: site,
+        pageSiteId: currentSiteId() || "none",
+        incomingUrl: shortUrl(url),
+      });
+      return;
+    }
+    acceptSubtitleDocument(url, text, { capture, language, reason }).catch((error) => {
       console.warn("[LST] Could not parse captured subtitles:", error);
     });
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window) return;
+    if (event.data?.source !== SOURCE) return;
+    if (!playbackActive || !isWatchPage()) {
+      // Only a document is worth keeping; a note about a capture that already
+      // happened would describe a page state the log is no longer on.
+      if (event.data?.type === "SUBTITLE_DOCUMENT") pendingSubtitleDocument = event.data.payload;
+      return;
+    }
+
+    // Why the page world found no track to hand over. It is a note rather than a
+    // document — no subtitle text, only the reason and what it saw — and its
+    // job is to put the capture's own answer in the event log, which is where a
+    // viewer can find out why a title has no full track instead of watching LST
+    // wait.
+    if (event.data?.type === "SUBTITLE_CAPTURE") {
+      const { site, event: captureEvent, reason, trackCount, language } =
+        event.data.payload || {};
+      if (site && site !== currentSiteId()) return;
+      logDiagnostic("info", "track", `capture-${captureEvent || "note"}`, {
+        reason: reason || "unspecified",
+        trackCount: Number(trackCount) || 0,
+        language: language || "unknown",
+      });
+      return;
+    }
+
+    if (event.data?.type !== "SUBTITLE_DOCUMENT") return;
+
+    handleCapturedDocument(event.data.payload);
   });
 
   ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       switch (message?.type) {
         case "GET_PAGE_STATUS": {
-          refreshCacheCoverage(document.querySelector("video")?.currentTime);
+          refreshCacheCoverage(activeVideo()?.currentTime);
           const metadata = cacheMetadata();
           sendResponse({
             ok: true,
             status: {
               ...currentStatus,
               videoId: getVideoId(),
+              siteId: currentSiteId(),
               showName: metadata.showName,
               episodeName: metadata.episodeName,
+              episodeNumber: lastEpisodeNumber,
               sourceUrl: cueSourceUrl,
               enabled: settings.enabled,
               model: settings.model,
               targetLanguage: settings.targetLanguage,
+              imported: importedTrackSummary(),
+              jimaku: jimakuFinding,
             },
+          });
+          return;
+        }
+
+        case "JIMAKU_CHANGED": {
+          // The viewer searched or listed files in the import card. The note the
+          // background wrote is handed over here so the player can say what was
+          // found without asking Jimaku a second time.
+          if (message.cleared) {
+            // Only the note for the show being cleared is dropped; another tab
+            // may be watching a show the viewer did keep.
+            if (message.showKey && message.showKey === jimakuFindingKey) {
+              jimakuFinding = null;
+              updateQuickPills();
+            }
+            sendResponse({ ok: true, applied: true, reason: "cleared" });
+            return;
+          }
+          const described = adoptJimakuFinding(message.finding);
+          sendResponse({ ok: true, applied: Boolean(described), reason: described?.reason || "" });
+          return;
+        }
+
+        case "IMPORT_CHANGED": {
+          // An import was added, replaced or removed on another page. The player
+          // picks the change up now instead of at the next episode change.
+          if (!playbackActive || !isWatchPage()) {
+            sendResponse({ ok: true, applied: false, reason: "not-playing" });
+            return;
+          }
+          await refreshImportedTrack({ reason: "import-changed", force: true });
+          sendResponse({
+            ok: true,
+            applied: trackIsImported(),
+            imported: importedTrackSummary(),
           });
           return;
         }
@@ -3217,8 +4767,12 @@
           }
           const previousCacheId = cacheId();
           const previousUseTranslationContext = settings.useTranslationContext;
+          const previousContextLevel = settings.contextLevel;
           await loadSettings();
-          if (settings.useTranslationContext !== previousUseTranslationContext) {
+          if (
+            settings.useTranslationContext !== previousUseTranslationContext ||
+            settings.contextLevel !== previousContextLevel
+          ) {
             translationCoordinator = null;
           }
           if (cacheId() !== previousCacheId) {
@@ -3227,6 +4781,15 @@
             knownCachedTranslations = new Map();
             pausedCacheFailedKeys = new Set();
             if (cues.length) await getCachedTranslations(cues);
+          }
+          // Changing the target language can change whether an imported file
+          // still needs translating.
+          if (trackIsImported()) {
+            const wasTranslating = trackNeedsTranslation();
+            await refreshImportedTrack({ reason: "settings-changed", force: true });
+            if (playbackActive && wasTranslating !== trackNeedsTranslation()) {
+              setStatus(importedTrackStatusText(), true);
+            }
           }
           ensureOverlay();
           applySubtitleAppearance();
@@ -3250,17 +4813,25 @@
     playbackActive = false;
     playbackGeneration++;
     precomputeCancelled = true;
-    document.documentElement.classList.remove("lst-hide-netflix-subtitles");
+    document.documentElement.classList.remove("lst-hide-native-subtitles");
     stopTitleMetadataObserver();
     stopFallbackObserver();
     clearTimeout(diagnosticFlushTimer);
     diagnosticFlushTimer = null;
     diagnosticEvents = [];
     lastFallbackText = "";
-    netflixSubtitleCandidate = "";
+    renderedSubtitleCandidate = "";
     cues = [];
     cueSourceUrl = "";
     cueVideoId = "";
+    cueTrackKind = "none";
+    importedTrack = null;
+    // A track captured for the player that has just gone belongs to that player,
+    // not to the next one.
+    pendingSubtitleDocument = null;
+    // A note belongs to the show that was on screen; the next one reads its own.
+    jimakuFinding = null;
+    jimakuFindingKey = "";
     translationCoordinator = null;
     knownCachedKeys = new Set();
     knownCachedTranslations = new Map();
@@ -3284,36 +4855,131 @@
       progressPercent: 0,
       playbackMode: "waiting",
       requestState: "idle",
-      message: "Waiting for Netflix subtitles…"
+      subtitleSource: "none",
+      importedFileName: "",
+      message: `Waiting for ${siteName()} subtitles…`,
     };
     for (const element of [overlay, hud, debugPanel, transcriptPanel]) {
       if (element) element.style.display = "none";
     }
   }
 
+  // A page LST cannot serve stays idle, and says why once, so a viewer who
+  // wonders why nothing is happening can see the reason in the event log instead
+  // of nothing at all. The same rule covers an unknown host, a service the
+  // viewer switched off, and a service page with nothing playing on it.
+  let lastInactiveSiteReason = "";
+  const PLAYER_ABSENCE_GRACE_POLLS = 3;
+  let playerAbsencePolls = 0;
+
+  function reportSiteInactive(reason, details = {}) {
+    if (lastInactiveSiteReason === `${reason}:${currentSiteId()}`) return;
+    lastInactiveSiteReason = `${reason}:${currentSiteId()}`;
+    const detected = detectedSite();
+    logDiagnostic(reason === "site-disabled" ? "info" : "warning", "site", reason, {
+      siteId: detected.siteId || "none",
+      matchPattern: detected.matchPattern || "none",
+      host: detected.view?.host || "unknown",
+      ...details,
+    });
+  }
+
+  // The stored preference is read once, on the first page that could actually
+  // play, so a browse page costs no storage read and stays idle. Reloading
+  // settings pushes a fresh copy, so a service switched off while a page is open
+  // is still noticed without another read.
+  let settingsLoaded = false;
+  let settingsLoadPromise = null;
+
+  function ensureSettingsLoaded() {
+    if (settingsLoaded) return Promise.resolve();
+    if (!settingsLoadPromise) {
+      settingsLoadPromise = loadSettings().then(() => {
+        settingsLoaded = true;
+      });
+    }
+    return settingsLoadPromise;
+  }
+
   async function syncPlaybackRoute() {
+    const site = currentSite();
+    if (!site) {
+      reportSiteInactive(
+        detectedSite().reason === "playback-site-unavailable"
+          ? "playback-site-unavailable"
+          : "site-unsupported",
+      );
+      if (playbackActive) stopPlayback();
+      return;
+    }
     if (!isWatchPage()) {
       if (playbackActive) stopPlayback();
       return;
     }
-    if (playbackActive) return;
+
+    await ensureSettingsLoaded();
+
+    // A service can be switched off while its page is open. That tears down
+    // exactly like the global switch: the overlay, HUD, panels and the html
+    // class go, native subtitles stay untouched, and no reload is needed.
+    if (!siteEnabled(site.id)) {
+      reportSiteInactive("site-disabled");
+      if (playbackActive) stopPlayback();
+      return;
+    }
+
+    // Nothing is drawn until a player is in use. On Prime Video that is what
+    // keeps a storefront, a product page, or a detail page that has not started
+    // playing completely untouched, instead of announcing that LST is waiting
+    // for subtitles over a page where nothing is playing.
+    //
+    // A player can also wink out for a moment — an ad break, a source swap — so
+    // a brief absence is tolerated before LST withdraws, and a storefront the
+    // viewer navigated back to is left alone within a couple of seconds.
+    if (!playerPresence().present) {
+      if (!playbackActive) return;
+      playerAbsencePolls += 1;
+      if (playerAbsencePolls < PLAYER_ABSENCE_GRACE_POLLS) return;
+      playerAbsencePolls = 0;
+      stopPlayback();
+      return;
+    }
+    playerAbsencePolls = 0;
+
+    if (playbackActive) {
+      lastInactiveSiteReason = "";
+      return;
+    }
     playbackActive = true;
+    lastInactiveSiteReason = "";
     const generation = ++playbackGeneration;
     try {
-      await loadSettings();
-      if (generation !== playbackGeneration) return;
-      if (!isWatchPage()) {
-        stopPlayback();
-        return;
-      }
       for (const element of [overlay, hud, debugPanel, transcriptPanel]) {
         if (element) element.style.display = "";
       }
       ensureOverlay();
-      setStatus("Waiting for Netflix subtitles…", true);
+      setStatus(`Waiting for ${siteName()} subtitles…`, true);
       stopTitleMetadataObserver = startTitleMetadataObserver();
       stopFallbackObserver = startFallbackObserver();
       requestAnimationFrame(playbackLoop);
+      // A track the page world captured before this pass is this episode's
+      // track: the request that carried it is not repeated, so holding it would
+      // mean waiting for a capture that is never asked for again.
+      if (pendingSubtitleDocument) {
+        const held = pendingSubtitleDocument;
+        pendingSubtitleDocument = null;
+        handleCapturedDocument(held);
+      }
+      // A subtitle file the viewer imported for this episode is this episode's
+      // track, whether or not the service is rendering captions of its own.
+      refreshImportedTrack({ reason: "playback-start" }).catch((error) => {
+        console.warn("[LST] Could not check for imported subtitles:", error);
+      });
+      // What Jimaku held for this show, if the viewer ever asked: a note read
+      // from local storage, so arriving at a title sends nothing anywhere.
+      refreshJimakuFinding({ reason: "playback-start" }).catch((error) => {
+        console.warn("[LST] Could not read what Jimaku holds for this show:", error);
+      });
     } catch (error) {
       if (generation === playbackGeneration) {
         playbackActive = false;
@@ -3330,6 +4996,6 @@
   startFullscreenObserver();
   syncPlaybackRoute().catch((error) => console.warn("[LST] Could not start playback:", error));
   setInterval(() => {
-    syncPlaybackRoute().catch((error) => console.warn("[LST] Could not follow Netflix navigation:", error));
+    syncPlaybackRoute().catch((error) => console.warn("[LST] Could not follow site navigation:", error));
   }, 750);
 })();

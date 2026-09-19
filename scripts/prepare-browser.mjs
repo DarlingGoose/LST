@@ -3,16 +3,24 @@ import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 const sourceFiles = [
   "background.js",
   "content.js",
+  "episode-identity.js",
   "manifest.json",
   "options.html",
   "options.js",
   "page-hook.js",
+  "playback-site.js",
   "popup.html",
   "popup.css",
   "popup.js",
+  "setup.html",
+  "setup.js",
   "styles.css",
+  "structured-response.js",
+  "subtitle-import.js",
   "subtitle-sync.js",
-  "translation-coordinator.js"
+  "translation-context.js",
+  "translation-coordinator.js",
+  "translation-guard.js"
 ];
 
 export async function prepareBrowser(browser) {

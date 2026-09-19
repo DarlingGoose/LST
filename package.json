@@ -4,7 +4,7 @@
   "private": true,
   "description": "Release tooling for the LST browser extension.",
   "scripts": {
-    "check:syntax": "node --check background.js && node --check content.js && node --check options.js && node --check page-hook.js && node --check popup.js && node --check subtitle-sync.js && node --check translation-coordinator.js",
+    "check:syntax": "node --check background.js && node --check content.js && node --check episode-identity.js && node --check options.js && node --check page-hook.js && node --check playback-site.js && node --check popup.js && node --check setup.js && node --check structured-response.js && node --check subtitle-import.js && node --check subtitle-sync.js && node --check translation-context.js && node --check translation-coordinator.js && node --check translation-guard.js",
     "version:set": "node scripts/set-version.mjs",
     "prepare:chrome": "node scripts/prepare-chrome.mjs",
     "build:chrome": "npm run prepare:chrome && web-ext build --source-dir=.chrome-build --artifacts-dir=web-ext-artifacts --overwrite-dest --filename=lst-chrome-{version}.zip",
@@ -13,14 +13,22 @@
     "dev:firefox": "npm run prepare:firefox && web-ext run --source-dir=.firefox-build",
     "dev:chrome": "npm run prepare:chrome",
     "test:cache": "node scripts/test-cache.mjs",
+    "test:episode-identity": "node scripts/test-episode-identity.mjs",
     "test:page-hook": "node scripts/test-page-hook.mjs",
+    "test:playback-site": "node scripts/test-playback-site.mjs",
     "test:providers": "node scripts/test-providers.mjs",
+    "test:translation-context": "node scripts/test-translation-context.mjs",
     "test:translation-coordinator": "node scripts/test-translation-coordinator.mjs",
     "test:subtitle-sync": "node scripts/test-subtitle-sync.mjs",
+    "test:translation-guard": "node scripts/test-translation-guard.mjs",
+    "test:translation-verification": "node scripts/test-translation-verification.mjs",
+    "test:setup-page": "node scripts/test-setup-page.mjs",
+    "test:subtitle-import": "node scripts/test-subtitle-import.mjs",
+    "test:structured-response": "node scripts/test-structured-response.mjs",
     "check:release": "node scripts/check-release.mjs",
     "prepare:firefox": "node scripts/prepare-firefox.mjs",
     "lint": "npm run prepare:firefox && web-ext lint --source-dir=.firefox-build",
-    "check": "npm run check:syntax && npm run test:cache && npm run test:page-hook && npm run test:providers && npm run test:translation-coordinator && npm run test:subtitle-sync && npm run check:release && npm run lint",
+    "check": "npm run check:syntax && npm run test:cache && npm run test:episode-identity && npm run test:page-hook && npm run test:playback-site && npm run test:providers && npm run test:translation-context && npm run test:translation-coordinator && npm run test:subtitle-sync && npm run test:translation-guard && npm run test:translation-verification && npm run test:structured-response && npm run test:setup-page && npm run test:subtitle-import && npm run check:release && npm run lint",
     "build:firefox": "npm run prepare:firefox && web-ext build --source-dir=.firefox-build --artifacts-dir=web-ext-artifacts --overwrite-dest --filename=lst-firefox-{version}.zip",
     "build": "npm run build:firefox",
     "verify:firefox": "node scripts/verify-package.mjs firefox",
@@ -44,6 +52,7 @@
       ".gitignore",
       "AMO_REVIEWER_NOTES.md",
       "FIREFOX_RELEASE.md",
+      "PRIME_VIDEO_PLAN.md",
       "PRIVACY.md",
       "PROJECT.md",
       "README.md",
@@ -53,7 +62,8 @@
       "package-lock.json",
       "lst-local-subtitle-translate",
       "scripts",
-      "web-ext-artifacts/**"
+      "web-ext-artifacts/**",
+      "docs/**"
     ]
   }
 }

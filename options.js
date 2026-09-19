@@ -21,7 +21,7 @@ const TAB_DETAILS = {
   },
   subtitles: {
     title: "Subtitle studio",
-    description: "Preview the exact hierarchy viewers will see on Netflix."
+    description: "Preview the exact hierarchy viewers will see in the player."
   },
   storage: {
     title: "Translation library",
@@ -33,6 +33,29 @@ const TAB_DETAILS = {
   }
 };
 let diagnosticLogEvents = [];
+
+// Where the LST control button and its status may sit inside a player, and the
+// legacy spelling of the setting that hides the service's own captions.
+const HUD_POSITIONS = ["top-left", "top-right", "bottom-left", "bottom-right"];
+const LEGACY_HIDE_SUBTITLES_KEY = "hideNetflixSubtitles";
+
+// The renamed setting is read through, so an install from before the rename
+// keeps its answer. `??` and not `||`: a stored `false` is a real answer.
+function hidesNativeSubtitles(settings) {
+  if (settings?.hideNativeSubtitles !== undefined) return settings.hideNativeSubtitles;
+  if (settings?.[LEGACY_HIDE_SUBTITLES_KEY] !== undefined) {
+    return settings[LEGACY_HIDE_SUBTITLES_KEY];
+  }
+  return true;
+}
+
+// Which service a cache belongs to. The key is namespaced per service, so a
+// Prime Video episode is grouped under Prime Video rather than under whatever
+// name a fallback happens to carry.
+function cacheShowName(cache) {
+  const api = globalThis.LSTPlaybackSite;
+  return cache?.showName || api?.labelFor?.(cache?.siteId) || "Unknown service";
+}
 
 const APPEARANCE_DEFAULTS = {
   subtitleHorizontalPosition: "center",
@@ -210,8 +233,10 @@ function createCacheItem(cache) {
   const details = document.createElement("div");
   const episode = document.createElement("div");
   episode.className = "cache-title";
+  // Episode identity belongs to episode-identity.js, so the cache list names a
+  // video the same way the popup and the page do.
   episode.textContent = cache.episodeName || cache.title ||
-    `Episode ${cache.videoId || "unknown"}`;
+    globalThis.LSTEpisodeIdentity?.fallbackEpisodeName(cache.videoId) || "";
   episode.title = episode.textContent;
 
   const meta = document.createElement("div");
@@ -266,7 +291,7 @@ function createCacheItem(cache) {
 function renderCacheLibrary(caches, totalBytes) {
   const list = $("cacheList");
   list.replaceChildren();
-  const showNames = new Set(caches.map((cache) => cache.showName || "Netflix"));
+  const showNames = new Set(caches.map(cacheShowName));
   const episodeLabel = `${caches.length} ready`;
   const byteLabel = `${formatBytes(totalBytes)} used`;
   $("cacheShowCount").textContent = `${showNames.size} cached`;
@@ -292,7 +317,7 @@ function renderCacheLibrary(caches, totalBytes) {
 
   const groups = new Map();
   for (const cache of caches) {
-    const showName = cache.showName || "Netflix";
+    const showName = cacheShowName(cache);
     if (!groups.has(showName)) groups.set(showName, []);
     groups.get(showName).push(cache);
   }
@@ -462,12 +487,16 @@ async function load() {
   renderProvider();
   $("targetLanguage").value = s.targetLanguage || "English";
   $("enabled").checked = s.enabled !== false;
-  $("hideNetflixSubtitles").checked = s.hideNetflixSubtitles !== false;
+  $("hideNativeSubtitles").checked = hidesNativeSubtitles(s) !== false;
+  $("hudPosition").value = HUD_POSITIONS.includes(s.hudPosition) ? s.hudPosition : "";
+  renderServices(s);
   $("showOriginal").checked = s.showOriginal === true;
   $("showTranslated").checked = s.showTranslated !== false;
   $("showStatusMessages").checked = s.showStatusMessages !== false;
   $("autoTranslateAhead").checked = s.autoTranslateAhead !== false;
   $("useTranslationContext").checked = s.useTranslationContext === true;
+  renderContextLevel(s.contextLevel);
+  $("verifyTranslations").checked = s.verifyTranslations !== false;
   $("showDebugPanel").checked = s.showDebugPanel === true;
   $("debugPanelAlwaysOnTop").checked = s.debugPanelAlwaysOnTop === true;
   $("showQuickPills").checked = s.showQuickPills !== false;
@@ -482,6 +511,7 @@ async function load() {
   applyAppearance(s);
   await loadCacheLibrary();
   await loadDiagnosticLog();
+  await refreshImportSection();
   $("pullModelName").value = providerModels.ollama;
 
   try {
@@ -589,12 +619,18 @@ function collectSettings() {
     model: providerModels[$("provider").value],
     targetLanguage: $("targetLanguage").value.trim() || "English",
     enabled: $("enabled").checked,
-    hideNetflixSubtitles: $("hideNetflixSubtitles").checked,
+    hideNativeSubtitles: $("hideNativeSubtitles").checked,
+    enabledSites: collectEnabledSites(),
+    hudPosition: $("hudPosition").value,
     showOriginal: $("showOriginal").checked,
     showTranslated: $("showTranslated").checked,
     showStatusMessages: $("showStatusMessages").checked,
     autoTranslateAhead: $("autoTranslateAhead").checked,
     useTranslationContext: $("useTranslationContext").checked,
+    contextLevel:
+      globalThis.LSTTranslationContext?.resolveBudget($("contextLevel").value).id ||
+      "standard",
+    verifyTranslations: $("verifyTranslations").checked,
     showDebugPanel: $("showDebugPanel").checked,
     debugPanelAlwaysOnTop: $("debugPanelAlwaysOnTop").checked,
     showQuickPills: $("showQuickPills").checked,
@@ -614,16 +650,914 @@ function collectSettings() {
   };
 }
 
-async function pushSettingsToNetflixTabs() {
+// Every open tab is offered the reload; the ones without an LST content script
+// reject the message and are ignored. Filtering by URL instead would need host
+// permission for each service, and messaging needs none. The adapter's host list
+// is therefore not consulted here at all: a service it gains is reached by this
+// push the moment its content script exists.
+async function pushSettingsToOpenTabs() {
   try {
-    const tabs = await ext.tabs.query({ url: "https://www.netflix.com/*" });
-    await Promise.all(tabs.map((tab) =>
-      tab.id
-        ? ext.tabs.sendMessage(tab.id, { type: "RELOAD_SETTINGS" }).catch(() => {})
-        : Promise.resolve()
-    ));
+    const tabs = await ext.tabs.query({});
+    await Promise.all(tabs.map((tab) => tab.id
+      ? ext.tabs.sendMessage(tab.id, { type: "RELOAD_SETTINGS" }).catch(() => {})
+      : Promise.resolve()));
   } catch {}
 }
+
+// A service row is built from describeSupport(), so adding a service adds a row
+// rather than a new layout, and the switch the viewer sees is the switch the
+// adapter's detection honours.
+// How each way of finding a subtitle track is described, keyed by the adapter's
+// own word for it. A service whose capture the adapter has not established says
+// so rather than promising a precompute it cannot deliver.
+const CAPTURE_LABELS = Object.freeze({
+  "url-heuristic": "full-track capture available",
+  "playback-resources": "full-track capture available",
+  unknown: "realtime captions only; full-track capture unverified",
+});
+
+function serviceHelp(service) {
+  const capture = CAPTURE_LABELS[service.timedTextCapture] || "realtime captions only";
+  return `${service.hosts.join("  ·  ")} — ${capture}.`;
+}
+
+function collectEnabledSites() {
+  const map = {};
+  for (const input of document.querySelectorAll("input[data-service-id]")) {
+    map[input.dataset.serviceId] = input.checked;
+  }
+  return map;
+}
+
+// Context amount -------------------------------------------------------------
+//
+// How much surrounding context a request carries is the viewer's choice, and
+// every amount on this page — the names in the select and the sentence under it
+// — is read from translation-context.js, so the page cannot state a limit the
+// module does not implement. An amount this build no longer offers, or none at
+// all, resolves to the level the module would actually use.
+function renderContextLevel(stored) {
+  const select = $("contextLevel");
+  const summary = $("contextLevelSummary");
+  const api = globalThis.LSTTranslationContext || null;
+
+  if (api) {
+    if (!select.options.length) {
+      for (const level of api.contextLevelOptions()) {
+        const option = document.createElement("option");
+        option.value = level.id;
+        option.textContent = level.label;
+        select.appendChild(option);
+      }
+    }
+    select.value = api.resolveBudget(stored ?? select.value).id;
+  }
+
+  const on = $("useTranslationContext").checked;
+  // Nothing to choose while context is off, and a control that looks settable
+  // but sends nothing is worse than one that says it is waiting.
+  select.disabled = !api || !on;
+  summary.textContent = !api
+    ? "translation-context.js did not load, so the amount of context cannot be read. Requests carry no reference lines."
+    : on
+      ? `${api.describeLevelSummary(select.value)} Context is reference-only, and existing cached translations are unchanged.`
+      : "Surrounding context is off, so each request carries only the lines it is translating.";
+}
+
+function renderServices(settings) {
+  const list = $("serviceList");
+  if (!list) return;
+  const services = globalThis.LSTPlaybackSite?.describeSupport?.() || [];
+  list.replaceChildren();
+
+  for (const service of services) {
+    const row = document.createElement("div");
+    row.className = "switch-row";
+
+    const copy = document.createElement("div");
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = service.label;
+    const help = document.createElement("p");
+    help.className = "help";
+    help.textContent = serviceHelp(service);
+    copy.append(label, help);
+
+    const control = document.createElement("label");
+    control.className = "switch";
+    control.setAttribute("aria-label", `Run LST on ${service.label}`);
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.id = `service-${service.id}`;
+    input.dataset.serviceId = service.id;
+    // The map's default is "enabled": a service absent from it is not one the
+    // viewer ever turned off.
+    input.checked = settings?.enabledSites?.[service.id] !== false;
+    input.addEventListener("change", markUnsaved);
+    const ui = document.createElement("span");
+    ui.className = "switch-ui";
+    control.append(input, ui);
+
+    row.append(copy, control);
+    list.appendChild(row);
+  }
+}
+
+// Imported subtitles -------------------------------------------------------
+//
+// Attaching a subtitle file to an episode is an explicit act, and the file can
+// arrive two ways: fetched from a Jimaku entry (two network steps, both behind
+// an optional permission asked for at the moment of the first search), or chosen
+// from the files already on this device, which involves no network at all. The
+// episode is the same in both cases — the one the page says is playing.
+
+let importState = {
+  target: null,
+  entry: null,
+  files: [],
+  lastEntries: [],
+  translateMode: "auto",
+};
+
+function importApi() {
+  const api = globalThis.LSTSubtitleImport;
+  if (!api) throw new Error("Subtitle import is unavailable in this build.");
+  return api;
+}
+
+function setImportStatus(message, tone = "") {
+  const element = $("importStatus");
+  if (!element) return;
+  element.textContent = message;
+  element.dataset.tone = tone;
+}
+
+// What the viewer asked LST to do with the file, over and above what the file's
+// own language suggests.
+function importTranslateChoice() {
+  if (importState.translateMode === "yes") return true;
+  if (importState.translateMode === "no") return false;
+  return undefined;
+}
+
+// The file is read here rather than in the background: the picker belongs to
+// this page, and nothing has to be granted for it to work. The bytes are handed
+// to the module, which decides what encoding they are in.
+function readFileBytes(file) {
+  if (typeof file?.arrayBuffer === "function") return file.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("The file could not be read."));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// One sentence for a finished import, whichever source it came from, including
+// the case where the file names an episode other than the one playing. That is
+// worth saying out loud and never worth refusing: the viewer picked the file.
+function importResultMessage(track) {
+  const api = importApi();
+  const decision = track.translate
+    ? "LST will translate it"
+    : track.translate === false
+      ? `LST will show it as it is (${track.language || "the file's language"})`
+      : "LST will decide from the file's language";
+  const size = track.cueCount
+    ? `${track.cueCount} cues`
+    : api.SUBTITLE_FORMATS[track.format]?.label || track.format;
+  const match = track.episodeMatch;
+  const note =
+    match?.reason === "episode-mismatch"
+      ? ` Note: the file names episode ${match.fileEpisode}, and this one is ${match.targetEpisode}.`
+      : "";
+  return `Imported ${track.fileName} for this episode · ${size} · ${decision}.${note}`;
+}
+
+// Which hosts an origin list names, for the sentences below. The module owns
+// the host names; this page never spells one out.
+function importHostNames(origins) {
+  return origins.map((origin) => {
+    try {
+      return new URL(origin).hostname;
+    } catch {
+      return origin;
+    }
+  });
+}
+
+// Browsers allow an optional host only if the manifest a copy of the extension
+// was *loaded* with declared it, and Firefox keeps that manifest for the life of
+// the load — a copy loaded before LST declared the two hosts answers the request
+// with the browser's own words ("... since it was not declared in the manifest"),
+// which name neither the cause nor the fix. So the page reads the manifest it is
+// really running under and says what will actually help.
+function declaredImportHosts() {
+  try {
+    const manifest = ext.runtime?.getManifest?.() || {};
+    const named =
+      "optional_host_permissions" in manifest || "optional_permissions" in manifest;
+    // A manifest that never mentions optional hosts cannot be judged: the
+    // request below will fail in its own words if the declaration is missing.
+    if (!named) return null;
+    // Both keys mean the same thing to the browser, and a build may legitimately
+    // declare the hosts under the older one.
+    return [
+      ...(manifest.optional_host_permissions || []),
+      ...(manifest.optional_permissions || []),
+    ];
+  } catch {
+    // A manifest that cannot be read is not an accusation either: let the
+    // request below speak for itself.
+    return null;
+  }
+}
+
+function declaresImportHosts(origins) {
+  const declared = declaredImportHosts();
+  if (!declared) return true;
+  // The manifest test keeps this list identical to the module's host list, so
+  // "is it declared" is a question an exact match can answer.
+  return origins.every((origin) => declared.includes(origin));
+}
+
+function undeclaredImportMessage() {
+  const host = importHostNames([importApi().JIMAKU_ORIGIN])[0];
+  return [
+    `LST is running from a copy loaded before it declared access to ${host}.`,
+    "Reload the extension in your browser (about:debugging → This Firefox → LST → Reload)",
+    "or restart the browser, then try again.",
+  ].join(" ");
+}
+
+function importAccessMessage(error) {
+  const message = error?.message || "";
+  // The browser's wording for an undeclared host is the one failure a viewer can
+  // fix, and the one worth translating into instructions.
+  if (!message || /was not declared in the manifest/.test(message)) {
+    return undeclaredImportMessage();
+  }
+  return `LST could not ask for access to Jimaku: ${message}`;
+}
+
+// The permission is requested first, inside the click that asked for it: a
+// prompt the viewer did not just ask for would be a prompt they cannot place.
+// It has to stay the first await of every handler that asks — Firefox marks
+// `permissions.request` as requiring user input, and an await before this call
+// ends the handler's turn, which the browser then refuses. A test holds both
+// halves of that in place.
+async function ensureImportAccess() {
+  const api = importApi();
+  const origins = [...api.HOST_ORIGINS];
+  const permissions = ext.permissions;
+  if (!permissions?.request) {
+    throw new Error("This browser cannot grant access to Jimaku.");
+  }
+  if (!declaresImportHosts(origins)) {
+    throw new Error(undeclaredImportMessage());
+  }
+  let granted = false;
+  try {
+    granted = await permissions.request({ origins });
+  } catch (error) {
+    throw new Error(importAccessMessage(error));
+  }
+  if (!granted) {
+    throw new Error(
+      `LST needs permission to reach ${importHostNames(origins).join(" and ")} to import subtitles. Allow it, then try again.`,
+    );
+  }
+}
+
+// Which episode an import would attach to. The page that is playing is the only
+// place that knows, so the answer comes from its content script — LST never
+// reads a tab's URL, which is what keeps this free of host permissions.
+function showKeyFor(showName, siteId) {
+  const identity = globalThis.LSTEpisodeIdentity;
+  if (identity?.encodeShowKey) return identity.encodeShowKey({ showName, siteId });
+  return "";
+}
+
+async function importTarget() {
+  // The tab the viewer is looking at wins; anything else that is playing is only
+  // a fallback, so "importing for" names the episode they meant.
+  const tabs = [];
+  try {
+    tabs.push(...(await ext.tabs.query({ active: true, currentWindow: true })));
+  } catch {}
+  try {
+    const known = new Set(tabs.map((tab) => tab?.id));
+    tabs.push(...(await ext.tabs.query({})).filter((tab) => !known.has(tab?.id)));
+  } catch {}
+  for (const tab of tabs) {
+    if (!tab?.id) continue;
+    try {
+      const response = await ext.tabs.sendMessage(tab.id, { type: "GET_PAGE_STATUS" });
+      if (!response?.ok || !response.status) continue;
+      const status = response.status;
+      if (!status.videoId || status.videoId === "unknown") continue;
+      if (!status.enabled) continue;
+      return {
+        tabId: tab.id,
+        videoId: status.videoId,
+        siteId: status.siteId,
+        showName: status.showName || "",
+        episodeName: status.episodeName || "",
+        // The number the page itself states, when it states one. File names are
+        // matched against it; without it the listing is offered unranked.
+        episodeNumber: Number.isInteger(status.episodeNumber) ? status.episodeNumber : null,
+        episodeKey: importApi().episodeKeyFor(status.videoId, status.siteId),
+        // What Jimaku would be asked about: the show, not this episode of it.
+        showKey: showKeyFor(status.showName, status.siteId),
+        jimaku: status.jimaku || null,
+        imported: status.imported || null,
+      };
+    } catch {
+      // A tab without an LST content script refuses the message; that is how a
+      // tab is skipped, and why no URL filter is needed.
+    }
+  }
+  return null;
+}
+
+function renderImportTarget() {
+  const element = $("importTarget");
+  if (!element) return;
+  const target = importState.target;
+  if (!target) {
+    element.dataset.tone = "warn";
+    element.textContent =
+      "Open a Netflix or Prime Video watch page, then start playing the episode you want subtitles for.";
+    return;
+  }
+  const service = globalThis.LSTPlaybackSite?.labelFor?.(target.siteId) || "this service";
+  const episode = target.episodeName || `episode ${target.videoId}`;
+  element.dataset.tone = "";
+  element.textContent = target.imported
+    ? `This episode already uses ${target.imported.fileName} (${target.imported.translate ? "translated" : "shown as it is"}). Choose another file to replace it.`
+    : `Importing for ${target.showName || episode} · ${episode} · ${service}.`;
+}
+
+function importEntryRow(entry) {
+  const row = document.createElement("article");
+  row.className = "import-row";
+
+  const copy = document.createElement("div");
+  copy.className = "import-row-copy";
+  const title = document.createElement("strong");
+  title.textContent = entry.displayName;
+  copy.appendChild(title);
+  const details = [];
+  if (entry.englishName && entry.englishName !== entry.displayName) {
+    details.push(entry.englishName);
+  }
+  if (entry.name && entry.name !== entry.displayName) details.push(entry.name);
+  if (entry.japaneseName) details.push(entry.japaneseName);
+  if (entry.movie) details.push("movie");
+  if (entry.notes) details.push(entry.notes);
+  if (details.length) {
+    const help = document.createElement("p");
+    help.className = "help";
+    help.textContent = details.join("  ·  ");
+    copy.appendChild(help);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "import-row-actions";
+  const link = document.createElement("a");
+  link.className = "secondary";
+  link.href = entry.pageUrl;
+  link.target = "_blank";
+  link.rel = "noreferrer noopener";
+  link.textContent = "Open on Jimaku";
+  const choose = document.createElement("button");
+  choose.className = "secondary";
+  choose.type = "button";
+  choose.dataset.importEntry = String(entry.entryId);
+  choose.textContent = "List files";
+  actions.append(link, choose);
+
+  row.append(copy, actions);
+  return row;
+}
+
+function importFileRow(file) {
+  const row = document.createElement("article");
+  row.className = "import-row";
+  if (!file.supported) row.dataset.unsupported = "true";
+
+  const copy = document.createElement("div");
+  copy.className = "import-row-copy";
+  const title = document.createElement("strong");
+  title.textContent = file.name;
+  copy.appendChild(title);
+  const facts = [
+    file.formatLabel,
+    file.episode === null ? "no episode number in the name" : `episode ${file.episode}`,
+    file.language || "language not stated",
+    file.size ? `${Math.round(file.size / 1024)} KB` : "",
+    file.supported ? "" : "cannot be read yet",
+  ].filter(Boolean);
+  const help = document.createElement("p");
+  help.className = "help";
+  help.textContent = facts.join("  ·  ");
+  copy.appendChild(help);
+
+  const actions = document.createElement("div");
+  actions.className = "import-row-actions";
+  if (file.supported && file.urlAllowed) {
+    const button = document.createElement("button");
+    button.className = "secondary";
+    button.type = "button";
+    button.dataset.importFile = file.url;
+    button.textContent = "Use for this episode";
+    actions.appendChild(button);
+  } else {
+    const note = document.createElement("span");
+    note.className = "help";
+    note.textContent = file.supported
+      ? "Not served by Jimaku"
+      : `${file.formatLabel} cannot be read yet`;
+    actions.appendChild(note);
+  }
+
+  row.append(copy, actions);
+  return row;
+}
+
+function renderImportFiles() {
+  const list = $("importFiles");
+  if (!list) return;
+  list.replaceChildren();
+  const files = importState.files;
+  if (!files.length) return;
+
+  const recommended = importApi().chooseFileForEpisode(files, importState.target?.episodeNumber, {
+    targetLanguage: $("targetLanguage")?.value || "English",
+  });
+  const recommendedUrl = recommended.file?.url || "";
+
+  for (const file of files) {
+    const row = importFileRow(file);
+    if (file.url === recommendedUrl) {
+      row.dataset.recommended = "true";
+      const badge = document.createElement("span");
+      badge.className = "state-pill info";
+      badge.textContent = "Recommended";
+      row.querySelector(".import-row-actions")?.appendChild(badge);
+    }
+    list.appendChild(row);
+  }
+
+  const summary = document.createElement("p");
+  summary.className = "help";
+  summary.textContent =
+    `${files.length} file${files.length === 1 ? "" : "s"} · ` +
+    (recommended.file
+      ? `recommended: ${recommended.file.name} (${recommended.reason.replaceAll("-", " ")})`
+      : `no file for this episode (${recommended.reason.replaceAll("-", " ")})`);
+  list.appendChild(summary);
+}
+
+function importedTrackRow(track) {
+  const row = document.createElement("article");
+  row.className = "import-row";
+
+  const copy = document.createElement("div");
+  copy.className = "import-row-copy";
+  const title = document.createElement("strong");
+  title.textContent = track.fileName || "Imported subtitles";
+  copy.appendChild(title);
+  const decoded = globalThis.LSTEpisodeIdentity?.decodeEpisodeKey?.(track.episodeKey);
+  const service = globalThis.LSTPlaybackSite?.labelFor?.(decoded?.siteId) || "Unknown service";
+  const facts = [
+    track.entryName || (track.entryId ? `entry ${track.entryId}` : ""),
+    track.source === "local-file" ? "from a file on this device" : "",
+    `${service} episode ${decoded?.videoId || track.episodeKey}`,
+    track.cueCount ? `${track.cueCount} cues` : "",
+    track.language || "language not stated",
+    track.translate === false ? "shown without translating" : "translated",
+    // A file made for another release of the episode is shown away from where its
+    // own timeline says, and the correction lives with the file, so this is the
+    // one place a viewer can see it while not watching.
+    track.timingOffsetMs
+      ? `shown ${importApi().describeFileTiming(track.timingOffsetMs).label}`
+      : "",
+    track.importedAt ? `imported ${String(track.importedAt).slice(0, 10)}` : "",
+  ].filter(Boolean);
+  const help = document.createElement("p");
+  help.className = "help";
+  help.textContent = facts.join("  ·  ");
+  copy.appendChild(help);
+
+  const actions = document.createElement("div");
+  actions.className = "import-row-actions";
+  const remove = document.createElement("button");
+  remove.className = "danger";
+  remove.type = "button";
+  remove.dataset.removeImport = track.episodeKey;
+  remove.textContent = "Remove";
+  actions.appendChild(remove);
+
+  row.append(copy, actions);
+  return row;
+}
+
+async function loadImportedTracks() {
+  const list = $("importedList");
+  const summary = $("importedSummary");
+  if (!list) return;
+  try {
+    const response = await runtimeMessage({ type: "LIST_IMPORTED_TRACKS" });
+    const tracks = response.tracks || [];
+    list.replaceChildren();
+    if (!tracks.length) {
+      if (summary) summary.textContent = "No episode uses an imported subtitle file yet.";
+      return;
+    }
+    if (summary) {
+      summary.textContent =
+        `${tracks.length} episode${tracks.length === 1 ? "" : "s"} · ` +
+        `${formatBytes(response.bytes || 0)} of subtitle files stored on this device`;
+    }
+    for (const track of tracks) list.appendChild(importedTrackRow(track));
+  } catch (error) {
+    if (summary) summary.textContent = `Could not read imported subtitles: ${error.message}`;
+  }
+}
+
+async function refreshImportSection() {
+  importState.target = await importTarget();
+  if (importState.target) {
+    const showName = importApi().queryFromShowName(importState.target.showName);
+    if (!$("importQuery").value.trim() && showName) $("importQuery").value = showName;
+  }
+  renderImportTarget();
+  await renderImportKnown();
+  await loadImportedTracks();
+  try {
+    const status = await runtimeMessage({ type: "GET_IMPORT_KEY_STATUS" });
+    $("importKeyStatus").textContent = status.configured
+      ? "A Jimaku API key is saved in this browser profile."
+      : "No key saved. Listing an entry's files needs one; searching does not.";
+  } catch {
+    // The status line is a convenience; a failure here is not worth a message.
+  }
+}
+
+async function searchImportEntries() {
+  const query = $("importQuery").value.trim();
+  if (!query) {
+    setImportStatus("Enter a show name to search for.", "error");
+    return;
+  }
+  $("importResults").replaceChildren();
+  $("importFiles").replaceChildren();
+  importState.entry = null;
+  importState.files = [];
+  setImportStatus("Searching Jimaku…");
+  const response = await runtimeMessage({
+    type: "IMPORT_SEARCH",
+    query,
+    showKey: importState.target?.showKey || "",
+    showName: importState.target?.showName || "",
+    siteId: importState.target?.siteId || "",
+  });
+  // The player shows the same answer, so the viewer does not have to come back
+  // here to find out what Jimaku held.
+  await applyJimakuToPlaybackTabs(response.finding);
+  await renderImportKnown(response.finding);
+  if (!response.entries.length) {
+    setImportStatus(`No Jimaku entry matched “${query}”.`, "warn");
+    return;
+  }
+  importState.lastEntries = response.entries;
+  setImportStatus(
+    `${response.entries.length} entr${response.entries.length === 1 ? "y" : "ies"} found. ` +
+      "Choose the one that matches the show you are watching.",
+  );
+  for (const entry of response.entries) {
+    $("importResults").appendChild(importEntryRow(entry));
+  }
+}
+
+async function listImportFiles(entryId) {
+  const entry = importState.lastEntries?.find((item) => item.entryId === entryId) || null;
+  importState.entry = entry;
+  $("importFiles").replaceChildren();
+  setImportStatus("Listing the entry's files…");
+  const response = await runtimeMessage({
+    type: "IMPORT_LIST_FILES",
+    entryId,
+    episode: importState.target?.episodeNumber,
+    showKey: importState.target?.showKey || "",
+    entryName: entry ? entry.displayName || entry.name || "" : "",
+  });
+  await applyJimakuToPlaybackTabs(response.finding);
+  await renderImportKnown(response.finding);
+  importState.files = response.files || [];
+  if (!importState.files.length) {
+    setImportStatus(
+      "That entry has no files listed yet. You can still choose a subtitle file you already have.",
+      "warn",
+    );
+    return;
+  }
+  renderImportFiles();
+  setImportStatus(`Choose the file to use for ${importState.target?.episodeName || "this episode"}.`);
+}
+
+// The episode can change while this page is open, so it is resolved again at the
+// moment of the import. A file must never be filed under whichever episode
+// happened to be playing when the viewer opened their settings.
+async function resolveImportTarget() {
+  const current = await importTarget();
+  if (current) {
+    importState.target = current;
+    renderImportTarget();
+  }
+  return importState.target;
+}
+
+async function importSelectedFile(fileUrl) {
+  const file = importState.files.find((item) => item.url === fileUrl);
+  if (!file) return;
+  const target = await resolveImportTarget();
+  if (!target) {
+    setImportStatus("Open a playback page first.", "error");
+    return;
+  }
+  setImportStatus(`Downloading ${file.name}…`);
+  const response = await runtimeMessage({
+    type: "IMPORT_TRACK",
+    episodeKey: target.episodeKey,
+    entry: importState.entry,
+    file,
+    episode: target.episodeNumber,
+    translate: importTranslateChoice(),
+  });
+  setImportStatus(importResultMessage(response.track), "success");
+  await applyImportToPlaybackTabs();
+  await refreshImportSection();
+}
+
+// A file the viewer already downloaded. The text is read in this page and only
+// the text is handed over, so this path asks for no permission, makes no
+// request, and works with the two hosts still ungranted.
+async function importLocalFile(file) {
+  const target = await resolveImportTarget();
+  if (!target) {
+    setImportStatus("Open a Netflix or Prime Video watch page first.", "error");
+    return;
+  }
+  const api = importApi();
+  if (Number(file.size) > api.MAX_TRACK_BYTES) {
+    setImportStatus(
+      `${file.name} is larger than the ${formatBytes(api.MAX_TRACK_BYTES)} LST will store for one episode.`,
+      "error",
+    );
+    return;
+  }
+  setImportStatus(`Reading ${file.name}…`);
+  let text;
+  try {
+    const decoded = api.decodeSubtitleBytes(new Uint8Array(await readFileBytes(file)));
+    if (!decoded.text) {
+      setImportStatus(
+        decoded.reason === api.DECODE_REASON.empty
+          ? `${file.name} is empty.`
+          : `${file.name} could not be read as text.`,
+        "error",
+      );
+      return;
+    }
+    text = decoded.text;
+  } catch (error) {
+    setImportStatus(`Could not read ${file.name}: ${error.message}`, "error");
+    return;
+  }
+  const response = await runtimeMessage({
+    type: "IMPORT_TRACK_TEXT",
+    episodeKey: target.episodeKey,
+    fileName: file.name,
+    size: file.size,
+    text,
+    episode: target.episodeNumber,
+    translate: importTranslateChoice(),
+  });
+  setImportStatus(importResultMessage(response.track), "success");
+  await applyImportToPlaybackTabs();
+  await refreshImportSection();
+}
+
+// The same fan-out as an import, for the note a search or a listing leaves: the
+// player shows what Jimaku holds so the viewer does not have to come back here.
+async function applyJimakuToPlaybackTabs(finding) {
+  if (!finding) return;
+  try {
+    const tabs = await ext.tabs.query({});
+    await Promise.all(tabs.map((tab) => tab.id
+      ? ext.tabs.sendMessage(tab.id, { type: "JIMAKU_CHANGED", finding }).catch(() => {})
+      : Promise.resolve()));
+  } catch {}
+}
+
+async function applyJimakuClearedToPlaybackTabs(showKey) {
+  if (!showKey) return;
+  try {
+    const tabs = await ext.tabs.query({});
+    await Promise.all(tabs.map((tab) => tab.id
+      ? ext.tabs.sendMessage(tab.id, { type: "JIMAKU_CHANGED", cleared: true, showKey }).catch(() => {})
+      : Promise.resolve()));
+  } catch {}
+}
+
+// What LST learned about this show the last time Jimaku was asked. It is shown
+// here because it is also what the player announces on arrival, and a viewer who
+// sees the sentence in their player should be able to find where it comes from.
+async function renderImportKnown(finding = null) {
+  const known = $("importKnown");
+  const element = $("importKnownText");
+  if (!known || !element) return;
+  let note = finding;
+  if (!note) {
+    const showKey = importState.target?.showKey || "";
+    if (!showKey) {
+      known.hidden = true;
+      return;
+    }
+    try {
+      const response = await runtimeMessage({ type: "GET_JIMAKU_FINDING", showKey });
+      note = response?.finding || null;
+    } catch {
+      known.hidden = true;
+      return;
+    }
+  }
+  const described = importApi().describeJimakuFinding(note, { now: Date.now() });
+  known.hidden = !described;
+  if (described) {
+    known.dataset.tone = described.tone;
+    element.textContent = `LST remembers: ${described.headline}. ${described.detail}`;
+  }
+}
+
+// The player picks the change up immediately: the file the viewer just chose
+// starts playing without a reload or a seek.
+async function applyImportToPlaybackTabs() {  try {
+    const tabs = await ext.tabs.query({});
+    await Promise.all(tabs.map((tab) => tab.id
+      ? ext.tabs.sendMessage(tab.id, { type: "IMPORT_CHANGED" }).catch(() => {})
+      : Promise.resolve()));
+  } catch {}
+}
+
+$("importSearch").addEventListener("click", async () => {
+  try {
+    await ensureImportAccess();
+    await searchImportEntries();
+  } catch (error) {
+    setImportStatus(error.message, "error");
+  }
+});
+
+$("importQuery").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  $("importSearch").click();
+});
+
+$("importResults").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-import-entry]");
+  if (!button) return;
+  try {
+    await ensureImportAccess();
+    await listImportFiles(Number(button.dataset.importEntry));
+  } catch (error) {
+    setImportStatus(error.message, "error");
+  }
+});
+
+$("importFiles").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-import-file]");
+  if (!button) return;
+  try {
+    await ensureImportAccess();
+    await importSelectedFile(button.dataset.importFile);
+  } catch (error) {
+    setImportStatus(error.message, "error");
+  }
+});
+
+$("importTranslate").addEventListener("change", () => {
+  importState.translateMode = $("importTranslate").value;
+});
+
+// A file the viewer already has needs no permission and no search, so nothing
+// stands between the choice and the import.
+async function handleLocalSubtitleFile(file) {
+  try {
+    await importLocalFile(file);
+  } catch (error) {
+    setImportStatus(error.message, "error");
+  } finally {
+    // Emptied either way: a picker still holding the last file reports nothing
+    // when the same file is chosen again.
+    const picker = $("importFile");
+    if (picker) picker.value = "";
+  }
+}
+
+$("importFile").addEventListener("change", () => {
+  const file = $("importFile").files?.[0];
+  if (file) handleLocalSubtitleFile(file);
+});
+
+// Dropping a file is the same gesture as choosing one, and takes the same path.
+for (const type of ["dragenter", "dragover"]) {
+  $("importLocal").addEventListener(type, (event) => {
+    event.preventDefault();
+    $("importLocal").dataset.dragging = "true";
+  });
+}
+for (const type of ["dragleave", "dragend"]) {
+  $("importLocal").addEventListener(type, () => {
+    $("importLocal").dataset.dragging = "false";
+  });
+}
+$("importLocal").addEventListener("drop", (event) => {
+  event.preventDefault();
+  $("importLocal").dataset.dragging = "false";
+  const file = event.dataTransfer?.files?.[0];
+  if (file) handleLocalSubtitleFile(file);
+});
+
+// A file dropped anywhere else on this page would otherwise open in the tab,
+// taking the viewer away from their settings. Only a file drag is intercepted,
+// so dropping text into a field still works.
+for (const type of ["dragover", "drop"]) {
+  document.addEventListener(type, (event) => {
+    if (event.dataTransfer?.types?.includes("Files")) event.preventDefault();
+  });
+}
+
+$("importedList").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-remove-import]");
+  if (!button) return;
+  try {
+    await runtimeMessage({
+      type: "DELETE_IMPORTED_TRACK",
+      episodeKey: button.dataset.removeImport,
+    });
+    setImportStatus("The imported file was removed from this episode.");
+    await applyImportToPlaybackTabs();
+    await refreshImportSection();
+  } catch (error) {
+    setImportStatus(error.message, "error");
+  }
+});
+
+$("saveImportKey").addEventListener("click", async () => {
+  const key = $("importKey").value.trim();
+  if (!key) {
+    setImportStatus("Enter the key first, or use Remove key.", "error");
+    return;
+  }
+  try {
+    await runtimeMessage({ type: "SET_IMPORT_KEY", key });
+    $("importKey").value = "";
+    setImportStatus("The Jimaku API key was saved in this browser profile.");
+    await refreshImportSection();
+  } catch (error) {
+    setImportStatus(error.message, "error");
+  }
+});
+
+$("removeImportKey").addEventListener("click", async () => {
+  try {
+    await runtimeMessage({ type: "SET_IMPORT_KEY", key: "" });
+    setImportStatus("The saved Jimaku API key was removed.");
+    await refreshImportSection();
+  } catch (error) {
+    setImportStatus(error.message, "error");
+  }
+});
+
+// What Jimaku held for a show is LST's note, not the viewer's history, so it can
+// be dropped here — and the player is told to drop it too, rather than going on
+// showing a sentence about a note that no longer exists.
+$("forgetImportKnown").addEventListener("click", async () => {
+  const showKey = importState.target?.showKey || "";
+  if (!showKey) return;
+  try {
+    await runtimeMessage({ type: "DELETE_JIMAKU_FINDING", showKey });
+    await applyJimakuClearedToPlaybackTabs(showKey);
+    setImportStatus("LST will not mention what Jimaku held for this show again until it is asked.");
+    await refreshImportSection();
+  } catch (error) {
+    setImportStatus(error.message, "error");
+  }
+});
 
 $("refreshModels").addEventListener("click", () => {
   refreshModels(providerModels[$("provider").value]).catch((error) =>
@@ -708,13 +1642,22 @@ $("pullModel").addEventListener("click", async () => {
 
 $("resetAppearance").addEventListener("click", () => {
   applyAppearance(APPEARANCE_DEFAULTS);
-  setStatus("Appearance reset — save to apply it on Netflix.");
+  setStatus("Appearance reset — save to apply it in open players.");
 });
 
 $("resetTranslationPrompt").addEventListener("click", () => {
   $("customTranslationPrompt").value = ORIGINAL_TRANSLATION_PROMPT;
   markUnsaved();
   setStatus("Original translation prompt restored. Save changes to apply it.", "success");
+});
+
+$("openSetup").addEventListener("click", () => {
+  try {
+    ext.tabs.create({ url: ext.runtime.getURL("setup.html") })
+      ?.catch?.((error) => setStatus(`Could not open the setup guide: ${error.message}`, "error"));
+  } catch (error) {
+    setStatus(`Could not open the setup guide: ${error.message}`, "error");
+  }
 });
 
 $("model").addEventListener("change", () => {
@@ -782,8 +1725,8 @@ $("save").addEventListener("click", async () => {
     }
     if (!$("model").value) throw new Error("Choose a translation model first.");
     await runtimeMessage({ type: "SAVE_SETTINGS", settings: collectSettings() });
-    await pushSettingsToNetflixTabs();
-    setStatus("Saved and applied to open Netflix tabs.", "success");
+    await pushSettingsToOpenTabs();
+    setStatus("Saved and applied to open player tabs.", "success");
   } catch (error) {
     setStatus(`Save failed: ${error.message}`, "error");
   }
@@ -848,6 +1791,9 @@ $("cacheList").addEventListener("click", async (event) => {
   }
 });
 
+$("useTranslationContext").addEventListener("change", () => renderContextLevel());
+$("contextLevel").addEventListener("change", () => renderContextLevel());
+
 document.querySelectorAll("input:not([data-transient]), select:not([data-transient])").forEach((control) => {
   control.addEventListener(control.type === "range" ? "input" : "change", markUnsaved);
 });
@@ -875,4 +1821,15 @@ ext.runtime.onMessage.addListener((message) => {
 });
 
 activateSettingsTab(location.hash.slice(1));
-load().catch((error) => setStatus(`Startup error: ${error.message}`, "error"));
+// The popup's "Import subtitles" button opens this page at the import card, so
+// a viewer who clicked there does not have to find it.
+async function openAtHash() {
+  if (location.hash !== "#import") return;
+  activateSettingsTab("subtitles");
+  $("importCard")?.scrollIntoView({ block: "start" });
+  $("importQuery")?.focus();
+}
+
+load()
+  .then(openAtHash)
+  .catch((error) => setStatus(`Startup error: ${error.message}`, "error"));

@@ -58,12 +58,20 @@ const required = [
   "manifest.json",
   "background.js",
   "content.js",
+  "episode-identity.js",
   "page-hook.js",
+  "playback-site.js",
   "styles.css",
+  "structured-response.js",
+  "subtitle-import.js",
+  "subtitle-sync.js",
+  "translation-context.js",
   "options.html",
   "options.js",
   "popup.html",
   "popup.js",
+  "setup.html",
+  "setup.js",
   "icons/icon-128.png"
 ];
 const forbidden = [

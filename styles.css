@@ -1,6 +1,12 @@
-html.lst-hide-netflix-subtitles .player-timedtext,
-html.lst-hide-netflix-subtitles .player-timedtext-text-container,
-html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
+/* Both services' native captions are hidden under one shared class, one rule
+   per service. A stylesheet rule is used rather than an inline style because
+   Prime Video rewrites the caption element's inline style periodically, which
+   would wipe an inline hide; the track stays active either way, so LST can
+   still read the source text. */
+html.lst-hide-native-subtitles .player-timedtext,
+html.lst-hide-native-subtitles .player-timedtext-text-container,
+html.lst-hide-native-subtitles [data-uia="player-subtitle-text"],
+html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
   opacity: 0 !important;
   visibility: hidden !important;
 }
@@ -65,10 +71,15 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
   margin-right: 0;
 }
 
+/* Netflix Sans is listed first because Netflix pages ship it; services that do
+   not serve it fall through to the neutral stack below, which is why the
+   overlay is not styled per service. */
 #lst-hud {
+  --lst-hud-inset: 30px;
+  --lst-hud-side: 32px;
   position: fixed;
-  top: 30px;
-  right: 32px;
+  top: var(--lst-hud-inset);
+  right: var(--lst-hud-side);
   z-index: 2147483646;
   display: flex;
   width: min(398px, calc(100vw - 32px));
@@ -81,6 +92,19 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
   text-align: left;
   text-shadow: none;
 }
+
+/* The HUD corner is the viewer's choice; the service only supplies a starting
+   corner for a viewer who has never moved it. A left-hand corner lines the
+   stack up from the left instead of the right. */
+#lst-hud[data-position="top-left"],
+#lst-hud[data-position="bottom-left"] {
+  align-items: flex-start;
+}
+
+#lst-hud[data-position="top-left"] { top: var(--lst-hud-inset); bottom: auto; left: var(--lst-hud-side); right: auto; }
+#lst-hud[data-position="top-right"] { top: var(--lst-hud-inset); bottom: auto; right: var(--lst-hud-side); left: auto; }
+#lst-hud[data-position="bottom-left"] { bottom: var(--lst-hud-inset); top: auto; left: var(--lst-hud-side); right: auto; }
+#lst-hud[data-position="bottom-right"] { bottom: var(--lst-hud-inset); top: auto; right: var(--lst-hud-side); left: auto; }
 
 #not-status {
   display: none;
@@ -96,6 +120,48 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
   opacity: 0.8;
 }
+
+#lst-jimaku-note {
+  display: flex;
+  order: 3;
+  max-width: 100%;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-left: 3px solid #8fb8ff;
+  border-radius: 8px;
+  background: rgba(12, 15, 20, 0.92);
+  color: #e8ebf1;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+  /* The HUD lets clicks through to the player; the note takes them back, because
+     its dismiss button is the only way to close it. */
+  pointer-events: auto;
+}
+#lst-jimaku-note[hidden] { display: none; }
+#lst-jimaku-note[data-tone="good"] { border-left-color: #43d39e; }
+#lst-jimaku-note[data-tone="warn"] { border-left-color: #ffc866; }
+#lst-jimaku-note-text { flex: 1 1 auto; }
+#lst-jimaku-note button {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+#lst-jimaku-note button:hover { background: rgba(255, 255, 255, 0.22); }
+#lst-jimaku-note button:focus-visible { outline: 2px solid #ff747b; outline-offset: 2px; }
 
 #lst-quick-pills {
   display: none;
@@ -122,11 +188,56 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
   cursor: pointer;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34);
   backdrop-filter: blur(14px);
+  /* The load bar is drawn along the trigger's own bottom edge, so the trigger
+     is what it is positioned against and what rounds it off. */
+  position: relative;
+  overflow: hidden;
 }
 
 #lst-pill-trigger > strong { font-size: 14px; }
 #lst-pill-state { margin-left: 2px; color: #d8dbe1; font-weight: 500; }
 .lst-pill-ahead { color: #a7afbc; }
+/* How much of the episode is loaded, said twice: as a number beside the state,
+   and as the bar along the trigger's bottom edge. Both are one figure, worked
+   out in content.js and drawn by one function, so they cannot disagree. */
+.lst-pill-percent { flex: 0 0 auto; color: #f7f8fa; font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
+.lst-pill-percent[hidden] { display: none; }
+.lst-pill-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.lst-pill-progress[hidden] { display: none; }
+.lst-pill-progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 0 999px 999px 0;
+  background: #43d39e;
+  transition: width 0.3s linear;
+}
+/* The bar takes the state's own colour, the one the dot beside it already uses. */
+#lst-quick-pills[data-state="waiting"] .lst-pill-progress-fill { background: #8c939f; }
+#lst-quick-pills[data-state="buffering"] .lst-pill-progress-fill { background: #ffc866; }
+#lst-quick-pills[data-state="error"] .lst-pill-progress-fill { background: #ff7078; }
+/* The chip answers a different question from the state label beside it: not
+   whether translation is working, but where the subtitles come from. */
+.lst-pill-source {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(86, 156, 214, 0.18);
+  color: #cfe6ff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.lst-pill-source[hidden] { display: none; }
 .lst-pill-controls-label {
   margin-left: auto;
   padding: 8px 12px;
@@ -156,7 +267,12 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 
 #lst-pill-menu {
   width: 100%;
-  max-height: calc(100vh - 96px);
+  /* The menu opens downward from a control that sits in one of four corners, so
+     its cap has to leave room for what is above it: the corner's inset, the
+     trigger, and — in a bottom corner, where the menu hangs above the status
+     line and the Jimaku note — those two as well. Without this the menu's own
+     top is off screen and its scrollbar cannot reach it. */
+  max-height: calc(100vh - 120px);
   overflow: auto;
   box-sizing: border-box;
   margin-top: 12px;
@@ -169,6 +285,13 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 }
 
 #lst-pill-menu[hidden] { display: none !important; }
+
+/* A corner at the bottom of the player leaves less room above the menu: the
+   status line and the Jimaku note sit under it there, so those are counted too. */
+#lst-hud[data-position="bottom-left"] #lst-pill-menu,
+#lst-hud[data-position="bottom-right"] #lst-pill-menu {
+  max-height: calc(100vh - 220px);
+}
 .lst-pill-menu-header,
 .lst-pill-menu-header > div,
 .lst-pill-section,
@@ -180,6 +303,16 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 #lst-pill-panel-status[data-state="completed"],
 #lst-pill-panel-status[data-state="ready"],
 #lst-pill-panel-status[data-state="cached"] { color: #43d39e; }
+/* The sentence under the status line: what the pill's number and bar mean, in
+   cues rather than in percent, so the figure is checkable rather than trusted. */
+.lst-pill-load-note {
+  margin: 10px 0 0;
+  color: #a7afbc;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+.lst-pill-load-note[hidden] { display: none; }
 .lst-pill-section {
   gap: 4px;
   margin-top: 12px;
@@ -198,6 +331,16 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 .lst-pill-timing > span { display: flex; justify-content: space-between; gap: 12px; color: #d8dadd; }
 .lst-pill-timing output { color: #f7f8fa; font-variant-numeric: tabular-nums; font-weight: 650; }
 .lst-pill-timing > div { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
+/* The row of buttons that is not in use is hidden rather than removed: a file the
+   viewer imported has its own clock, so those buttons are the ones that apply
+   while it is in use, and the global ones are what applies when it is not. The
+   author rule that makes them a grid would otherwise beat the browser's own rule
+   for [hidden]. */
+.lst-pill-timing > div[hidden] { display: none; }
+/* One sentence: which clock the buttons move, and — while a file is in use — that
+   the global offset is added on top of the file's own correction. */
+.lst-pill-timing .lst-pill-note { margin: 8px 0 0; color: #a7afbc; font-size: 11px; line-height: 1.4; }
+.lst-pill-timing .lst-pill-note[hidden] { display: none; }
 #lst-pill-menu button,
 #lst-pill-menu select {
   min-height: 34px;
@@ -211,6 +354,12 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 #lst-pill-menu button { padding: 6px 11px; }
 #lst-pill-menu button:hover,
 #lst-pill-menu select:hover { background: #3a4351; }
+.lst-pill-subtitles .lst-pill-note { margin: 0; color: #d8dbe1; font-size: 12px; line-height: 1.4; }
+.lst-pill-subtitles .lst-pill-note[hidden] { display: none; }
+.lst-pill-subtitles .lst-pill-jimaku { color: #a7afbc; }
+.lst-pill-subtitles .lst-pill-jimaku[data-tone="good"] { color: #9de2bd; }
+.lst-pill-subtitles .lst-pill-jimaku[data-tone="warn"] { color: #ffd479; }
+.lst-pill-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 8px; }
 .lst-pill-readability-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .lst-pill-readability-grid label { gap: 7px; color: #d8dbe1; font-size: 12px; }
 .lst-pill-readability-grid select { width: 100%; padding: 0 9px; }
@@ -225,6 +374,7 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 
 @media (prefers-reduced-motion: reduce) {
   #lst-quick-pills[data-state="buffering"] .lst-pill-dot { animation: none; }
+  .lst-pill-progress-fill { transition: none; }
 }
 
 #lst-transcript-panel {
@@ -269,7 +419,7 @@ html.lst-hide-netflix-subtitles [data-uia="player-subtitle-text"] {
 .lst-transcript-cue[data-current="true"] time { color: #ff9ca2; }
 
 @media (max-width: 560px) {
-  #lst-hud { top: 12px; right: 12px; width: calc(100vw - 24px); }
+  #lst-hud { --lst-hud-inset: 12px; --lst-hud-side: 12px; width: calc(100vw - 24px); }
   .lst-pill-readability-grid { grid-template-columns: 1fr; }
   #lst-transcript-panel { top: 12px; right: 12px; bottom: 76px; left: 12px; width: auto; }
 }

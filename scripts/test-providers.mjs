@@ -59,6 +59,21 @@ const context = vm.createContext({
     sendMessage: async () => {}
   }, storage: { local: storage } }
 });
+vm.runInContext(
+  await fs.readFile(new URL("../structured-response.js", import.meta.url), "utf8"),
+  context,
+  { filename: "structured-response.js" },
+);
+vm.runInContext(
+  await fs.readFile(new URL("../episode-identity.js", import.meta.url), "utf8"),
+  context,
+  { filename: "episode-identity.js" },
+);
+vm.runInContext(
+  await fs.readFile(new URL("../translation-context.js", import.meta.url), "utf8"),
+  context,
+  { filename: "translation-context.js" },
+);
 vm.runInContext(await fs.readFile(new URL("../background.js", import.meta.url), "utf8"), context);
 
 function send(message) {
