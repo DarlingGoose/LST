@@ -1,6 +1,6 @@
 {
   "name": "lst-local-subtitle-translate",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "private": true,
   "description": "Release tooling for the LST browser extension.",
   "scripts": {
