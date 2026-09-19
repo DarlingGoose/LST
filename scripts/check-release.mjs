@@ -48,6 +48,16 @@ if (!manifest.background?.scripts?.includes("background.js")) {
   errors.push("shared manifest must retain background.scripts for Firefox");
 }
 
+// Both stores read this field and both refuse a long one: Chrome Web Store and
+// addons.mozilla.org cap the manifest description at 132 characters, so the
+// limit is checked here rather than discovered when the package is uploaded.
+const description = String(manifest.description || "").trim();
+if (!description) {
+  errors.push("manifest must carry a description");
+} else if (description.length > 132) {
+  errors.push(`manifest description is ${description.length} characters; both stores accept at most 132`);
+}
+
 for (const size of [16, 32, 48, 64, 96, 128]) {
   if (!manifest.icons?.[size]) errors.push(`manifest icon ${size}px is missing`);
 }
