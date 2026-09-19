@@ -40,8 +40,19 @@
   const RENDERED_SUBTITLE_STABILITY_MS = 90;
   const TIMED_TRACK_MISMATCH_GRACE_MS = 300;
   const DEBUG_FLUSH_MS = 500;
+  const SHOW_SETTING_NAMES = new Set([
+    "showTranslated",
+    "hideNativeSubtitles",
+    "showTranscriptSidebar",
+  ]);
 
   let settings = { ...DEFAULTS };
+  let globalShowDefaults = {
+    showTranslated: DEFAULTS.showTranslated,
+    hideNativeSubtitles: DEFAULTS.hideNativeSubtitles,
+    showTranscriptSidebar: DEFAULTS.showTranscriptSidebar,
+  };
+  let appliedShowSettingsKey = "";
   let cues = [];
   let cueSourceUrl = "";
   let cueVideoId = "";
@@ -1300,9 +1311,43 @@
       ) {
         settings.hideNativeSubtitles = stored.hideNetflixSubtitles;
       }
+      globalShowDefaults = Object.fromEntries(
+        [...SHOW_SETTING_NAMES].map((key) => [key, settings[key]]),
+      );
     } catch (error) {
       console.warn("[LST] Could not load settings:", error);
     }
+  }
+
+  async function refreshShowSettings({ force = false } = {}) {
+    const key = showKey();
+    if (!key) return false;
+    if (!force && key === appliedShowSettingsKey) return false;
+    const response = await runtimeMessage({ type: "GET_SHOW_SETTINGS", showKey: key });
+    if (key !== showKey()) return false;
+    const overrides = response.settings || {};
+    for (const name of SHOW_SETTING_NAMES) {
+      settings[name] = typeof overrides[name] === "boolean"
+        ? overrides[name]
+        : globalShowDefaults[name];
+    }
+    appliedShowSettingsKey = key;
+    applySubtitleAppearance();
+    updateOverlayPanelVisibility();
+    updateQuickPills();
+    return true;
+  }
+
+  function saveShowSetting(name, value) {
+    const key = showKey();
+    if (!key) return Promise.reject(new Error("This show has not been identified yet."));
+    appliedShowSettingsKey = key;
+    return runtimeMessage({
+      type: "SET_SHOW_SETTING",
+      showKey: key,
+      name,
+      value: Boolean(value),
+    });
   }
 
   function activeFullscreenElement() {
@@ -1664,10 +1709,7 @@
       );
     }
     logDiagnostic("info", "transcript", visible ? "sidebar-opened" : "sidebar-closed");
-    runtimeMessage({
-      type: "SAVE_SETTINGS",
-      settings: { showTranscriptSidebar: settings.showTranscriptSidebar },
-    }).catch((error) =>
+    saveShowSetting("showTranscriptSidebar", settings.showTranscriptSidebar).catch((error) =>
       setStatus(`Could not save transcript setting: ${error.message}`, true),
     );
   }
@@ -2178,10 +2220,13 @@
           { source: "player-controls" },
         );
       }
-      runtimeMessage({
-        type: "SAVE_SETTINGS",
-        settings: { [key]: settings[key] },
-      })
+      const save = SHOW_SETTING_NAMES.has(key)
+        ? saveShowSetting(key, settings[key])
+        : runtimeMessage({
+            type: "SAVE_SETTINGS",
+            settings: { [key]: settings[key] },
+          });
+      save
         .then(() => showUnifiedControlsStatus("Saved"))
         .catch((error) =>
           showUnifiedControlsStatus(`Could not save: ${error.message}`, true),
@@ -3685,6 +3730,9 @@
       lastTitleMetadataRefreshAt = Date.now();
       siteTitleMetadata();
       persistImprovedCacheMetadata();
+      refreshShowSettings().catch((error) => {
+        console.warn("[LST] Could not load show settings:", error);
+      });
     }
 
     const video = activeVideo();
@@ -3735,6 +3783,7 @@
       clearRenderedSubtitle("episode-changed");
       renderTranscript();
       lastEpisodeNumber = null;
+      appliedShowSettingsKey = "";
       logDiagnostic("info", "track", "episode-changed", {});
       setStatus("Episode changed — waiting for its subtitle track…", true);
       handleFallbackRenderedSubtitle();
@@ -5132,6 +5181,7 @@
           const previousUseTranslationContext = settings.useTranslationContext;
           const previousContextLevel = settings.contextLevel;
           await loadSettings();
+          await refreshShowSettings({ force: true });
           if (
             settings.useTranslationContext !== previousUseTranslationContext ||
             settings.contextLevel !== previousContextLevel
@@ -5327,6 +5377,9 @@
       }
       ensureOverlay();
       setStatus(`Waiting for ${siteName()} subtitles…`, true);
+      refreshShowSettings({ force: true }).catch((error) => {
+        console.warn("[LST] Could not load show settings:", error);
+      });
       stopTitleMetadataObserver = startTitleMetadataObserver();
       stopFallbackObserver = startFallbackObserver();
       requestAnimationFrame(playbackLoop);

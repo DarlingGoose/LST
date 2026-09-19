@@ -22,7 +22,27 @@ try {
 const ext = globalThis.browser || globalThis.chrome;
 const DIAGNOSTIC_LOG_KEY = "diagnosticLog";
 const DIAGNOSTIC_LOG_LIMIT = 750;
+const SHOW_SETTINGS_KEY = "showSettings";
+const SHOW_SETTING_NAMES = new Set([
+  "showTranslated",
+  "hideNativeSubtitles",
+  "showTranscriptSidebar",
+]);
 let diagnosticWriteQueue = Promise.resolve();
+
+async function showSettings() {
+  const stored = (await ext.storage.local.get(SHOW_SETTINGS_KEY))[SHOW_SETTINGS_KEY];
+  return stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
+}
+
+function normalizedShowSettings(value) {
+  if (!value || typeof value !== "object") return {};
+  const result = {};
+  for (const key of SHOW_SETTING_NAMES) {
+    if (typeof value[key] === "boolean") result[key] = value[key];
+  }
+  return result;
+}
 
 const DEFAULTS = {
   enabled: true,
@@ -1808,6 +1828,38 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
         }
         sendResponse({ ok: true, settings: await getSettings() });
+        return;
+      }
+
+      case "GET_SHOW_SETTINGS": {
+        const showKey = String(message.showKey || "").trim();
+        if (!showKey) {
+          sendResponse({ ok: true, settings: {}, reason: "no-show-key" });
+          return;
+        }
+        const stored = await showSettings();
+        sendResponse({
+          ok: true,
+          settings: normalizedShowSettings(stored[showKey]),
+          reason: stored[showKey] ? "stored" : "global-defaults",
+        });
+        return;
+      }
+
+      case "SET_SHOW_SETTING": {
+        const showKey = String(message.showKey || "").trim();
+        const name = String(message.name || "");
+        if (!showKey) throw new Error("This show has not been identified yet.");
+        if (!SHOW_SETTING_NAMES.has(name) || typeof message.value !== "boolean") {
+          throw new Error("Unknown per-show setting.");
+        }
+        const stored = await showSettings();
+        stored[showKey] = {
+          ...normalizedShowSettings(stored[showKey]),
+          [name]: message.value,
+        };
+        await ext.storage.local.set({ [SHOW_SETTINGS_KEY]: stored });
+        sendResponse({ ok: true, settings: stored[showKey] });
         return;
       }
 

@@ -202,6 +202,35 @@ assert.deepEqual(
 assert.equal(values.hudPosition, "");
 assert.equal((await send({ type: "GET_SETTINGS" })).settings.hudPosition, "");
 
+// Player visibility choices are show-scoped. The global setting remains the
+// default, and only the three declared controls can be written into a show's
+// override record.
+const playerShowKey = "primevideo~example-show";
+let showSettingsResponse = await send({
+  type: "GET_SHOW_SETTINGS",
+  showKey: playerShowKey,
+});
+assert.deepEqual(JSON.parse(JSON.stringify(showSettingsResponse.settings)), {});
+await send({
+  type: "SET_SHOW_SETTING",
+  showKey: playerShowKey,
+  name: "showTranslated",
+  value: false,
+});
+await send({
+  type: "SET_SHOW_SETTING",
+  showKey: playerShowKey,
+  name: "hideNativeSubtitles",
+  value: true,
+});
+showSettingsResponse = await send({ type: "GET_SHOW_SETTINGS", showKey: playerShowKey });
+assert.deepEqual(JSON.parse(JSON.stringify(showSettingsResponse.settings)), {
+  showTranslated: false,
+  hideNativeSubtitles: true,
+});
+assert.equal(values.showTranslated, true, "a show override does not replace the global default");
+assert.equal((await send({ type: "GET_SHOW_SETTINGS", showKey: "" })).reason, "no-show-key");
+
 let response = await send({
   type: "TRANSLATE_BATCH",
   model: "test-model",
