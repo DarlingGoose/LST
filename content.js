@@ -60,6 +60,7 @@
   let cueSourceUrl = "";
   let cueVideoId = "";
   let capturedTrackLanguage = "";
+  let sameLanguageTargetAcrossEpisode = "";
   // Which episode the service's own listing says it is playing. A Prime Video
   // page can name the series in its URL while the episode advances inside it, so
   // the URL is not an answer to "which episode is this" — the listing is, and it
@@ -1761,9 +1762,11 @@
     // Video, which rewrites the caption element's inline style periodically.
     const useSameLanguageNativeCaptions = Boolean(
       settings.showNativeWhenTargetLanguage !== false &&
-      currentStatus.captured &&
       !trackIsImported() &&
-      !trackNeedsTranslation(),
+      (
+        (currentStatus.captured && !trackNeedsTranslation()) ||
+        sameLanguageTargetAcrossEpisode === normalizedTargetLanguage()
+      ),
     );
     document.documentElement.classList.toggle(
       "lst-hide-native-subtitles",
@@ -3832,6 +3835,11 @@
     }
 
     if (cueVideoId && cueVideoId !== getVideoId()) {
+      const keepNativeCaptions = Boolean(
+        cueTrackKind === "captured" &&
+        settings.showNativeWhenTargetLanguage !== false &&
+        sameLanguageTargetAcrossEpisode === normalizedTargetLanguage(),
+      );
       cacheGeneration++;
       precomputeCancelled = true;
       cues = [];
@@ -3869,13 +3877,22 @@
       currentStatus.progressPercent = 0;
       currentStatus.activeCueStart = null;
       currentStatus.activeCueEnd = null;
-      currentStatus.playbackMode = "waiting";
+      currentStatus.playbackMode = keepNativeCaptions
+        ? "native captions (target language)"
+        : "waiting";
       clearRenderedSubtitle("episode-changed");
       renderTranscript();
       lastEpisodeNumber = null;
       appliedShowSettingsKey = "";
       logDiagnostic("info", "track", "episode-changed", {});
-      setStatus("Episode changed — waiting for its subtitle track…", true);
+      applySubtitleAppearance();
+      setStatus(
+        keepNativeCaptions
+          ? `Using ${siteName()}'s native ${settings.targetLanguage} subtitles.`
+          : "Episode changed — waiting for its subtitle track…",
+        true,
+        keepNativeCaptions ? "info" : "warning",
+      );
       handleFallbackRenderedSubtitle();
       // The next episode has its own episode key, so an import made for the
       // episode that just ended is not carried over to this one.
@@ -4319,7 +4336,11 @@
       ...trackDecisionDiagnostics(decision),
     });
 
-    if (!trackNeedsTranslation()) {
+    const needsTranslation = trackNeedsTranslation();
+    sameLanguageTargetAcrossEpisode = needsTranslation
+      ? ""
+      : normalizedTargetLanguage();
+    if (!needsTranslation) {
       const language = capturedTrackLanguage || playbackLanguages().subtitle;
       currentStatus.translatedCount = 0;
       currentStatus.playbackMode = "source track (target language)";
@@ -4417,6 +4438,10 @@
 
   function trackIsImported() {
     return cueTrackKind === "imported" && Boolean(importedTrack);
+  }
+
+  function normalizedTargetLanguage() {
+    return String(settings.targetLanguage || "").trim().toLowerCase();
   }
 
   // Whether this track has to reach a translation provider at all. Everything
@@ -4722,6 +4747,7 @@
     precomputeCancelled = true;
     cues = parsed;
     cueTrackKind = "imported";
+    sameLanguageTargetAcrossEpisode = "";
     importedTrack = normalized;
     cueSourceUrl = normalized.fileUrl || "imported";
     cueVideoId = getVideoId();
@@ -4789,6 +4815,7 @@
     cues = [];
     cueSourceUrl = "";
     capturedTrackLanguage = "";
+    sameLanguageTargetAcrossEpisode = "";
     cueTrackKind = "none";
     importedTrack = null;
     translationCoordinator = null;
@@ -5313,6 +5340,11 @@
           const previousContextLevel = settings.contextLevel;
           await loadSettings();
           await refreshShowSettings({ force: true });
+          if (cueTrackKind === "captured" && cues.length) {
+            sameLanguageTargetAcrossEpisode = trackNeedsTranslation()
+              ? ""
+              : normalizedTargetLanguage();
+          }
           if (
             settings.useTranslationContext !== previousUseTranslationContext ||
             settings.contextLevel !== previousContextLevel
@@ -5370,6 +5402,7 @@
     cues = [];
     cueSourceUrl = "";
     capturedTrackLanguage = "";
+    sameLanguageTargetAcrossEpisode = "";
     cueVideoId = "";
     cueTrackKind = "none";
     importedTrack = null;

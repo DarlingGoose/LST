@@ -975,6 +975,10 @@ function createHarness(vtt = CUE_TRACK, { site = "netflix", settings = {} } = {}
     setTitle(text) {
       document.title = text;
     },
+    navigate(pathname) {
+      context.location.pathname = pathname;
+      context.location.href = `${harnessSite.origin}${pathname}`;
+    },
     // What Jimaku held for the show, as the background remembers it.
     setJimakuFinding(finding) {
       jimakuFinding = finding;
@@ -2070,6 +2074,17 @@ function importedTrackFor(track) {
     harness.sentMessageTypes().includes("CACHE_RECONCILE_FALLBACK"),
     false,
     "a same-language track does not start cache reconciliation",
+  );
+  harness.navigate("/watch/80100173");
+  await harness.frame(0);
+  assert.doesNotMatch(
+    harness.elementById("not-status")?.textContent || "",
+    /waiting for .* subtitles/i,
+    "an episode transition keeps the confirmed native-language state",
+  );
+  assert.match(
+    harness.elementById("not-status")?.textContent || "",
+    /native English subtitles/i,
   );
   await harness.flushDiagnostics();
   assert.equal(
