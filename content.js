@@ -2272,6 +2272,11 @@
         quickPillsPanel.querySelector("#lst-pill-trigger")?.focus();
       }
     });
+
+    // The controls begin expanded so the viewer can discover them, but the idle
+    // countdown begins immediately. Waiting for a first mouseleave would leave
+    // a newly opened player expanded forever when the pointer never touched it.
+    scheduleQuickPillsMinimize();
   }
 
   function setQuickPillsCompact(compact) {
@@ -2292,6 +2297,10 @@
     const seconds = clamp(settings.controlsMinimizeDelaySeconds, 1, 30, 2);
     quickPillsMinimizeTimer = setTimeout(() => {
       quickPillsMinimizeTimer = null;
+      if (
+        quickPillsPanel.matches?.(":hover") ||
+        quickPillsPanel.contains?.(document.activeElement)
+      ) return;
       setQuickPillsCompact(true);
     }, seconds * 1000);
   }

@@ -186,6 +186,7 @@ const settings = {
   model: "translategemma:4b",
   targetLanguage: "English",
   enabled: true,
+  showQuickPills: true,
   autoMinimizeControls: true,
   controlsMinimizeDelaySeconds: 2,
   hideNativeSubtitles: true,
@@ -298,6 +299,7 @@ assert.equal(saved.length, 1);
 assert.equal(saved[0].settings.targetLanguage, "Français");
 assert.equal(saved[0].settings.model, "translategemma:4b");
 assert.equal(saved[0].settings.showOriginal, true);
+assert.equal(saved[0].settings.showQuickPills, true);
 assert.equal(saved[0].settings.autoMinimizeControls, true);
 assert.equal(saved[0].settings.controlsMinimizeDelaySeconds, 2);
 assert.equal(saved[0].settings.showNativeWhenTargetLanguage, true);

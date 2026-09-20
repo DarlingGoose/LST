@@ -145,6 +145,7 @@ function collectSettings() {
     model: providerModels[$("provider").value],
     targetLanguage: $("targetLanguage").value.trim() || "English",
     enabled: $("enabled").checked,
+    showQuickPills: $("showQuickPills").checked,
     autoMinimizeControls: $("autoMinimizeControls").checked,
     controlsMinimizeDelaySeconds: Math.min(
       30,
@@ -428,6 +429,7 @@ async function load() {
 
   $("targetLanguage").value = settings.targetLanguage || "English";
   $("enabled").checked = settings.enabled !== false;
+  $("showQuickPills").checked = settings.showQuickPills !== false;
   $("autoMinimizeControls").checked = settings.autoMinimizeControls !== false;
   $("controlsMinimizeDelaySeconds").value = Math.min(
     30,
@@ -571,6 +573,7 @@ $("targetLanguage").addEventListener("change", () => {
 
 for (const id of [
   "enabled",
+  "showQuickPills",
   "hideNativeSubtitles",
   "showNativeWhenTargetLanguage",
   "showOriginal",

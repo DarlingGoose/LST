@@ -517,6 +517,11 @@ assert.doesNotMatch(
   "the cue-count and duration ratios must be gone",
 );
 assert.doesNotMatch(contentSource, /equivalent-subtitle-track-ignored/);
+assert.match(
+  contentSource,
+  /bindQuickPills[\s\S]*scheduleQuickPillsMinimize\(\);[\s\S]*function setQuickPillsCompact/,
+  "the control pill must arm its idle timer before the first pointer interaction",
+);
 
 // Layer 2 — the same decisions driven through the real content script.
 
