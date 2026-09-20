@@ -192,6 +192,43 @@ html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
      is what it is positioned against and what rounds it off. */
   position: relative;
   overflow: hidden;
+  transition: padding 0.22s ease, border-radius 0.22s ease, background 0.22s ease;
+}
+
+#lst-pill-trigger > strong,
+#lst-pill-state,
+.lst-pill-ahead,
+.lst-pill-source,
+.lst-pill-controls-label {
+  max-width: 180px;
+  overflow: hidden;
+  opacity: 1;
+  white-space: nowrap;
+  transition: max-width 0.24s ease, margin 0.24s ease, padding 0.24s ease,
+    border-width 0.24s ease, opacity 0.16s ease, transform 0.24s ease;
+}
+
+#lst-quick-pills[data-compact="true"] { width: max-content; max-width: 100%; }
+#lst-quick-pills[data-compact="true"] #lst-pill-trigger {
+  width: auto;
+  min-width: 52px;
+  min-height: 38px;
+  gap: 8px;
+  padding: 5px 13px;
+  border-radius: 999px;
+}
+#lst-quick-pills[data-compact="true"] #lst-pill-trigger > strong,
+#lst-quick-pills[data-compact="true"] #lst-pill-state,
+#lst-quick-pills[data-compact="true"] .lst-pill-ahead,
+#lst-quick-pills[data-compact="true"] .lst-pill-source,
+#lst-quick-pills[data-compact="true"] .lst-pill-controls-label {
+  max-width: 0;
+  margin: 0;
+  padding-right: 0;
+  padding-left: 0;
+  border-width: 0;
+  opacity: 0;
+  transform: translateX(-5px);
 }
 
 #lst-pill-trigger > strong { font-size: 14px; }
@@ -375,7 +412,13 @@ html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
 
 @media (prefers-reduced-motion: reduce) {
   #lst-quick-pills[data-state="buffering"] .lst-pill-dot { animation: none; }
-  .lst-pill-progress-fill { transition: none; }
+  .lst-pill-progress-fill,
+  #lst-pill-trigger,
+  #lst-pill-trigger > strong,
+  #lst-pill-state,
+  .lst-pill-ahead,
+  .lst-pill-source,
+  .lst-pill-controls-label { transition: none; }
 }
 
 #lst-transcript-panel {

@@ -158,7 +158,10 @@ vm.runInContext(source, context, { filename: "background.js" });
 await installedHandler();
 assert.equal(values.model, "translategemma:4b");
 assert.equal(values.showQuickPills, true);
+assert.equal(values.autoMinimizeControls, true);
+assert.equal(values.controlsMinimizeDelaySeconds, 2);
 assert.equal(values.showTranscriptSidebar, false);
+assert.equal(values.showNativeWhenTargetLanguage, true);
 assert.equal(values.useTranslationContext, false);
 // The amount of surrounding context defaults to the level the module calls its
 // own default, so an install that never opens the setting sends what it always

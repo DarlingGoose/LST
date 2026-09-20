@@ -764,7 +764,10 @@ function createHarness(vtt = CUE_TRACK, { site = "netflix", settings = {} } = {}
                 enabled: true,
                 provider: "ollama",
                 model: "test-model",
-                targetLanguage: "English",
+                // Synchronization cases exercise the translation path without
+                // making a claim about the fixture's language. Cases about
+                // same-language suppression choose a known target explicitly.
+                targetLanguage: "Test Language",
                 showDebugPanel: false,
                 ...settings,
               },
@@ -2026,6 +2029,38 @@ function importedTrackFor(track) {
   const adopted = harness.eventsNamed("imported-track-adopted").at(-1);
   assert.equal(adopted.details.translate, false);
   assert.equal(adopted.details.translateReason, "track-already-in-target-language");
+}
+
+// Netflix documents do not always carry a language label. The full cue text is
+// still enough to recognize the target language, and that decision happens
+// before cache reconciliation or a provider request.
+{
+  const harness = createHarness(CUE_TRACK, {
+    site: "netflix",
+    settings: { targetLanguage: "English", autoTranslateAhead: false },
+  });
+  await harness.start({ captureTrack: true });
+  await harness.show("I don't know.", 10.2);
+  assert.deepEqual(
+    harness.translationRequests(),
+    [],
+    "an unlabeled English Netflix track is not translated to English",
+  );
+  assert.deepEqual(
+    [...harness.overlayTexts().translated],
+    [],
+    "the native same-language caption is not duplicated in the LST overlay",
+  );
+  assert.equal(
+    harness.sentMessageTypes().includes("CACHE_RECONCILE_FALLBACK"),
+    false,
+    "a same-language track does not start cache reconciliation",
+  );
+  await harness.flushDiagnostics();
+  assert.equal(
+    harness.eventsNamed("translation-skipped").at(-1)?.details.reason,
+    "subtitle-script-matches-target",
+  );
 }
 
 // A captured document cannot replace a file the viewer chose: the service keeps

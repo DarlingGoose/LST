@@ -186,7 +186,10 @@ const settings = {
   model: "translategemma:4b",
   targetLanguage: "English",
   enabled: true,
+  autoMinimizeControls: true,
+  controlsMinimizeDelaySeconds: 2,
   hideNativeSubtitles: true,
+  showNativeWhenTargetLanguage: true,
   showOriginal: false,
   showTranslated: true,
   verifyTranslations: true,
@@ -295,6 +298,9 @@ assert.equal(saved.length, 1);
 assert.equal(saved[0].settings.targetLanguage, "Français");
 assert.equal(saved[0].settings.model, "translategemma:4b");
 assert.equal(saved[0].settings.showOriginal, true);
+assert.equal(saved[0].settings.autoMinimizeControls, true);
+assert.equal(saved[0].settings.controlsMinimizeDelaySeconds, 2);
+assert.equal(saved[0].settings.showNativeWhenTargetLanguage, true);
 assert.equal(saved[0].settings.verifyTranslations, true);
 assert.equal(saved[0].settings.setupCompleted, undefined, "setup is not complete yet");
 assert.equal(byId("status").dataset.tone, "success");

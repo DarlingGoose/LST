@@ -145,7 +145,13 @@ function collectSettings() {
     model: providerModels[$("provider").value],
     targetLanguage: $("targetLanguage").value.trim() || "English",
     enabled: $("enabled").checked,
+    autoMinimizeControls: $("autoMinimizeControls").checked,
+    controlsMinimizeDelaySeconds: Math.min(
+      30,
+      Math.max(1, Number($("controlsMinimizeDelaySeconds").value) || 2),
+    ),
     hideNativeSubtitles: $("hideNativeSubtitles").checked,
+    showNativeWhenTargetLanguage: $("showNativeWhenTargetLanguage").checked,
     enabledSites: collectServiceToggles(),
     showOriginal: $("showOriginal").checked,
     showTranslated: $("showTranslated").checked,
@@ -422,7 +428,14 @@ async function load() {
 
   $("targetLanguage").value = settings.targetLanguage || "English";
   $("enabled").checked = settings.enabled !== false;
+  $("autoMinimizeControls").checked = settings.autoMinimizeControls !== false;
+  $("controlsMinimizeDelaySeconds").value = Math.min(
+    30,
+    Math.max(1, Number(settings.controlsMinimizeDelaySeconds) || 2),
+  );
   $("hideNativeSubtitles").checked = hidesNativeSubtitles(settings) !== false;
+  $("showNativeWhenTargetLanguage").checked =
+    settings.showNativeWhenTargetLanguage !== false;
   $("showOriginal").checked = settings.showOriginal === true;
   $("showTranslated").checked = settings.showTranslated !== false;
   $("verifyTranslations").checked = settings.verifyTranslations !== false;
@@ -556,7 +569,13 @@ $("targetLanguage").addEventListener("change", () => {
   updateSummary();
 });
 
-for (const id of ["enabled", "hideNativeSubtitles", "showOriginal", "showTranslated"]) {
+for (const id of [
+  "enabled",
+  "hideNativeSubtitles",
+  "showNativeWhenTargetLanguage",
+  "showOriginal",
+  "showTranslated",
+]) {
   $(id).addEventListener("change", updatePreview);
 }
 

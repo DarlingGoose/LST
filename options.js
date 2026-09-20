@@ -505,7 +505,9 @@ async function load() {
   const response = await runtimeMessage({ type: "GET_SETTINGS" });
   const s = response.settings;
 
-  $("extensionVersion").textContent = ext.runtime.getManifest().version;
+  const runningVersion = ext.runtime.getManifest().version;
+  $("runningVersion").textContent = `Running v${runningVersion}`;
+  $("extensionVersion").textContent = runningVersion;
 
   $("ollamaUrl").value = s.ollamaUrl || "http://localhost:11434";
   $("provider").value = PROVIDER_NAMES[s.provider] ? s.provider : "ollama";
@@ -517,6 +519,7 @@ async function load() {
   $("targetLanguage").value = s.targetLanguage || "English";
   $("enabled").checked = s.enabled !== false;
   $("hideNativeSubtitles").checked = hidesNativeSubtitles(s) !== false;
+  $("showNativeWhenTargetLanguage").checked = s.showNativeWhenTargetLanguage !== false;
   $("hudPosition").value = HUD_POSITIONS.includes(s.hudPosition) ? s.hudPosition : "";
   renderServices(s);
   $("showOriginal").checked = s.showOriginal === true;
@@ -529,6 +532,11 @@ async function load() {
   $("showDebugPanel").checked = s.showDebugPanel === true;
   $("debugPanelAlwaysOnTop").checked = s.debugPanelAlwaysOnTop === true;
   $("showQuickPills").checked = s.showQuickPills !== false;
+  $("autoMinimizeControls").checked = s.autoMinimizeControls !== false;
+  $("controlsMinimizeDelaySeconds").value = Math.min(
+    30,
+    Math.max(1, Number(s.controlsMinimizeDelaySeconds) || 2),
+  );
   $("showTranscriptSidebar").checked = s.showTranscriptSidebar === true;
   $("lookAheadSeconds").value = Math.max(30, Number(s.lookAheadSeconds) || 30);
   $("batchSize").value = s.batchSize ?? 8;
@@ -554,6 +562,41 @@ async function load() {
     option.textContent = option.value || "No model selected";
     select.appendChild(option);
     setStatus(`Could not load ${PROVIDER_NAMES[$("provider").value]} models: ${error.message}`, "error");
+  }
+}
+
+function renderUpdateAvailability(result = {}) {
+  const status = typeof result === "string" ? result : result.status;
+  const version = typeof result === "object" ? result.version : "";
+  const output = $("updateAvailability");
+  output.classList.toggle("success-text", status === "no_update");
+  if (status === "update_available") {
+    output.textContent = version
+      ? `Version ${version} is available; your browser will install it automatically.`
+      : "A newer version is available; your browser will install it automatically.";
+  } else if (status === "no_update") {
+    output.textContent = "You are running the newest version available to this browser.";
+  } else if (status === "throttled") {
+    output.textContent = "Checked recently; your browser will check again automatically.";
+  } else {
+    output.textContent = "Update status is unavailable; your browser still checks automatically.";
+  }
+}
+
+async function checkForUpdates() {
+  const button = $("checkForUpdates");
+  button.disabled = true;
+  $("updateAvailability").textContent = "Checking with your browser…";
+  try {
+    if (typeof ext.runtime.requestUpdateCheck !== "function") {
+      throw new Error("This browser does not expose manual extension update checks.");
+    }
+    renderUpdateAvailability(await ext.runtime.requestUpdateCheck());
+  } catch (error) {
+    $("updateAvailability").textContent =
+      `${error.message} Your browser still checks for extension updates automatically.`;
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -649,6 +692,7 @@ function collectSettings() {
     targetLanguage: $("targetLanguage").value.trim() || "English",
     enabled: $("enabled").checked,
     hideNativeSubtitles: $("hideNativeSubtitles").checked,
+    showNativeWhenTargetLanguage: $("showNativeWhenTargetLanguage").checked,
     enabledSites: collectEnabledSites(),
     hudPosition: $("hudPosition").value,
     showOriginal: $("showOriginal").checked,
@@ -663,6 +707,11 @@ function collectSettings() {
     showDebugPanel: $("showDebugPanel").checked,
     debugPanelAlwaysOnTop: $("debugPanelAlwaysOnTop").checked,
     showQuickPills: $("showQuickPills").checked,
+    autoMinimizeControls: $("autoMinimizeControls").checked,
+    controlsMinimizeDelaySeconds: Math.min(
+      30,
+      Math.max(1, clampNumber("controlsMinimizeDelaySeconds", 2)),
+    ),
     showTranscriptSidebar: $("showTranscriptSidebar").checked,
     lookAheadSeconds: clampNumber("lookAheadSeconds", 30),
     batchSize: clampNumber("batchSize", 8),
@@ -1746,6 +1795,8 @@ $("clearDiagnosticLog").addEventListener("click", async () => {
   }
 });
 
+$("checkForUpdates").addEventListener("click", checkForUpdates);
+
 $("save").addEventListener("click", async () => {
   try {
     const provider = $("provider").value;
@@ -1847,6 +1898,12 @@ document.querySelector(".settings-tabs").addEventListener("keydown", (event) => 
 
 ext.runtime.onMessage.addListener((message) => {
   if (message?.type === "MODEL_PULL_PROGRESS") renderPullProgress(message);
+});
+
+// Browsers already check extension stores on their own. Reflect an update they
+// have discovered instead of adding another polling request or external host.
+ext.runtime.onUpdateAvailable?.addListener((details) => {
+  renderUpdateAvailability({ status: "update_available", version: details?.version });
 });
 
 activateSettingsTab(location.hash.slice(1));

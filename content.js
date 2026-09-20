@@ -9,6 +9,7 @@
     targetLanguage: "English",
     translationPaused: false,
     hideNativeSubtitles: true,
+    showNativeWhenTargetLanguage: true,
     enabledSites: { netflix: true, primevideo: true },
     hudPosition: "",
     showOriginal: false,
@@ -28,6 +29,8 @@
     showDebugPanel: false,
     debugPanelAlwaysOnTop: false,
     showQuickPills: true,
+    autoMinimizeControls: true,
+    controlsMinimizeDelaySeconds: 2,
     showTranscriptSidebar: false,
     subtitleHorizontalPosition: "center",
     subtitleVerticalPosition: 9,
@@ -80,6 +83,7 @@
   let quickPillsPanel;
   let quickPillsMenu;
   let quickPillsState;
+  let quickPillsMinimizeTimer = null;
   let debugPanel;
   let debugPanelBody;
   let transcriptPanel;
@@ -1489,6 +1493,7 @@
             <label><span>Translation</span><span class="lst-pill-switch"><input data-pill-setting="showTranslated" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Original text</span><span class="lst-pill-switch"><input data-pill-setting="showOriginal" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Hide the service's own subtitles</span><span class="lst-pill-switch"><input data-pill-setting="hideNativeSubtitles" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
+            <label><span>Use native captions when already translated</span><span class="lst-pill-switch"><input data-pill-setting="showNativeWhenTargetLanguage" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
             <label><span>Transcript sidebar</span><span class="lst-pill-switch"><input data-pill-setting="showTranscriptSidebar" type="checkbox" role="switch"><span class="lst-pill-switch-ui"></span></span></label>
           </section>
           <section class="lst-pill-section lst-pill-timing" aria-labelledby="lst-timing-heading">
@@ -1753,9 +1758,17 @@
     // Hiding a service's own captions is a stylesheet rule carrying !important,
     // driven by one shared class. An inline style would not survive on Prime
     // Video, which rewrites the caption element's inline style periodically.
+    const useSameLanguageNativeCaptions = Boolean(
+      settings.showNativeWhenTargetLanguage !== false &&
+      currentStatus.captured &&
+      !trackIsImported() &&
+      !trackNeedsTranslation(),
+    );
     document.documentElement.classList.toggle(
       "lst-hide-native-subtitles",
-      settings.enabled && settings.hideNativeSubtitles !== false,
+      settings.enabled &&
+        settings.hideNativeSubtitles !== false &&
+        !useSameLanguageNativeCaptions,
     );
     applyHudPosition();
 
@@ -1963,6 +1976,7 @@
   function updateQuickPills() {
     if (!quickPillsPanel || !quickPillsState) return;
     quickPillsPanel.style.display = settings.showQuickPills ? "block" : "none";
+    if (!settings.autoMinimizeControls) setQuickPillsCompact(false);
     refreshCacheCoverage();
     const status = quickPillStatus();
     quickPillsPanel.dataset.state = status.state;
@@ -2118,6 +2132,20 @@
   }
 
   function bindQuickPills() {
+    quickPillsPanel.addEventListener("mouseenter", () => {
+      clearTimeout(quickPillsMinimizeTimer);
+      quickPillsMinimizeTimer = null;
+      setQuickPillsCompact(false);
+    });
+    quickPillsPanel.addEventListener("mouseleave", scheduleQuickPillsMinimize);
+    quickPillsPanel.addEventListener("focusin", () => {
+      clearTimeout(quickPillsMinimizeTimer);
+      quickPillsMinimizeTimer = null;
+      setQuickPillsCompact(false);
+    });
+    quickPillsPanel.addEventListener("focusout", (event) => {
+      if (!quickPillsPanel.contains(event.relatedTarget)) scheduleQuickPillsMinimize();
+    });
     quickPillsPanel.addEventListener("click", (event) => {
       const fileStep = event.target.closest("[data-file-timing-step]");
       if (fileStep) {
@@ -2246,12 +2274,44 @@
     });
   }
 
+  function setQuickPillsCompact(compact) {
+    if (!quickPillsPanel) return;
+    const next = Boolean(
+      compact && settings.autoMinimizeControls && quickPillsMenu?.hidden,
+    );
+    quickPillsPanel.dataset.compact = next ? "true" : "false";
+    quickPillsPanel
+      .querySelector("#lst-pill-trigger")
+      ?.setAttribute("aria-label", next ? "Expand LST subtitle controls" : "Open LST subtitle controls");
+  }
+
+  function scheduleQuickPillsMinimize() {
+    clearTimeout(quickPillsMinimizeTimer);
+    quickPillsMinimizeTimer = null;
+    if (!settings.autoMinimizeControls || !quickPillsMenu?.hidden) return;
+    const seconds = clamp(settings.controlsMinimizeDelaySeconds, 1, 30, 2);
+    quickPillsMinimizeTimer = setTimeout(() => {
+      quickPillsMinimizeTimer = null;
+      setQuickPillsCompact(true);
+    }, seconds * 1000);
+  }
+
   function setQuickPillsMenu(open) {
+    clearTimeout(quickPillsMinimizeTimer);
+    quickPillsMinimizeTimer = null;
+    setQuickPillsCompact(false);
     quickPillsMenu.hidden = !open;
     quickPillsPanel
       .querySelector("#lst-pill-trigger")
       ?.setAttribute("aria-expanded", String(open));
     requestAnimationFrame(positionDebugPanel);
+    if (
+      !open &&
+      !quickPillsPanel.matches?.(":hover") &&
+      !quickPillsPanel.contains?.(document.activeElement)
+    ) {
+      scheduleQuickPillsMinimize();
+    }
   }
 
   function positionDebugPanel() {
@@ -3922,6 +3982,18 @@
       // A track that needs no translation displays itself: the line the viewer
       // reads is the line in the file, and no provider is asked for anything.
       const needsTranslation = trackNeedsTranslation();
+      if (
+        !needsTranslation &&
+        !trackIsImported() &&
+        settings.showNativeWhenTargetLanguage !== false
+      ) {
+        removeRenderedSubtitlesBySource("timed", "using-native-same-language-captions");
+        lastRenderedCueKey = key;
+        currentStatus.playbackMode = "native captions (target language)";
+        currentStatus.lastTranslatedText = "";
+        requestAnimationFrame(playbackLoop);
+        return;
+      }
       // Without translation the line shown is the line in the file. A cached
       // translation is deliberately not used here: it may belong to a language
       // the viewer has since changed away from.
@@ -4217,6 +4289,30 @@
       ...trackDecisionDiagnostics(decision),
     });
 
+    if (!trackNeedsTranslation()) {
+      const language = capturedTrackLanguage || playbackLanguages().subtitle;
+      currentStatus.translatedCount = 0;
+      currentStatus.playbackMode = "source track (target language)";
+      updateProgress();
+      applySubtitleAppearance();
+      setStatus(
+        language
+          ? `The ${language} subtitle track already matches ${settings.targetLanguage}; ` +
+              "no translation or caching is needed."
+          : `These subtitles appear to be in ${settings.targetLanguage}; ` +
+              "no translation or caching is needed.",
+        true,
+      );
+      logDiagnostic("info", "translation", "translation-skipped", {
+        reason: language
+          ? "subtitle-language-matches-target"
+          : "subtitle-script-matches-target",
+        sourceLanguage: language || "inferred",
+        targetLanguage: settings.targetLanguage,
+      });
+      return;
+    }
+
     try {
       await runtimeMessage({
         type: "CACHE_RECONCILE_FALLBACK",
@@ -4295,13 +4391,17 @@
 
   // Whether this track has to reach a translation provider at all. Everything
   // that would spend a request asks this first.
-  function trackNeedsTranslation() {
+  function trackNeedsTranslation(sampleText = "") {
     if (!trackIsImported()) {
-      if (!capturedTrackLanguage) return true;
+      const exposedLanguage = playbackLanguages().subtitle;
       const decision = subtitleImport()?.needsTranslation?.({
-        language: capturedTrackLanguage,
+        language: capturedTrackLanguage || exposedLanguage,
         targetLanguage: settings.targetLanguage,
-        sampleText: cues.slice(0, 20).map((cue) => cue.text).join(" ").slice(0, 4000),
+        sampleText: (
+          cues.length
+            ? cues.slice(0, 20).map((cue) => cue.text).join(" ")
+            : sampleText
+        ).slice(0, 4000),
       });
       return decision ? decision.translate : true;
     }
@@ -4336,7 +4436,7 @@
 
   function translationMayRun(renderedText = "") {
     return !settings.translationPaused &&
-      trackNeedsTranslation() &&
+      trackNeedsTranslation(renderedText) &&
       !serviceSubtitlesAreOff(renderedText);
   }
 
@@ -5225,6 +5325,8 @@
   function stopPlayback() {
     playbackActive = false;
     playbackGeneration++;
+    clearTimeout(quickPillsMinimizeTimer);
+    quickPillsMinimizeTimer = null;
     precomputeCancelled = true;
     document.documentElement.classList.remove("lst-hide-native-subtitles");
     stopTitleMetadataObserver();
