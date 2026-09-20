@@ -120,6 +120,8 @@ html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
   opacity: 0.8;
 }
+#not-status[data-tone="warning"] { border-left: 3px solid #ffc866; }
+#not-status[data-tone="error"] { border-left: 3px solid #ff7078; }
 
 #lst-jimaku-note {
   display: flex;

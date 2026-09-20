@@ -169,6 +169,7 @@
     lastOllamaRaw: "",
     lastDiagnostics: [],
     message: "Waiting for subtitles…",
+    messageTone: "warning",
     // Which track is playing: the service's own captions, or a subtitle file the
     // viewer imported for this episode.
     subtitleSource: "none",
@@ -1804,12 +1805,7 @@
 
     trimRenderedSubtitles();
     renderSubtitleStack();
-    statusLine.style.display =
-      settings.showStatusMessages &&
-      statusMessageRequestedVisible &&
-      currentStatus.message
-        ? "block"
-        : "none";
+    updateStatusLineVisibility();
 
     updateQuickPills();
     updateTranscriptVisibility();
@@ -2288,6 +2284,8 @@
     quickPillsPanel
       .querySelector("#lst-pill-trigger")
       ?.setAttribute("aria-label", next ? "Expand LST subtitle controls" : "Open LST subtitle controls");
+    updateStatusLineVisibility();
+    updateJimakuNote();
   }
 
   function scheduleQuickPillsMinimize() {
@@ -2459,15 +2457,38 @@
     debugPanelBody.textContent = lines.join("\n");
   }
 
-  function setStatus(message, visible = true) {
+  function inferredStatusTone(message) {
+    const text = String(message || "");
+    if (/\b(?:error|failed|could not|unavailable|refused)\b/i.test(text)) {
+      return "error";
+    }
+    if (/\b(?:waiting|warning|paused|stopped|mismatch|retry|turn on|choose|nothing|no subtitles)\b/i.test(text)) {
+      return "warning";
+    }
+    return "info";
+  }
+
+  function updateStatusLineVisibility() {
+    if (!statusLine) return;
+    const compact = quickPillsPanel?.dataset.compact === "true";
+    const important = ["warning", "error"].includes(currentStatus.messageTone);
+    statusLine.style.display =
+      settings.showStatusMessages &&
+      statusMessageRequestedVisible &&
+      currentStatus.message &&
+      (!compact || important)
+        ? "block"
+        : "none";
+    statusLine.dataset.tone = currentStatus.messageTone || "info";
+  }
+
+  function setStatus(message, visible = true, tone = "") {
     currentStatus.message = message;
+    currentStatus.messageTone = tone || inferredStatusTone(message);
     statusMessageRequestedVisible = Boolean(visible && message);
     ensureOverlay();
     statusLine.textContent = message || "";
-    statusLine.style.display =
-      settings.showStatusMessages && statusMessageRequestedVisible
-        ? "block"
-        : "none";
+    updateStatusLineVisibility();
     updateDebugPanel();
   }
 
@@ -4584,7 +4605,8 @@
     jimakuNote.hidden =
       !described ||
       jimakuNoteDismissed.has(show) ||
-      settings.showStatusMessages === false;
+      settings.showStatusMessages === false ||
+      (quickPillsPanel?.dataset.compact === "true" && described.tone !== "warn");
     if (jimakuNote.hidden) return;
     jimakuNoteText.textContent =
       described.tone === "warn"
@@ -5387,6 +5409,7 @@
       subtitleSource: "none",
       importedFileName: "",
       message: `Waiting for ${siteName()} subtitles…`,
+      messageTone: "warning",
     };
     for (const element of [overlay, hud, debugPanel, transcriptPanel]) {
       if (element) element.style.display = "none";

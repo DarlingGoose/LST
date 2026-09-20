@@ -522,6 +522,16 @@ assert.match(
   /bindQuickPills[\s\S]*scheduleQuickPillsMinimize\(\);[\s\S]*function setQuickPillsCompact/,
   "the control pill must arm its idle timer before the first pointer interaction",
 );
+assert.match(
+  contentSource,
+  /!compact \|\| important/,
+  "compact controls must keep only warning and error status messages visible",
+);
+assert.match(
+  contentSource,
+  /described\.tone !== "warn"/,
+  "compact controls must hide non-warning show notices",
+);
 
 // Layer 2 — the same decisions driven through the real content script.
 
