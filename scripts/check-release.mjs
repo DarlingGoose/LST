@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import process from "node:process";
 
-const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
+const manifest = JSON.parse(await readFile("src/manifest.json", "utf8"));
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const packageLock = JSON.parse(await readFile("package-lock.json", "utf8"));
 const errors = [];
@@ -44,7 +44,7 @@ if (Number.parseInt(geckoAndroid.strict_min_version, 10) < 142) {
 if (!manifest.background?.service_worker) {
   errors.push("shared manifest must retain background.service_worker for Chromium");
 }
-if (!manifest.background?.scripts?.includes("background.js")) {
+if (!manifest.background?.scripts?.includes("background/index.js")) {
   errors.push("shared manifest must retain background.scripts for Firefox");
 }
 

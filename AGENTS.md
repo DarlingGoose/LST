@@ -21,12 +21,12 @@ The project is intentionally small and uses plain JavaScript, HTML, and CSS.
 
 Important files:
 
-- `manifest.json`
+- `src/manifest.json`
   - Shared source manifest for Firefox and Chromium.
   - Contains both Firefox and Chromium-specific fields.
   - Do not remove browser-specific fields from the shared source unless the release pipeline is updated accordingly.
 
-- `playback-site.js`
+- `src/sites/playback-site.js`
   - Decides which service a page belongs to — Netflix or Prime Video — and every
     site-specific fact about it: which paths can play, which `<video>` element
     the viewer is watching, how a subtitle line is rendered, where the title is
@@ -39,7 +39,7 @@ Important files:
   - **The adapter rule:** every new platform branch goes here, never scattered
     through `content.js` or `page-hook.js`. Adding a marketplace is one entry in
     an adapter's `matchPatterns` plus the same entry in both
-    `content_scripts.matches` arrays; `scripts/test-playback-site.mjs` fails
+    `content_scripts.matches` arrays; `tests/test-playback-site.mjs` fails
     until both halves are done, and fails again if a `matches` pattern no adapter
     claims.
   - It also owns the shape of the playback-resources listing where a service has
@@ -48,7 +48,7 @@ Important files:
     `episodeIdentityFromPlaybackResources`), so the reading of Amazon's
     `catalogMetadata` happens here rather than in the page world or in the player.
 
-- `episode-identity.js`
+- `src/shared/episode-identity.js`
   - Decides which names a service actually gave us and which are the
     placeholders it renders when it has nothing better, where an episode marker
     sits inside a title, what the title block embedded in a Netflix episode page
@@ -73,7 +73,7 @@ Important files:
     `subtitle-import.js` keeps its own, wider vocabulary for a *search query*, which
     also drops an episode marker and a bare trailing number.
 
-- `translation-context.js`
+- `src/shared/translation-context.js`
   - Decides which surrounding subtitle lines are sent to the provider as
     reference, and why, and validates the lines that arrive at the background in
     a message.
@@ -99,21 +99,21 @@ Important files:
     reported rather than guessed at. The event log records kinds, reasons and
     counts, never the subtitle text.
 
-- `background.js`
+- `src/background/index.js`
   - Ollama API communication.
   - Model discovery.
   - Translation requests.
   - Cache/storage coordination.
 
-- `translation-guard.js`
+- `src/shared/translation-guard.js`
   - Decides whether a returned translation is plausibly written in the target language.
   - Loaded before `background.js` through the manifest's background scripts.
 
-- `structured-response.js`
+- `src/shared/structured-response.js`
   - Recovers the batch JSON from a model response.
   - Aligns returned rows back to the requested cues, and reports anything it could not align instead of guessing.
 
-- `subtitle-sync.js`
+- `src/shared/subtitle-sync.js`
   - Decides which captured cue the line Netflix is rendering belongs to.
   - Folds encoding/layout differences, falls back to punctuation- and case-insensitive
     matching, and only uses playback time to separate repeated lines when the track
@@ -122,7 +122,7 @@ Important files:
     of it, or a different track, from cue membership and time coverage rather than
     cue-count or duration ratios, and always reports the reason.
 
-- `subtitle-import.js`
+- `src/shared/subtitle-import.js`
   - Decides where a subtitle comes from when it did not come from the player:
     the two hosts an import uses, what a search result and a file listing say,
     which file belongs to which episode and why, what a SubRip file contains,
@@ -139,7 +139,7 @@ Important files:
   - **The host list has one owner.** `HOST_ORIGINS` is the only place that names
     `jimaku.cc` and `www.subtitlebot.com`; the manifest's
     `optional_host_permissions`, the options page's permission request, and
-    `scripts/test-subtitle-import.mjs` all read it, and a test fails if the
+    `tests/test-subtitle-import.mjs` all read it, and a test fails if the
     manifest and the module disagree or if either host becomes a required
     permission.
   - A file URL that leaves the origin the listing came from is refused
@@ -190,7 +190,7 @@ Important files:
     sentence is phrased against, and a note without a time is refused rather than
     stamped with a guess.
 
-- `content.js`
+- `src/content/index.js`
   - Netflix subtitle parsing and playback synchronization.
   - Subtitle overlay rendering.
   - Realtime translation behavior.
@@ -198,21 +198,21 @@ Important files:
   - Precompute behavior.
   - In-player controls and diagnostics.
 
-- `page-hook.js`
+- `src/page/page-hook.js`
   - Runs in the page context.
   - Observes Netflix fetch/XHR traffic for subtitle/timed-text responses.
   - Keep this file minimal because it runs alongside Netflix page code.
 
-- `options.html` / `options.js`
+- `src/ui/options/options.html` / `options.js`
   - Extension settings UI.
 
-- `popup.html` / `popup.js`
+- `src/ui/popup/popup.html` / `popup.js`
   - Toolbar popup and current episode/precompute status.
 
-- `styles.css`
+- `src/content/styles.css`
   - Netflix overlay, subtitle, HUD, and debug styling.
 
-- `icons/`
+- `src/assets/icons/`
   - Extension icons.
 
 - `scripts/prepare-firefox.mjs`
@@ -272,13 +272,13 @@ Change source files or preparation scripts instead.
 
 LST supports both Firefox and Chromium.
 
-The shared `manifest.json` intentionally contains browser-specific fields.
+The shared `src/manifest.json` intentionally contains browser-specific fields.
 
 Firefox uses:
 
 ```json
 "background": {
-  "scripts": ["background.js"]
+  "scripts": ["background/index.js"]
 }
 ```
 
@@ -286,7 +286,7 @@ Chromium uses:
 
 ```json
 "background": {
-  "service_worker": "background.js"
+  "service_worker": "background/index.js"
 }
 ```
 
@@ -513,7 +513,7 @@ subtitle tracks in — belong to `playback-site.js`. Nothing in `content.js` or
 - Some titles use image-based (bitmap) subtitles and produce no caption spans
   at all. That has to be detected and reported as `native-bitmap-subtitles`
   rather than appearing broken, and never by reading pixels; the detection is
-  tracked in `PRIME_VIDEO_PLAN.md` §6. Until it ships, such a title simply
+  tracked in `docs/plans/prime-video.md` §6. Until it ships, such a title simply
   shows LST waiting.
 - **The full track comes from the playback-resources listing, not from the
   captions.** Prime's player asks for a title's assets before it plays anything
@@ -558,10 +558,35 @@ subtitle tracks in — belong to `playback-site.js`. Nothing in `content.js` or
   re-offered to an emptied track: after a route change, when playback starts, or
   when the player draws a line the held document holds and the current track does
   not (the one piece of evidence that names the episode when the URL never
-  moves). It is never trusted on its own — `resolveTrackDocument()` decides, as it
-  does for an arriving document — it is adopted once, and only while it is fresh
-  enough to be this episode's capture (`HELD_DOCUMENT_FRESH_MS`). The event log
-  records `held-document-adopted` with the reason, or `held-document-stale`.
+  moves), or — for a player that draws no line at all, which is a viewer with the
+  service's own captions off — when the clock says the item restarted: a document
+  captured more than a minute into the item and offered while the player is back
+  inside the item's first minute belongs to the item that started after the
+  capture (`RESTARTED_ITEM_SECONDS`), which is also the moment the track in use
+  stops being trusted. It is never trusted on its own — `resolveTrackDocument()`
+  decides, as it does for an arriving document — it is adopted once, and only
+  while it is fresh enough to be this episode's capture
+  (`HELD_DOCUMENT_FRESH_MS`). Two things are recorded with it because they are two
+  questions: the episode LST was working with (`videoId`) and the item the address
+  named (`pageVideoId`). It is refused for the episode now playing only when both
+  have moved since the capture (`held-document-other-episode`), because on Prime
+  the episode is the listing's own id while the address usually names the series,
+  and comparing an episode id against an address id refuses exactly the document
+  the mechanism exists to keep. A document that is the track already in use —
+  every cue of it a cue the track in use holds (`incomingWithinExisting`) — is not
+  held at all (`held-document-dropped`, reason `document-is-current-track`): it
+  belongs to the episode being watched and to no other one, and keeping it is how
+  the episode that ends hands its own subtitles to the episode that follows. The
+  event log records `held-document-adopted` with the reason, or
+  `held-document-stale`.
+
+- **A track the player contradicts is not trusted again by silence.** A gap in
+  what the player draws is the absence of a line, not a line that agrees with the
+  track, so `timed-track-mismatch-idle` reports the gap and the mismatch stands
+  until a line the track holds is drawn (`timed-track-mismatch-resolved`).
+  Promoting a mismatch back to `verified` on silence is what puts the previous
+  episode's cues back on screen at every pause between lines, which reads as the
+  old subtitles playing on the next episode.
 
 When changing subtitle parsing or playback synchronization, test:
 
@@ -747,9 +772,9 @@ When preparing a release, ensure the tag matches the manifest/package version.
 Example:
 
 ```text
-manifest.json: 0.5.3
-package.json:  0.5.3
-git tag:       v0.5.3
+src/manifest.json: 0.5.3
+package.json:      0.5.3
+git tag:           v0.5.3
 ```
 
 Do not modify release workflows casually. Store publishing credentials, IDs, and secrets must remain outside the repository.

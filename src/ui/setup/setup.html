@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LST Setup</title>
+  <link rel="icon" type="image/x-icon" href="../../assets/favicons/favicon.ico">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../assets/favicons/favicon-16x16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../assets/favicons/favicon-32x32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../assets/favicons/apple-touch-icon.png">
+  <link rel="stylesheet" href="../options/options.css">
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><img class="brand-mark" src="../../assets/favicons/apple-touch-icon.png" alt=""><div><strong>LST</strong><span>Local Subtitle Translate</span></div></div>
+      <p class="nav-label">Setup</p>
+      <nav class="settings-tabs" role="tablist" aria-label="Setup steps">
+        <button id="tab-welcome" class="settings-tab" type="button" role="tab" aria-selected="true" aria-controls="panel-welcome" data-setup-tab="welcome"><span>Welcome</span><span class="setup-tab-index">1</span></button>
+        <button id="tab-engine" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-engine" data-setup-tab="engine" tabindex="-1"><span>Engine</span><span class="setup-tab-index">2</span></button>
+        <button id="tab-language" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-language" data-setup-tab="language" tabindex="-1"><span>Language</span><span class="setup-tab-index">3</span></button>
+        <button id="tab-ready" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-ready" data-setup-tab="ready" tabindex="-1"><span>Ready</span><span class="setup-tab-index">4</span></button>
+      </nav>
+      <div class="privacy-card"><span class="state-pill success">Local default</span><strong>Subtitles stay with you</strong><p>Ollama runs on your computer. Remote providers are opt-in and need your own key.</p></div>
+    </aside>
+
+    <section class="workspace">
+      <header class="page-header">
+        <div class="page-heading"><p id="setupEyebrow" class="eyebrow">Setup / Step 1 of 4</p><h1 id="setupTitle">Welcome to LST</h1><p id="setupDescription" class="page-description">Local subtitle translation for the services LST supports, powered by your own machine.</p></div>
+        <div class="header-actions"><div id="status" role="status" aria-live="polite"></div><button id="setupBack" class="secondary" type="button" hidden>Back</button><button id="setupNext" class="primary" type="button">Set up translation</button></div>
+      </header>
+
+      <div class="settings-content" data-active-step="welcome">
+        <section id="panel-welcome" data-setup-panel="welcome" role="tabpanel" aria-labelledby="tab-welcome">
+          <div class="stat-grid" aria-label="What LST does">
+            <article class="stat-card"><span class="stat-label"><i class="status-dot green"></i>Runs on</span><strong>Your computer</strong></article>
+            <article class="stat-card"><span class="stat-label"><i class="status-dot purple"></i>Account</span><strong>Not required</strong></article>
+            <article class="stat-card"><span class="stat-label"><i class="status-dot blue"></i>Telemetry</span><strong>None</strong></article>
+            <article class="stat-card"><span class="stat-label"><i class="status-dot green"></i>Setup time</span><strong>About two minutes</strong></article>
+          </div>
+          <div class="general-grid">
+            <section class="card" aria-labelledby="welcomeHeading">
+              <div class="section-heading"><div><h2 id="welcomeHeading">Translate subtitles with your own models</h2><p>LST adds a translation layer on top of the subtitle track the service already loads.</p></div></div>
+              <p class="setup-lead">LST reads the timed text the service requests for a title, translates each line through the provider you choose, and draws the result over the player. The service's own subtitles, LST originals, and LST translations stay independent, so you can hide or show each layer while watching.</p>
+              <div class="recommendation"><span class="state-pill success">Local default</span><span>Nothing is sent to a developer-operated server.</span></div>
+            </section>
+            <section class="card" aria-labelledby="beforeHeading">
+              <div class="section-heading"><div><h2 id="beforeHeading">Before you start</h2><p>Have these ready for the next step.</p></div></div>
+              <ol class="setup-list">
+                <li>Ollama installed and running at <code>http://localhost:11434</code>.</li>
+                <li>At least one translation model — LST can download one for you in the next step.</li>
+                <li>A title on Netflix or Prime Video with a subtitle track you can turn on.</li>
+              </ol>
+              <div class="privacy-note"><span>Prefer a cloud provider? DeepSeek and Gemini are optional and use your own API key.</span><span class="state-pill info">Optional</span></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-engine" data-setup-panel="engine" role="tabpanel" aria-labelledby="tab-engine" hidden>
+          <div class="general-grid">
+            <section class="card" aria-labelledby="engineHeading">
+              <div class="section-heading"><div><h2 id="engineHeading">Translation engine</h2><p>Where LST sends subtitle text.</p></div></div>
+              <div class="field"><label for="provider">Provider</label><select id="provider"><option value="ollama">Ollama (local default)</option><option value="deepseek">DeepSeek</option><option value="gemini">Gemini</option></select><p id="providerHelp" class="help">Subtitles are sent to your Ollama endpoint.</p></div>
+              <div id="ollamaFields" class="provider-fields"><div class="field"><label for="ollamaUrl">Ollama URL</label><input id="ollamaUrl" type="text" value="http://localhost:11434" spellcheck="false"><p class="help">Requests go only to the endpoint you configure.</p></div></div>
+              <div id="remoteFields" class="provider-fields" hidden><div class="field"><label for="providerApiKey">API key</label><div class="action-field"><input id="providerApiKey" data-transient type="password" autocomplete="off" spellcheck="false" placeholder="Enter a new key"><button id="saveProviderKey" class="secondary" type="button">Save key</button></div><p id="providerKeyStatus" class="help">The key is stored in extension storage on this device. Leave blank to keep the saved key.</p><button id="removeProviderKey" class="secondary" type="button">Remove saved key</button></div></div>
+              <div class="field action-field"><div><label id="modelLabel" for="model">Installed model</label><select id="model"></select></div><button id="refreshModels" class="secondary" type="button">Refresh models</button></div>
+            </section>
+            <section class="card" aria-labelledby="checkHeading">
+              <div class="section-heading"><div><h2 id="checkHeading">Connection check</h2><p>LST lists the models your provider reports.</p></div></div>
+              <dl class="environment-list"><div><dt>Status</dt><dd id="connectionState">Checking…</dd></div><div><dt>Models found</dt><dd id="modelCount">—</dd></div><div><dt>Selected model</dt><dd id="modelSummary">—</dd></div></dl>
+              <div id="modelDownload" class="field"><label for="pullModelName">Download a model</label><div class="action-field"><input id="pullModelName" data-transient type="text" placeholder="e.g. translategemma:4b" spellcheck="false"><button id="pullModel" class="secondary" type="button">Download</button></div><p class="help">The model is stored inside your local Ollama installation.</p><div id="pullProgress" class="pull-progress" aria-hidden="true"><div id="pullProgressBar"></div></div><div id="pullProgressText" role="status" aria-live="polite"></div></div>
+            </section>
+          </div>
+          <section class="card connection-help" aria-labelledby="connectionHelpHeading">
+            <div class="section-heading"><div><h2 id="connectionHelpHeading">If Ollama refuses the extension request</h2><p>Allow browser-extension origins on your own machine.</p></div></div>
+            <ol><li>Stop Ollama if it is already running.</li><li>Start it with browser-extension origins enabled:</li></ol>
+            <div class="command-row"><code id="ollamaCommand">OLLAMA_ORIGINS=chrome-extension://*,moz-extension://* ollama serve</code><button id="copyOllamaCommand" class="secondary" type="button">Copy command</button></div>
+            <div class="privacy-note"><span>This changes only your local Ollama process. LST adds no remote backend.</span><span class="state-pill success">Local only</span></div>
+          </section>
+        </section>
+
+        <section id="panel-language" data-setup-panel="language" role="tabpanel" aria-labelledby="tab-language" hidden>
+          <section class="subtitle-stage card" aria-labelledby="previewHeading"><span class="section-chip">Preview</span><div id="subtitlePreview"><div id="previewOriginal">雨が降っても、行かなければならない。</div><div id="previewTranslated">Even if it rains, we still have to go.</div></div><p id="previewHeading" class="preview-caption">Sample layers · service source and LST translation · target: English</p></section>
+          <div class="subtitle-grid">
+            <section class="card" aria-labelledby="languageHeading">
+              <div class="section-heading"><div><h2 id="languageHeading">Target language</h2><p>Every translated line is written in this language.</p></div></div>
+              <div class="field"><label for="targetLanguage">Translate into</label><input id="targetLanguage" type="text" value="English" list="languageSuggestions" spellcheck="false"><p class="help">Any language your model supports. You can change it later without losing cached shows — each language is cached separately.</p></div>
+              <datalist id="languageSuggestions"><option value="English"></option><option value="Spanish"></option><option value="French"></option><option value="German"></option><option value="Italian"></option><option value="Portuguese"></option><option value="Dutch"></option><option value="Polish"></option><option value="Russian"></option><option value="Ukrainian"></option><option value="Turkish"></option><option value="Arabic"></option><option value="Hindi"></option><option value="Indonesian"></option><option value="Vietnamese"></option><option value="Thai"></option><option value="Korean"></option><option value="Japanese"></option><option value="Chinese"></option></datalist>
+              <div class="recommendation"><span class="state-pill info">Tip</span><span>Pick the language you read fastest while watching.</span></div>
+            </section>
+            <section class="card" aria-labelledby="layersHeading">
+              <div class="section-heading"><div><h2 id="layersHeading">Subtitle layers</h2><p>Keep the service loading source data while choosing what you see.</p></div></div>
+              <div class="switch-row"><div><span class="label">Enable translator</span><p class="help">Run subtitle translation on the services LST supports.</p></div><label class="switch" aria-label="Enable translator"><input id="enabled" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="switch-row"><div><span class="label">Show in-player controls</span><p class="help">Show the LST subtitle-control pill on each enabled service. It starts on for Netflix and Prime Video.</p></div><label class="switch" aria-label="Show LST controls in the player"><input id="showQuickPills" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="switch-row"><div><span class="label">Auto-minimize controls</span><p class="help">Shrink the in-player bar to its status colour and cached percentage after the pointer leaves.</p></div><label class="switch" aria-label="Automatically minimize LST controls"><input id="autoMinimizeControls" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="field"><label for="controlsMinimizeDelaySeconds">Minimize after</label><input id="controlsMinimizeDelaySeconds" type="number" min="1" max="30" step="1" value="2"><p class="help">Seconds after the pointer or keyboard focus leaves.</p></div>
+              <div class="switch-row"><div><span class="label">Hide the service's own subtitles</span><p class="help">Visually hide captions; the track stays active so LST can still read it.</p></div><label class="switch" aria-label="Hide the service's own subtitles"><input id="hideNativeSubtitles" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="switch-row"><div><span class="label">Use native captions when translation is unnecessary</span><p class="help">If the service's subtitles already match your target language, show them normally instead of drawing a duplicate LST layer.</p></div><label class="switch" aria-label="Use native captions when subtitles already match the target language"><input id="showNativeWhenTargetLanguage" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="switch-row"><div><span class="label">Show original text</span><p class="help">Display the captured source subtitle above the translation.</p></div><label class="switch" aria-label="Show original text in LST"><input id="showOriginal" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="switch-row"><div><span class="label">Show translated text</span><p class="help">Display the translated subtitle.</p></div><label class="switch" aria-label="Show translated text"><input id="showTranslated" type="checkbox"><span class="switch-ui"></span></label></div>
+              <div class="switch-row"><div><span class="label">Verify translations before caching</span><p class="help">Reject and retry a result that is not written in the target language, instead of saving it as a translation. Detection compares writing systems, so it catches an untranslated or romanized line.</p></div><label class="switch" aria-label="Verify translations before caching"><input id="verifyTranslations" type="checkbox"><span class="switch-ui"></span></label></div>
+            </section>
+            <section class="card" aria-labelledby="servicesHeading">
+              <div class="section-heading"><div><h2 id="servicesHeading">Services</h2><p>LST recognises the service from the page. Turn one off to keep LST out of it; the other is unaffected.</p></div></div>
+              <div id="serviceList" class="service-list" role="list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="panel-ready" data-setup-panel="ready" role="tabpanel" aria-labelledby="tab-ready" hidden>
+          <div class="general-grid">
+            <section class="card" aria-labelledby="reviewHeading">
+              <div class="section-heading"><div><h2 id="reviewHeading">Review</h2><p>These settings are saved when you finish.</p></div><span id="readyPill" class="state-pill success">Ready</span></div>
+              <dl class="environment-list"><div><dt>Provider</dt><dd id="summaryProvider">Ollama</dd></div><div><dt>Model</dt><dd id="summaryModel">—</dd></div><div><dt>Target language</dt><dd id="summaryLanguage">English</dd></div><div><dt>Privacy</dt><dd id="summaryPrivacy" class="success-text">Local endpoint</dd></div></dl>
+              <div class="card-actions"><button id="openSettings" class="secondary" type="button">Open full settings</button><span id="serviceLinks" class="service-links"></span></div>
+            </section>
+            <section class="card" aria-labelledby="nextHeading">
+              <div class="section-heading"><div><h2 id="nextHeading">What happens next</h2><p>Nothing changes on a service until you watch something.</p></div></div>
+              <ol class="setup-list">
+                <li>Open a watch page on Netflix or Prime Video and start playback.</li>
+                <li>Turn on a subtitle track — LST needs the service to load the source text.</li>
+                <li>Use the LST pill in the player to precompute an episode ahead of time or switch tracks.</li>
+              </ol>
+              <div class="privacy-note"><span>You can reopen this page any time from Settings → Advanced → Environment.</span><span class="state-pill info">Setup</span></div>
+            </section>
+          </div>
+          <section class="card" aria-labelledby="goodToKnowHeading">
+            <div class="section-heading"><div><h2 id="goodToKnowHeading">Good to know</h2><p>Small details that keep playback smooth.</p></div></div>
+            <dl class="environment-list">
+              <div><dt>Cached translations</dt><dd>Per episode, model, and language</dd></div>
+              <div><dt>First playback</dt><dd>Translates just ahead of the playhead</dd></div>
+              <div><dt>Troubleshooting</dt><dd>Debug panel in Settings → Advanced</dd></div>
+            </dl>
+            <span class="state-pill success">No telemetry</span>
+          </section>
+        </section>
+      </div>
+    </section>
+  </main>
+  <script src="../../shared/settings-schema.js"></script>
+  <script src="../../sites/playback-site.js"></script>
+  <script src="setup.js"></script>
+</body>
+</html>

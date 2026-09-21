@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import process from "node:process";
 
-const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
+const manifest = JSON.parse(await readFile("src/manifest.json", "utf8"));
 const browser = process.argv[2];
 
 if (!new Set(["firefox", "chrome"]).has(browser)) {
@@ -56,31 +56,34 @@ for (let index = 0; index < entryCount; index++) {
 
 const required = [
   "manifest.json",
-  "background.js",
-  "content.js",
-  "episode-identity.js",
-  "page-hook.js",
-  "playback-site.js",
-  "styles.css",
-  "structured-response.js",
-  "subtitle-import.js",
-  "subtitle-sync.js",
-  "translation-context.js",
-  "options.css",
-  "options.html",
-  "options.js",
-  "popup.html",
-  "popup.css",
-  "popup.js",
-  "setup.html",
-  "setup.js",
-  "icons/icon-128.png"
+  "background/index.js",
+  "content/index.js",
+  "content/capture-bridge.js",
+  "content/styles.css",
+  "page/page-hook.js",
+  "sites/playback-site.js",
+  "shared/episode-identity.js",
+  "shared/playback-policy.js",
+  "shared/settings-schema.js",
+  "shared/structured-response.js",
+  "shared/subtitle-import.js",
+  "shared/subtitle-sync.js",
+  "shared/translation-context.js",
+  "ui/options/options.css",
+  "ui/options/options.html",
+  "ui/options/options.js",
+  "ui/popup/popup.css",
+  "ui/popup/popup.html",
+  "ui/popup/popup.js",
+  "ui/setup/setup.html",
+  "ui/setup/setup.js",
+  "assets/icons/icon-128.png"
 ];
 const forbidden = [
   "package.json",
   "package-lock.json",
   "amo-metadata.json",
-  "AMO_REVIEWER_NOTES.md",
+  "docs/releases/amo-reviewer-notes.md",
   "PRIVACY.md"
 ];
 const errors = [];
@@ -93,7 +96,7 @@ if (browser === "firefox") {
   if (packagedManifest.background?.service_worker) {
     errors.push("Firefox package manifest still contains background.service_worker");
   }
-  if (!packagedManifest.background?.scripts?.includes("background.js")) {
+  if (!packagedManifest.background?.scripts?.includes("background/index.js")) {
     errors.push("Firefox package manifest is missing background.scripts");
   }
   if (Number.parseInt(
@@ -103,7 +106,7 @@ if (browser === "firefox") {
     errors.push("Firefox package manifest must require Firefox Android 142 or newer");
   }
 } else {
-  if (packagedManifest.background?.service_worker !== "background.js") {
+  if (packagedManifest.background?.service_worker !== "background/index.js") {
     errors.push("Chrome package manifest is missing background.service_worker");
   }
   if (packagedManifest.background?.scripts) {

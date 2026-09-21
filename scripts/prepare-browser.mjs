@@ -1,28 +1,4 @@
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-
-const sourceFiles = [
-  "background.js",
-  "content.js",
-  "episode-identity.js",
-  "manifest.json",
-  "options.css",
-  "options.html",
-  "options.js",
-  "page-hook.js",
-  "playback-site.js",
-  "popup.html",
-  "popup.css",
-  "popup.js",
-  "setup.html",
-  "setup.js",
-  "styles.css",
-  "structured-response.js",
-  "subtitle-import.js",
-  "subtitle-sync.js",
-  "translation-context.js",
-  "translation-coordinator.js",
-  "translation-guard.js"
-];
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 
 export async function prepareBrowser(browser) {
   if (!new Set(["firefox", "chrome"]).has(browser)) {
@@ -34,11 +10,12 @@ export async function prepareBrowser(browser) {
   await rm(outputDirectory, { recursive: true, force: true });
   await mkdir(outputDirectory, { recursive: true });
 
-  for (const file of sourceFiles) {
-    await cp(file, `${outputDirectory}/${file}`);
+  // `src` contains only files that ship in the extension. Copying its children
+  // keeps manifest.json at the package root while allowing the repository to
+  // organize runtime code by responsibility.
+  for (const entry of await readdir("src")) {
+    await cp(`src/${entry}`, `${outputDirectory}/${entry}`, { recursive: true });
   }
-  await cp("icons", `${outputDirectory}/icons`, { recursive: true });
-  await cp("favicons", `${outputDirectory}/favicons`, { recursive: true });
 
   const manifestPath = `${outputDirectory}/manifest.json`;
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));

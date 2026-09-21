@@ -14,7 +14,7 @@ if (requestedVersion.split(".").some((part) => Number(part) > 65_535)) {
   process.exit(1);
 }
 
-const files = ["manifest.json", "package.json", "package-lock.json"];
+const files = ["src/manifest.json", "package.json", "package-lock.json"];
 
 for (const file of files) {
   const document = JSON.parse(await readFile(file, "utf8"));

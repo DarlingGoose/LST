@@ -2,7 +2,7 @@
 
 A small cross-browser Manifest V3 extension for Firefox and Chromium browsers that translates Netflix and Prime Video subtitles using local Ollama by default, with optional DeepSeek and Gemini providers.
 
-[Privacy policy](PRIVACY.md) · [Browser release guide](FIREFOX_RELEASE.md)
+[Privacy policy](PRIVACY.md) · [Browser release guide](docs/releases/firefox.md)
 
 ## Features
 
@@ -16,7 +16,7 @@ A small cross-browser Manifest V3 extension for Firefox and Chromium browsers th
 Both services are detected automatically from the page, and each can be switched
 off independently in Settings → Subtitles → Services. Adding another Amazon
 marketplace is one entry in the adapter's `matchPatterns` plus the same entry in
-both `content_scripts.matches` arrays in `manifest.json`; a test fails until both
+both `content_scripts.matches` arrays in `src/manifest.json`; a test fails until both
 halves are done.
 
 
@@ -145,12 +145,24 @@ episode's assets while the URL is often still the previous episode's, so the
 document can arrive before LST has noticed the change and find a track already
 loaded. LST holds the newest captured document rather than dropping it — the
 request that carried it is made once and never repeated — and offers it to the
-track that has just been emptied, or to a player that swapped its episode without
+track that has just been emptied, to a player that swapped its episode without
 moving the URL at all, where the line the player draws is what shows the held
-document is the one being watched. The same rules that judge an arriving document
-judge a held one, and the event log says which document was adopted and why
-(`held-document-adopted`), or that it was too old to be this episode's
-(`held-document-stale`).
+document is the one being watched, or to a player that draws no line at all
+(Prime's own captions off), where the clock is what shows it: a document captured
+more than a minute into the item and offered while the player is back inside the
+item's first minute belongs to the item that started after the capture. The same
+rules that judge an arriving document judge a held one, and the event log says
+which document was adopted and why (`held-document-adopted`), that it is the
+track already on screen and so was dropped (`held-document-dropped`), that it
+belongs to the episode LST has left (`held-document-other-episode`), or that it
+was too old to be this episode's (`held-document-stale`).
+
+**A track the player contradicts is not trusted again by silence.** LST renders a
+captured track from the clock and uses the line the player draws only to confirm
+it. A pause between lines is not a line that agrees with the track, so a
+contradicted track stays contradicted until the player draws a line it holds —
+which is what keeps the previous episode's cues from coming back on screen in the
+gaps of the next episode.
 
 **An episode is named the way Prime Video names it.** A Prime Video page can keep
 the series in its address while the player advances from episode to episode, so
@@ -236,49 +248,51 @@ Reopen it any time from **Settings → Advanced → Environment → Reopen setup
 
 For development/testing:
 
-1. Open `about:debugging#/runtime/this-firefox`.
-2. Click **Load Temporary Add-on…**.
-3. Choose this extension's `manifest.json`.
-4. The setup page opens automatically; if it does not, open the extension settings/options.
-5. Confirm the model list and choose an installed Ollama model, then finish setup.
-6. Open a watch page on Netflix or Prime Video and enable the source subtitle track.
-7. Open the extension popup.
-8. Once it says the full subtitle track is captured, click **Precompute episode subtitles**.
+1. Run `npm run prepare:firefox`.
+2. Open `about:debugging#/runtime/this-firefox`.
+3. Click **Load Temporary Add-on…**.
+4. Choose `.firefox-build/manifest.json`.
+5. The setup page opens automatically; if it does not, open the extension settings/options.
+6. Confirm the model list and choose an installed Ollama model, then finish setup.
+7. Open a watch page on Netflix or Prime Video and enable the source subtitle track.
+8. Open the extension popup.
+9. Once it says the full subtitle track is captured, click **Precompute episode subtitles**.
 
 A temporary Firefox add-on is removed when Firefox exits. For permanent personal installation, package/sign it through Mozilla's normal add-on workflow.
 
-Firefox keeps the manifest a copy of an add-on was **loaded** with, and only that manifest decides what the copy may ask for. After changing `manifest.json` (permissions included), press **Reload** on the extension in `about:debugging` — that re-reads the manifest — rather than only expecting the new files to take effect. A copy loaded before LST declared access to Jimaku reports **LST is running from a copy loaded before it declared access to jimaku.cc** when you press Search, and says to reload it.
+Firefox keeps the manifest a copy of an add-on was **loaded** with, and only that manifest decides what the copy may ask for. After changing `src/manifest.json` (permissions included), run `npm run prepare:firefox`, then press **Reload** on the extension in `about:debugging`. A copy loaded before LST declared access to Jimaku reports **LST is running from a copy loaded before it declared access to jimaku.cc** when you press Search, and says to reload it.
 
 ## Install in Chrome / Chromium / Brave
 
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Click **Load unpacked**.
-4. Select this folder.
-5. The setup page opens automatically; if it does not, open the extension's **Details → Extension options**.
-6. Confirm the model list, pick a target language, and finish setup.
-7. Open the service and start an episode.
-8. Enable the source subtitle track.
-9. Open the extension popup.
-10. If the popup says the full track was captured, click **Precompute episode subtitles**.
+1. Run `npm run prepare:chrome`.
+2. Open `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Click **Load unpacked**.
+5. Select `.chrome-build`.
+6. The setup page opens automatically; if it does not, open the extension's **Details → Extension options**.
+7. Confirm the model list, pick a target language, and finish setup.
+8. Open the service and start an episode.
+9. Enable the source subtitle track.
+10. Open the extension popup.
+11. If the popup says the full track was captured, click **Precompute episode subtitles**.
 
 ## How it works
 
 ```text
-playback-site.js
+src/sites/playback-site.js
   └─ which service this page is, and every site-specific fact about it
        │
-       ├─▶ page-hook.js   (page world)
+       ├─▶ src/page/page-hook.js   (page world)
        │     └─ observes fetch/XHR responses for TTML / WebVTT, tagged with the site
        │
-       └─▶ content.js     (isolated world)
+       └─▶ src/content/index.js     (isolated world)
              ├─ parses timed cues
              ├─ syncs cue selection to the active <video>.currentTime
              ├─ renders the overlay
              └─ falls back to the service's rendered subtitle DOM
                     │
                     ▼
-              background.js
+              src/background/index.js
                 ├─ GET /api/tags
                 ├─ POST /api/generate
                 ├─ Jimaku search / file listing / download (only when asked)
@@ -326,24 +340,22 @@ For Japanese → English, `translategemma:4b` is the initial default and a good 
 
 ## Development notes
 
-There is no build step. Reload the unpacked extension after editing files.
+There is no bundler or compilation step. Browser preparation copies `src/` into a target-specific development directory and removes manifest fields unsupported by that browser.
 
 Release packaging generates `.firefox-build` and `.chrome-build` from the shared Chromium/Firefox source manifest. Run `npm run package:all` to validate and build both store-ready archives. The preparation step removes fields unsupported by each target browser without changing unpacked development.
 
 Useful files:
 
-- `playback-site.js`: the playback-site adapter — which service a page belongs to, its playback paths, its video element, its caption rendering, its title wording, and its timed-text shapes
-- `page-hook.js`: timed-text capture, site-aware
-- `content.js`: parser, sync, overlay, realtime/precompute behavior
-- `subtitle-sync.js`: decides which captured cue a rendered line belongs to
-- `subtitle-import.js`: imported subtitles — the two hosts and their request shapes, which file belongs to which episode, the bytes and the SubRip reader, and whether a file needs translating
-- `episode-identity.js`: which names a service actually gave us, and how a cache id or an episode key is written
-- `background.js`: Ollama, DeepSeek, and Gemini clients + cache (uses the standard `browser` API when available, with a `chrome` fallback)
-- `translation-guard.js`: target-language check applied to translations before they are cached
-- `structured-response.js`: recovers the batch JSON from a model response and aligns it back to cues
-- `options.*`: provider/model settings
-- `setup.*`: first-run setup page (auto-opened once on install)
-- `popup.*`: episode status + precompute control
+- `src/sites/`: playback-site detection and adapters
+- `src/page/`: page-world timed-text capture
+- `src/content/`: isolated-world player runtime, overlay, and styles
+- `src/shared/`: pure and cross-context policies, parsing, identity, and translation helpers
+- `src/background/`: provider communication, caching, storage, and message handling
+- `src/ui/`: options, setup, and popup pages
+- `tests/`: runtime and architectural contract tests
+- `scripts/`: build, release, and package tooling
+
+See [the architecture overview](docs/architecture/overview.md) and [site adapter guide](docs/architecture/site-adapters.md).
 
 ## Next improvements
 

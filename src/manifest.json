@@ -1,0 +1,109 @@
+{
+  "manifest_version": 3,
+  "name": "LST — Local Subtitle Translate",
+  "version": "0.6.7",
+  "description": "Translate Netflix and Prime Video subtitles locally with Ollama, or optional DeepSeek and Gemini providers.",
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "64": "assets/icons/icon-64.png",
+    "96": "assets/icons/icon-96.png",
+    "128": "assets/icons/icon-128.png"
+  },
+  "permissions": [
+    "storage",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://www.netflix.com/*",
+    "http://localhost:11434/*",
+    "http://127.0.0.1:11434/*",
+    "https://api.deepseek.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": {
+    "scripts": [
+      "shared/settings-schema.js",
+      "sites/playback-site.js",
+      "shared/episode-identity.js",
+      "shared/subtitle-import.js",
+      "shared/translation-context.js",
+      "shared/translation-guard.js",
+      "shared/structured-response.js",
+      "background/index.js"
+    ],
+    "service_worker": "background/index.js"
+  },
+  "action": {
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "32": "assets/icons/icon-32.png",
+      "48": "assets/icons/icon-48.png",
+      "64": "assets/icons/icon-64.png"
+    },
+    "default_popup": "ui/popup/popup.html",
+    "default_title": "LST — Local Subtitle Translate"
+  },
+  "options_page": "ui/options/options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.netflix.com/*",
+        "https://www.amazon.co.jp/*",
+        "https://www.amazon.com/*",
+        "https://www.primevideo.com/*"
+      ],
+      "js": [
+        "sites/playback-site.js",
+        "page/page-hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.netflix.com/*",
+        "https://www.amazon.co.jp/*",
+        "https://www.amazon.com/*",
+        "https://www.primevideo.com/*"
+      ],
+      "css": [
+        "content/styles.css"
+      ],
+      "js": [
+        "sites/playback-site.js",
+        "shared/settings-schema.js",
+        "content/capture-bridge.js",
+        "shared/playback-policy.js",
+        "shared/episode-identity.js",
+        "shared/subtitle-import.js",
+        "shared/translation-context.js",
+        "shared/subtitle-sync.js",
+        "shared/translation-coordinator.js",
+        "content/index.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "lst-local-subtitle-translate@darlinggoose",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "websiteContent"
+        ]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  },
+  "short_name": "LST",
+  "optional_host_permissions": [
+    "https://jimaku.cc/*",
+    "https://www.subtitlebot.com/*"
+  ]
+}
