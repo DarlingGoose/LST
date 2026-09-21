@@ -856,9 +856,12 @@ function translate(items, contextItems, contextLevel) {
 
 const settingsSchemaSource = await read("settings-schema.js");
 const contentSource = await read("content.js");
+const subtitleParserSource = await read("subtitle-parser.js");
 const syncSource = await read("subtitle-sync.js");
 const identitySource = await read("episode-identity.js");
 const playbackSiteSource = await read("playback-site.js");
+const netflixSiteSource = await read("netflix.js");
+const primeVideoSiteSource = await read("prime-video.js");
 const coordinatorSource = await read("translation-coordinator.js");
 
 // Three lines of one scene, a silence of almost three minutes, then the scene
@@ -1161,12 +1164,15 @@ function createContentHarness({
 
   vm.runInContext(settingsSchemaSource, context, { filename: "settings-schema.js" });
   vm.runInContext(playbackSiteSource, context, { filename: "playback-site.js" });
+  vm.runInContext(netflixSiteSource, context, { filename: "netflix.js" });
+  vm.runInContext(primeVideoSiteSource, context, { filename: "prime-video.js" });
   vm.runInContext(identitySource, context, { filename: "episode-identity.js" });
   vm.runInContext(syncSource, context, { filename: "subtitle-sync.js" });
   vm.runInContext(coordinatorSource, context, { filename: "translation-coordinator.js" });
   if (withContextModule) {
     vm.runInContext(contextSource, context, { filename: "translation-context.js" });
   }
+  vm.runInContext(subtitleParserSource, context, { filename: "subtitle-parser.js" });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 
   const debugEvents = () => {

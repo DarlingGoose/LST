@@ -999,7 +999,12 @@ function functionSource(source, name) {
   assert.match(listSource, /cacheGroupName\(episodes\)/);
 
   const grouping = vm.createContext({});
-  for (const name of ["playback-site.js", "episode-identity.js"]) {
+  for (const name of [
+    "playback-site.js",
+    "netflix.js",
+    "prime-video.js",
+    "episode-identity.js",
+  ]) {
     vm.runInContext(
       await fs.readFile(new URL(repositoryPath(name), import.meta.url), "utf8"),
       grouping,

@@ -4,7 +4,7 @@ import vm from "node:vm";
 import { repositoryPath } from "./helpers/repository-path.mjs";
 
 const read = (file) => fs.readFile(new URL(repositoryPath(file), import.meta.url), "utf8");
-const [html, script, background, css, prepare, verifyPackage, packageJson, playbackSite, settingsSchema] =
+const [html, script, background, css, prepare, verifyPackage, packageJson, playbackSite, netflixSite, primeVideoSite, settingsSchema] =
   await Promise.all([
     read("setup.html"),
     read("setup.js"),
@@ -14,6 +14,8 @@ const [html, script, background, css, prepare, verifyPackage, packageJson, playb
     read("scripts/verify-package.mjs"),
     read("package.json"),
     read("playback-site.js"),
+    read("netflix.js"),
+    read("prime-video.js"),
     read("settings-schema.js")
   ]);
 
@@ -244,6 +246,8 @@ const context = vm.createContext({
 
 vm.runInContext(settingsSchema, context, { filename: "settings-schema.js" });
 vm.runInContext(playbackSite, context, { filename: "playback-site.js" });
+vm.runInContext(netflixSite, context, { filename: "netflix.js" });
+vm.runInContext(primeVideoSite, context, { filename: "prime-video.js" });
 vm.runInContext(script, context);
 const readState = (expression) => vm.runInContext(expression, context);
 const settle = async () => {

@@ -9,6 +9,8 @@ try {
     importScripts(
       "../shared/settings-schema.js",
       "../sites/playback-site.js",
+      "../sites/netflix.js",
+      "../sites/prime-video.js",
       "../shared/episode-identity.js",
       "../shared/subtitle-import.js",
       "../shared/translation-context.js",

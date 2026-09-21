@@ -3,6 +3,10 @@
   const SOURCE = "lst-local-subtitle-translate";
   const settingsSchema = globalThis.LSTSettingsSchema;
   if (!settingsSchema) throw new Error("settings-schema.js must load before content.js");
+  const subtitleParser = globalThis.LSTSubtitleParser;
+  if (!subtitleParser) {
+    throw new Error("subtitle-parser.js must load before content.js");
+  }
   const DEFAULTS = settingsSchema.DEFAULTS;
   const RENDERED_SUBTITLE_STABILITY_MS = 90;
   const TIMED_TRACK_MISMATCH_GRACE_MS = 300;
@@ -1132,166 +1136,10 @@
       : 100;
   }
 
-  function parseClock(value, tickRate = 10_000_000) {
-    if (!value) return NaN;
-    value = String(value).trim();
-
-    if (/^\d+(?:\.\d+)?t$/.test(value)) {
-      return Number(value.slice(0, -1)) / tickRate;
-    }
-    if (/^\d+(?:\.\d+)?ms$/.test(value)) {
-      return Number(value.slice(0, -2)) / 1000;
-    }
-    if (/^\d+(?:\.\d+)?s$/.test(value)) {
-      return Number(value.slice(0, -1));
-    }
-    if (/^\d+(?:\.\d+)?m$/.test(value)) {
-      return Number(value.slice(0, -1)) * 60;
-    }
-    if (/^\d+(?:\.\d+)?h$/.test(value)) {
-      return Number(value.slice(0, -1)) * 3600;
-    }
-
-    const match = value.match(/^(\d+):(\d{2}):(\d{2})(?:[.,](\d+))?$/);
-    if (match) {
-      const [, h, m, s, frac = "0"] = match;
-      return (
-        Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(`0.${frac}`)
-      );
-    }
-
-    return Number(value);
-  }
-
-  function extractNodeText(node) {
-    if (!node) return "";
-    const clone = node.cloneNode(true);
-    for (const br of clone.querySelectorAll("br")) {
-      br.replaceWith("\n");
-    }
-    return normalizeText(clone.textContent || "");
-  }
-
-  function parseTtml(text) {
-    const doc = new DOMParser().parseFromString(text, "application/xml");
-    if (doc.querySelector("parsererror")) return [];
-
-    const tt = doc.documentElement;
-    const tickRate = Number(
-      tt.getAttribute("ttp:tickRate") ||
-        tt.getAttribute("tickRate") ||
-        10_000_000,
-    );
-
-    const nodes = [...doc.getElementsByTagNameNS("*", "p")];
-    return nodes
-      .map((node, index) => {
-        const start = parseClock(node.getAttribute("begin"), tickRate);
-        let end = parseClock(node.getAttribute("end"), tickRate);
-        const duration = parseClock(node.getAttribute("dur"), tickRate);
-
-        if (
-          !Number.isFinite(end) &&
-          Number.isFinite(start) &&
-          Number.isFinite(duration)
-        ) {
-          end = start + duration;
-        }
-
-        return {
-          id:
-            node.getAttribute("xml:id") ||
-            node.getAttribute("id") ||
-            String(index),
-          start,
-          end,
-          text: extractNodeText(node),
-        };
-      })
-      .filter(
-        (cue) =>
-          Number.isFinite(cue.start) &&
-          Number.isFinite(cue.end) &&
-          cue.end > cue.start &&
-          cue.text,
-      );
-  }
-
-  function parseVttTimestamp(value) {
-    const parts = value.trim().split(":").map(Number);
-    if (parts.some(Number.isNaN)) return NaN;
-    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return NaN;
-  }
-
-  function parseVtt(text) {
-    const lines = text.replace(/\r/g, "").split("\n");
-    const result = [];
-    let i = 0;
-
-    while (i < lines.length) {
-      let line = lines[i].trim();
-
-      if (!line || line === "WEBVTT" || line.startsWith("NOTE")) {
-        i++;
-        continue;
-      }
-
-      let id = "";
-      if (
-        !line.includes("-->") &&
-        i + 1 < lines.length &&
-        lines[i + 1].includes("-->")
-      ) {
-        id = line;
-        i++;
-        line = lines[i].trim();
-      }
-
-      const match = line.match(/^(\S+)\s+-->\s+(\S+)/);
-      if (!match) {
-        i++;
-        continue;
-      }
-
-      const start = parseVttTimestamp(match[1].replace(",", "."));
-      const end = parseVttTimestamp(match[2].replace(",", "."));
-      i++;
-
-      const payload = [];
-      while (i < lines.length && lines[i].trim() !== "") {
-        payload.push(lines[i]);
-        i++;
-      }
-
-      const cueText = normalizeText(payload.join("\n").replace(/<[^>]+>/g, ""));
-
-      if (Number.isFinite(start) && Number.isFinite(end) && cueText) {
-        result.push({
-          id: id || String(result.length),
-          start,
-          end,
-          text: cueText,
-        });
-      }
-    }
-
-    return result;
-  }
-
-  // Subtitle formats belong to the module that knows where an imported file
-  // comes from, so the same SubRip file is read the same way whether the player
-  // delivered it or a viewer imported it. The parsers here stay the ones that
-  // need a DOM: TTML and WebVTT arrive from the service and are read as
-  // documents.
   function parseSubtitleDocument(text) {
-    const trimmed = String(text || "").trim();
-    if (/^WEBVTT\b/i.test(trimmed)) return parseVtt(trimmed);
-    if (/<tt[\s>]/i.test(trimmed)) return parseTtml(trimmed);
-    const api = subtitleImport();
-    if (api?.parseSrt && /-->/.test(trimmed)) return api.parseSrt(trimmed);
-    return [];
+    return subtitleParser.parseSubtitleDocument(text, {
+      parseSrt: subtitleImport()?.parseSrt,
+    });
   }
 
   async function loadSettings() {

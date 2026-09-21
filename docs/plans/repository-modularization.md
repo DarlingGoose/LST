@@ -21,10 +21,11 @@ changing behavior, permissions, cache formats, or privacy guarantees.
   filename chain in `package.json`.
 - [x] Validate site adapter registration and manifest/adapter host drift.
 - [x] Document execution contexts and the service-adapter contract.
+- [x] Extract state-free TTML/WebVTT document parsing from the content runtime.
 
 ## Remaining runtime extraction
 
-- [ ] Move built-in Netflix and Prime Video adapter definitions into separate
+- [x] Move built-in Netflix and Prime Video adapter definitions into separate
   files registered through the common site registry.
 - [ ] Introduce an explicit player-session object for mutable content state.
 - [ ] Extract content track capture, synchronization, translation, imported

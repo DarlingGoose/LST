@@ -13,11 +13,15 @@ const read = (name) =>
   fs.readFile(new URL(repositoryPath(name), import.meta.url), "utf8");
 
 const playbackSiteSource = await read("playback-site.js");
+const netflixSiteSource = await read("netflix.js");
+const primeVideoSiteSource = await read("prime-video.js");
 const identitySource = await read("episode-identity.js");
 const importSource = await read("subtitle-import.js");
 const manifest = JSON.parse(await read("manifest.json"));
 
 vm.runInContext(playbackSiteSource, context, { filename: "playback-site.js" });
+vm.runInContext(netflixSiteSource, context, { filename: "netflix.js" });
+vm.runInContext(primeVideoSiteSource, context, { filename: "prime-video.js" });
 vm.runInContext(identitySource, context, { filename: "episode-identity.js" });
 vm.runInContext(importSource, context, { filename: "subtitle-import.js" });
 

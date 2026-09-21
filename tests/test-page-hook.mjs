@@ -5,10 +5,13 @@ import { repositoryPath } from "./helpers/repository-path.mjs";
 
 const read = (name) => fs.readFile(new URL(repositoryPath(name), import.meta.url), "utf8");
 const playbackSiteSource = await read("playback-site.js");
+const netflixSiteSource = await read("netflix.js");
+const primeVideoSiteSource = await read("prime-video.js");
 const pageHookSource = await read("page-hook.js");
 const captureBridgeSource = await read("capture-bridge.js");
 const settingsSchemaSource = await read("settings-schema.js");
 const contentSource = await read("content.js");
+const subtitleParserSource = await read("subtitle-parser.js");
 const identitySource = await read("episode-identity.js");
 const translationContextSource = await read("translation-context.js");
 
@@ -170,6 +173,8 @@ function createPageHarness(href) {
   context.location = locationFor(href);
   vm.runInContext(settingsSchemaSource, context, { filename: "settings-schema.js" });
   vm.runInContext(playbackSiteSource, context, { filename: "playback-site.js" });
+  vm.runInContext(netflixSiteSource, context, { filename: "netflix.js" });
+  vm.runInContext(primeVideoSiteSource, context, { filename: "prime-video.js" });
   vm.runInContext(pageHookSource, context, { filename: "page-hook.js" });
 
   return {
@@ -876,8 +881,11 @@ function createContentHarness(href, { player = false } = {}) {
   const windowRef = vm.runInContext("globalThis", context);
   vm.runInContext(settingsSchemaSource, context, { filename: "settings-schema.js" });
   vm.runInContext(playbackSiteSource, context, { filename: "playback-site.js" });
+  vm.runInContext(netflixSiteSource, context, { filename: "netflix.js" });
+  vm.runInContext(primeVideoSiteSource, context, { filename: "prime-video.js" });
   vm.runInContext(identitySource, context, { filename: "episode-identity.js" });
   vm.runInContext(translationContextSource, context, { filename: "translation-context.js" });
+  vm.runInContext(subtitleParserSource, context, { filename: "subtitle-parser.js" });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 
   return {

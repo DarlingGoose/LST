@@ -26,6 +26,8 @@
     "scripts": [
       "shared/settings-schema.js",
       "sites/playback-site.js",
+      "sites/netflix.js",
+      "sites/prime-video.js",
       "shared/episode-identity.js",
       "shared/subtitle-import.js",
       "shared/translation-context.js",
@@ -56,6 +58,8 @@
       ],
       "js": [
         "sites/playback-site.js",
+        "sites/netflix.js",
+        "sites/prime-video.js",
         "page/page-hook.js"
       ],
       "run_at": "document_start",
@@ -73,6 +77,8 @@
       ],
       "js": [
         "sites/playback-site.js",
+        "sites/netflix.js",
+        "sites/prime-video.js",
         "shared/settings-schema.js",
         "content/capture-bridge.js",
         "shared/playback-policy.js",
@@ -81,6 +87,7 @@
         "shared/translation-context.js",
         "shared/subtitle-sync.js",
         "shared/translation-coordinator.js",
+        "content/subtitle-parser.js",
         "content/index.js"
       ],
       "run_at": "document_start",

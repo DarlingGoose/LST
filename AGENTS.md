@@ -373,7 +373,8 @@ An optional host must not be added to `host_permissions` as a convenience.
 
 ## Supported services
 
-Two services ship today, and both are declared in `playback-site.js`:
+Two services ship today. The registry is `src/sites/playback-site.js`, with
+adapters in `src/sites/netflix.js` and `src/sites/prime-video.js`:
 
 | Service | Hosts | Realtime | Full-track capture |
 | --- | --- | --- | --- |

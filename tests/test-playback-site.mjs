@@ -8,9 +8,13 @@ import { repositoryPath } from "./helpers/repository-path.mjs";
 
 const read = (name) => fs.readFile(new URL(repositoryPath(name), import.meta.url), "utf8");
 const playbackSiteSource = await read("playback-site.js");
+const netflixSiteSource = await read("netflix.js");
+const primeVideoSiteSource = await read("prime-video.js");
 
 const context = vm.createContext({});
 vm.runInContext(playbackSiteSource, context, { filename: "playback-site.js" });
+vm.runInContext(netflixSiteSource, context, { filename: "netflix.js" });
+vm.runInContext(primeVideoSiteSource, context, { filename: "prime-video.js" });
 const site = context.LSTPlaybackSite;
 
 assert.deepEqual([...site.SITE_IDS], ["netflix", "primevideo"]);
@@ -22,6 +26,10 @@ assert.deepEqual([...site.SITE_IDS], ["netflix", "primevideo"]);
   const registryContext = vm.createContext({});
   vm.runInContext(playbackSiteSource, registryContext, {
     filename: "playback-site.js",
+  });
+  vm.runInContext(netflixSiteSource, registryContext, { filename: "netflix.js" });
+  vm.runInContext(primeVideoSiteSource, registryContext, {
+    filename: "prime-video.js",
   });
   const registry = registryContext.LSTPlaybackSite;
   const method = () => ({});
@@ -250,7 +258,26 @@ assert.equal(site.activeVideo(undefined).reason, "no-video-element");
 
   assert.equal(site.videoHasStarted(null), false);
   assert.equal(site.videoHasStarted({}), false);
-  assert.equal(site.videoHasStarted({ readyState: 1 }), true);
+assert.equal(site.videoHasStarted({ readyState: 1 }), true);
+}
+
+// Prime exposes the service-provided episode name in the player heading. The
+// adapter owns both the private selector and the complete text, including its
+// leading list number and Japanese episode wording.
+{
+  const heading = { id: "episode-heading" };
+  const document = {
+    querySelectorAll(selector) {
+      return selector === "h3.hGJxLu" ? [heading] : [];
+    },
+  };
+  const prime = site.SITES.primevideo;
+  assert.ok(
+    prime.titleSelectors.episode.includes(
+      "h3.hGJxLu > span._36qUej.hGJxLu",
+    ),
+  );
+  assert.deepEqual([...prime.titleElements(document).elements], [heading]);
 }
 
 // --- How a service renders a subtitle line ----------------------------------
@@ -720,18 +747,24 @@ for (const pattern of contentScriptMatches) {
 
 // Both worlds get the adapter, and the isolated world gets it before content.js.
 assert.equal(manifest.content_scripts.length, 2);
+const siteModules = [
+  "sites/playback-site.js",
+  "sites/netflix.js",
+  "sites/prime-video.js",
+];
 for (const entry of manifest.content_scripts) {
-  assert.ok(
-    entry.js.includes("sites/playback-site.js"),
-    "a content script entry is missing playback-site.js",
-  );
+  for (const module of siteModules) {
+    assert.ok(entry.js.includes(module), `a content script entry is missing ${module}`);
+  }
   const reader = entry.js.includes("content/index.js")
     ? "content/index.js"
     : "page/page-hook.js";
-  assert.ok(
-    entry.js.indexOf("sites/playback-site.js") < entry.js.indexOf(reader),
-    `playback-site.js must load before ${reader}`,
-  );
+  for (const module of siteModules) {
+    assert.ok(
+      entry.js.indexOf(module) < entry.js.indexOf(reader),
+      `${module} must load before ${reader}`,
+    );
+  }
 }
 const isolatedScripts = manifest.content_scripts.find((entry) =>
   entry.js.includes("content/index.js"),
@@ -746,12 +779,14 @@ assert.ok(
   isolatedScripts.indexOf("shared/playback-policy.js") < isolatedScripts.indexOf("content/index.js"),
   "playback-policy.js must load before content.js",
 );
-assert.ok(manifest.background.scripts.includes("sites/playback-site.js"));
-assert.ok(
-  manifest.background.scripts.indexOf("sites/playback-site.js") <
-    manifest.background.scripts.indexOf("background/index.js"),
-  "playback-site.js must load before background.js",
-);
+for (const module of siteModules) {
+  assert.ok(manifest.background.scripts.includes(module));
+  assert.ok(
+    manifest.background.scripts.indexOf(module) <
+      manifest.background.scripts.indexOf("background/index.js"),
+    `${module} must load before background.js`,
+  );
+}
 assert.match(
   readme,
   /Prime Video/,
@@ -774,6 +809,8 @@ for (const siteId of site.SITE_IDS) {
 // Packaging copies the source tree and verifies the adapter entry explicitly.
 assert.match(prepareBrowser, /readdir\("src"\)/);
 assert.match(verifyPackage, /"sites\/playback-site\.js"/);
+assert.match(verifyPackage, /"sites\/netflix\.js"/);
+assert.match(verifyPackage, /"sites\/prime-video\.js"/);
 assert.match(
   packageJson,
   /node scripts\/check-syntax\.mjs/,

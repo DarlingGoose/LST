@@ -16,6 +16,18 @@ const playbackSiteSource = await fs.readFile(
   new URL("../src/sites/playback-site.js", import.meta.url),
   "utf8",
 );
+const netflixSiteSource = await fs.readFile(
+  new URL("../src/sites/netflix.js", import.meta.url),
+  "utf8",
+);
+const primeVideoSiteSource = await fs.readFile(
+  new URL("../src/sites/prime-video.js", import.meta.url),
+  "utf8",
+);
+const subtitleParserSource = await fs.readFile(
+  new URL("../src/content/subtitle-parser.js", import.meta.url),
+  "utf8",
+);
 const identityContext = vm.createContext({});
 vm.runInContext(identitySource, identityContext, {
   filename: "episode-identity.js",
@@ -994,11 +1006,14 @@ function createHarness({
 
   vm.runInContext(settingsSchemaSource, context, { filename: "settings-schema.js" });
   vm.runInContext(playbackSiteSource, context, { filename: "playback-site.js" });
+  vm.runInContext(netflixSiteSource, context, { filename: "netflix.js" });
+  vm.runInContext(primeVideoSiteSource, context, { filename: "prime-video.js" });
   vm.runInContext(identitySource, context, { filename: "episode-identity.js" });
   vm.runInContext(syncSource, context, { filename: "subtitle-sync.js" });
   vm.runInContext(translationContextSource, context, {
     filename: "translation-context.js",
   });
+  vm.runInContext(subtitleParserSource, context, { filename: "subtitle-parser.js" });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 
   const debugEvents = () => {
