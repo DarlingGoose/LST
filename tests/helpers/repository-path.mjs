@@ -5,6 +5,7 @@ const extensionPaths = Object.freeze({
   "subtitle-parser.js": "src/content/subtitle-parser.js",
   "session-lifecycle.js": "src/content/session-lifecycle.js",
   "captured-track-lifecycle.js": "src/content/captured-track-lifecycle.js",
+  "timed-track-lifecycle.js": "src/content/timed-track-lifecycle.js",
   "styles.css": "src/content/styles.css",
   "page-hook.js": "src/page/page-hook.js",
   "playback-site.js": "src/sites/playback-site.js",

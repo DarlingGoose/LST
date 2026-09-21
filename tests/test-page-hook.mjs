@@ -14,6 +14,7 @@ const contentSource = await read("content.js");
 const subtitleParserSource = await read("subtitle-parser.js");
 const sessionLifecycleSource = await read("session-lifecycle.js");
 const capturedTrackLifecycleSource = await read("captured-track-lifecycle.js");
+const timedTrackLifecycleSource = await read("timed-track-lifecycle.js");
 const identitySource = await read("episode-identity.js");
 const translationContextSource = await read("translation-context.js");
 
@@ -891,6 +892,9 @@ function createContentHarness(href, { player = false } = {}) {
   vm.runInContext(sessionLifecycleSource, context, { filename: "session-lifecycle.js" });
   vm.runInContext(capturedTrackLifecycleSource, context, {
     filename: "captured-track-lifecycle.js",
+  });
+  vm.runInContext(timedTrackLifecycleSource, context, {
+    filename: "timed-track-lifecycle.js",
   });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 

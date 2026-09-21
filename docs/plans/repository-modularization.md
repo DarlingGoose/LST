@@ -26,14 +26,16 @@ changing behavior, permissions, cache formats, or privacy guarantees.
   transition history into a tested lifecycle state module.
 - [x] Extract the captured-track handoff slot and its stale/ownership/adoption
   decisions into a tested lifecycle state module.
+- [x] Extract timed-track verification, mismatch, anchoring, and subtitle-gap
+  state into a tested lifecycle module.
 
 ## Remaining runtime extraction
 
 - [x] Move built-in Netflix and Prime Video adapter definitions into separate
   files registered through the common site registry.
 - [ ] Introduce an explicit player-session object for mutable content state.
-- [ ] Extract content synchronization, translation, imported track, rendering,
-  controls, and diagnostics one area at a time.
+- [ ] Extract content translation, imported track, rendering, controls, and
+  diagnostics one area at a time.
 - [ ] Extract background providers, cache repository, import service,
   diagnostics, and message routing.
 - [ ] Split the options page by card/responsibility and share page utilities

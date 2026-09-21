@@ -37,6 +37,10 @@ const capturedTrackLifecycleSource = await fs.readFile(
   new URL("../src/content/captured-track-lifecycle.js", import.meta.url),
   "utf8",
 );
+const timedTrackLifecycleSource = await fs.readFile(
+  new URL("../src/content/timed-track-lifecycle.js", import.meta.url),
+  "utf8",
+);
 const playbackPolicySource = await fs.readFile(
   new URL("../src/shared/playback-policy.js", import.meta.url),
   "utf8",
@@ -558,7 +562,7 @@ const contentSource = await fs.readFile(
 );
 assert.match(contentSource, /LSTSubtitleSync/);
 assert.match(contentSource, /api\.resolveCue\(cues, text, expectedTime, \{/);
-assert.match(contentSource, /trustTime: timedTrackSyncState === "verified"/);
+assert.match(contentSource, /trustTime: timedTrackLifecycle\.verified/);
 assert.doesNotMatch(
   contentSource,
   /findUniqueCueMatchingSimplifiedText|findUniqueSimplifiedCue/,
@@ -569,7 +573,7 @@ assert.match(
   /api\.resolveTrackDocument\(existingCues, incomingCues, \{/,
   "captured documents must be classified by the matching module",
 );
-assert.match(contentSource, /trustExisting: timedTrackSyncState === "verified"/);
+assert.match(contentSource, /trustExisting: timedTrackLifecycle\.verified/);
 assert.match(contentSource, /"subtitle-track-kept"/);
 assert.doesNotMatch(
   contentSource,
@@ -606,6 +610,11 @@ assert.match(
   contentSource,
   /"timed-track-mismatch-idle"/,
   "a gap in what the player draws must be reported without resolving the mismatch",
+);
+assert.match(
+  timedTrackLifecycleSource,
+  /Silence cannot resolve a confirmed mismatch/,
+  "the lifecycle must keep a contradicted track untrusted through subtitle gaps",
 );
 assert.doesNotMatch(
   contentSource,
@@ -1004,6 +1013,9 @@ function createHarness(
   vm.runInContext(sessionLifecycleSource, context, { filename: "session-lifecycle.js" });
   vm.runInContext(capturedTrackLifecycleSource, context, {
     filename: "captured-track-lifecycle.js",
+  });
+  vm.runInContext(timedTrackLifecycleSource, context, {
+    filename: "timed-track-lifecycle.js",
   });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 

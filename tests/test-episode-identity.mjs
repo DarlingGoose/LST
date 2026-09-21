@@ -36,6 +36,10 @@ const capturedTrackLifecycleSource = await fs.readFile(
   new URL("../src/content/captured-track-lifecycle.js", import.meta.url),
   "utf8",
 );
+const timedTrackLifecycleSource = await fs.readFile(
+  new URL("../src/content/timed-track-lifecycle.js", import.meta.url),
+  "utf8",
+);
 const identityContext = vm.createContext({});
 vm.runInContext(identitySource, identityContext, {
   filename: "episode-identity.js",
@@ -1025,6 +1029,9 @@ function createHarness({
   vm.runInContext(sessionLifecycleSource, context, { filename: "session-lifecycle.js" });
   vm.runInContext(capturedTrackLifecycleSource, context, {
     filename: "captured-track-lifecycle.js",
+  });
+  vm.runInContext(timedTrackLifecycleSource, context, {
+    filename: "timed-track-lifecycle.js",
   });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 

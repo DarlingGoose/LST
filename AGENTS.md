@@ -212,6 +212,12 @@ Important files:
   - Pure state: parsing, DOM reads, diagnostics, and installing the chosen track
     remain effects in `content/index.js`.
 
+- `src/content/timed-track-lifecycle.js`
+  - Owns whether the captured timeline is unverified, verified, or contradicted;
+    its automatic offset; mismatch grace windows and ids; and the no-cue timer.
+  - Silence reports and ends a pending mismatch window but never verifies a
+    contradicted track. Only a matching rendered line can do that.
+
 - `src/page/page-hook.js`
   - Runs in the page context.
   - Observes Netflix fetch/XHR traffic for subtitle/timed-text responses.

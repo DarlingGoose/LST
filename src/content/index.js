@@ -18,9 +18,15 @@
   }
   const capturedTrackLifecycle =
     capturedTrackLifecycleApi.createCapturedTrackLifecycle();
+  const timedTrackLifecycleApi = globalThis.LSTTimedTrackLifecycle;
+  if (!timedTrackLifecycleApi) {
+    throw new Error("timed-track-lifecycle.js must load before content.js");
+  }
+  const timedTrackLifecycle = timedTrackLifecycleApi.createTimedTrackLifecycle({
+    mismatchGraceMs: 300,
+  });
   const DEFAULTS = settingsSchema.DEFAULTS;
   const RENDERED_SUBTITLE_STABILITY_MS = 90;
-  const TIMED_TRACK_MISMATCH_GRACE_MS = 300;
   const DEBUG_FLUSH_MS = 500;
   const SHOW_SETTING_NAMES = new Set(settingsSchema.PER_SHOW_NAMES);
 
@@ -80,14 +86,6 @@
   let fallbackTimer = null;
   let renderedSubtitleCandidate = "";
   let renderedSubtitleCandidateSince = 0;
-  let timedTrackSyncState = "unverified";
-  let automaticCueTimeOffsetSeconds = 0;
-  let lastRenderedSyncText = "";
-  let timedTrackMismatchSince = 0;
-  let lastTimedTrackMismatch = "";
-  let timedTrackMismatchSequence = 0;
-  let activeTimedTrackMismatchId = 0;
-  let noTimedCueSince = 0;
   let lastTitleMetadataRefreshAt = 0;
   let titleMetadataRefreshTimer = null;
 
@@ -2290,7 +2288,7 @@
       `playback    ${currentStatus.playbackMode || "waiting"}`,
       `video       ${Number(currentStatus.videoTime || 0).toFixed(2)}s`,
       `sync offset ${clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0)}ms · file ${fileTimingOffsetMs()}ms`,
-      `track sync  ${timedTrackSyncState} · auto ${automaticCueTimeOffsetSeconds.toFixed(2)}s`,
+      `track sync  ${timedTrackLifecycle.state} · auto ${timedTrackLifecycle.automaticOffsetSeconds.toFixed(2)}s`,
       `cue         ${currentStatus.activeCueStart == null ? "—" : `${Number(currentStatus.activeCueStart).toFixed(2)}–${Number(currentStatus.activeCueEnd).toFixed(2)}s`}`,
       `in-flight   ${translationCoordinator?.inFlight.size || 0}`,
       `source      ${shortUrl(cueSourceUrl)}`,
@@ -2638,7 +2636,7 @@
     const api = globalThis.LSTSubtitleSync;
     if (api?.resolveCue) {
       return api.resolveCue(cues, text, expectedTime, {
-        trustTime: timedTrackSyncState === "verified",
+        trustTime: timedTrackLifecycle.verified,
       });
     }
     return findCueMatchingComparableText(text, expectedTime);
@@ -2717,7 +2715,7 @@
     const api = globalThis.LSTSubtitleSync;
     if (api?.resolveTrackDocument) {
       return api.resolveTrackDocument(existingCues, incomingCues, {
-        trustExisting: timedTrackSyncState === "verified",
+        trustExisting: timedTrackLifecycle.verified,
         renderedText: renderedText,
       });
     }
@@ -2743,7 +2741,7 @@
   }
 
   function naturalSubtitleLookupTime(videoTime) {
-    return Number(videoTime) + automaticCueTimeOffsetSeconds;
+    return Number(videoTime) + timedTrackLifecycle.automaticOffsetSeconds;
   }
 
   // The correction that applies right now: the global setting, which the
@@ -2884,7 +2882,9 @@
       trackCueCount: cues.length,
       naturalLookupMs: Math.round(naturalTime * 1000),
       userTimingOffsetMs: clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0),
-      automaticTimingOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
+      automaticTimingOffsetMs: Math.round(
+        timedTrackLifecycle.automaticOffsetSeconds * 1000,
+      ),
       matchQuality: matchQuality || "none",
       exactTrackMatch: matchQuality === "exact",
       ...matchResolutionDiagnostics(resolution),
@@ -2930,41 +2930,35 @@
       // exactly what a viewer sees as the old subtitles playing on the next
       // episode. The mismatch is reported as idle, and it keeps its id: a later
       // line is what resolves it.
-      if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
+      const idle = timedTrackLifecycle.noteIdle(performance.now());
+      if (idle.reported) {
         logDiagnostic("info", "synchronization", "timed-track-mismatch-idle", {
-          mismatchId: activeTimedTrackMismatchId,
+          mismatchId: idle.mismatchId,
           outcome: "no-line-drawn",
-          durationMs: timedTrackMismatchSince
-            ? Math.round(performance.now() - timedTrackMismatchSince)
-            : null,
-          previousReason: lastTimedTrackMismatch || "confirmed-mismatch",
+          durationMs: idle.durationMs,
+          previousReason: idle.previousReason,
         }, naturalMatch ? cueKey(naturalMatch.cue) : "");
-        timedTrackMismatchSince = 0;
-        lastTimedTrackMismatch = "";
       }
-      return timedTrackSyncState === "verified";
+      return idle.verified;
     }
 
     if (
       naturalMatch &&
       subtitleTextsMatch(naturalMatch.cue.text, renderedText)
     ) {
-      if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
+      const transition = timedTrackLifecycle.verify(
+        renderedText,
+        performance.now(),
+      );
+      if (transition.resolved) {
         logDiagnostic("info", "synchronization", "timed-track-mismatch-resolved", {
-          mismatchId: activeTimedTrackMismatchId,
+          mismatchId: transition.resolved.mismatchId,
           outcome: "exact-match",
-          durationMs: timedTrackMismatchSince
-            ? Math.round(performance.now() - timedTrackMismatchSince)
-            : null,
-          previousReason: lastTimedTrackMismatch || "confirmed-mismatch",
+          durationMs: transition.resolved.durationMs,
+          previousReason: transition.resolved.previousReason,
           renderedTextId: diagnosticTextId(renderedText),
         }, cueKey(naturalMatch.cue));
       }
-      timedTrackSyncState = "verified";
-      lastRenderedSyncText = renderedText;
-      timedTrackMismatchSince = 0;
-      lastTimedTrackMismatch = "";
-      activeTimedTrackMismatchId = 0;
       return true;
     }
 
@@ -2986,18 +2980,21 @@
       approximatedCue &&
       approximatedCue.index === naturalMatch.index
     ) {
-      if (timedTrackMismatchSince || timedTrackSyncState === "mismatch") {
+      const previousRenderedText = timedTrackLifecycle.lastRenderedText;
+      const transition = timedTrackLifecycle.verify(
+        renderedText,
+        performance.now(),
+      );
+      if (transition.resolved) {
         logDiagnostic("info", "synchronization", "timed-track-mismatch-resolved", {
-          mismatchId: activeTimedTrackMismatchId,
+          mismatchId: transition.resolved.mismatchId,
           outcome: "formatting-current-cue-match",
-          durationMs: timedTrackMismatchSince
-            ? Math.round(performance.now() - timedTrackMismatchSince)
-            : null,
-          previousReason: lastTimedTrackMismatch || "confirmed-mismatch",
+          durationMs: transition.resolved.durationMs,
+          previousReason: transition.resolved.previousReason,
           ...matchResolutionDiagnostics(approximatedCue),
         }, cueKey(naturalMatch.cue));
       }
-      if (!subtitleTextsMatch(lastRenderedSyncText, renderedText)) {
+      if (!subtitleTextsMatch(previousRenderedText, renderedText)) {
         logDiagnostic("info", "synchronization", "formatting-match-accepted", {
           matchQuality,
           ...matchResolutionDiagnostics(approximatedCue),
@@ -3005,59 +3002,50 @@
           capturedTextLength: normalizeText(naturalMatch.cue.text).length,
         }, cueKey(naturalMatch.cue));
       }
-      timedTrackSyncState = "verified";
-      lastRenderedSyncText = renderedText;
-      timedTrackMismatchSince = 0;
-      lastTimedTrackMismatch = "";
-      activeTimedTrackMismatchId = 0;
       return true;
     }
 
     if (isInterCueGapMatch(matchingCue, naturalTime, naturalMatch)) {
-      timedTrackSyncState = "verified";
-      lastRenderedSyncText = renderedText;
-      timedTrackMismatchSince = 0;
-      lastTimedTrackMismatch = "";
-      activeTimedTrackMismatchId = 0;
+      timedTrackLifecycle.verify(renderedText, performance.now());
       return true;
     }
 
     if (
       matchingCue &&
-      timedTrackSyncState === "unverified"
+      timedTrackLifecycle.state === "unverified"
     ) {
       // Captured subtitle fragments can use a timeline starting at zero even when
       // playback began in the middle of an episode. Anchor that timeline to the
       // line the player is displaying. A later visible line will refine the anchor.
-      automaticCueTimeOffsetSeconds =
-        matchingCue.cue.start + 0.04 - Number(video.currentTime);
-      timedTrackSyncState = "verified";
-      lastRenderedSyncText = renderedText;
-      timedTrackMismatchSince = 0;
-      lastTimedTrackMismatch = "";
+      const transition = timedTrackLifecycle.anchor({
+        renderedText,
+        cueStart: matchingCue.cue.start,
+        videoTime: video.currentTime,
+      });
       logDiagnostic("info", "synchronization", "timed-track-anchored", {
         matchQuality,
         ...matchResolutionDiagnostics(resolution),
-        automaticOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
+        automaticOffsetMs: Math.round(
+          transition.automaticOffsetSeconds * 1000,
+        ),
       }, cueKey(matchingCue.cue));
       return true;
     }
 
-    if (timedTrackSyncState === "verified") {
-      const mismatch = exactMatchingCue
-        ? "known-cue-boundary"
-        : approximatedCue
-          ? "formatting-cue-boundary"
-          : "unknown-text";
+    const mismatch = exactMatchingCue
+      ? "known-cue-boundary"
+      : approximatedCue
+        ? "formatting-cue-boundary"
+        : "unknown-text";
+
+    if (timedTrackLifecycle.verified) {
       const now = performance.now();
-      if (!timedTrackMismatchSince || lastTimedTrackMismatch !== mismatch) {
-        timedTrackMismatchSince = now;
-        lastTimedTrackMismatch = mismatch;
-        activeTimedTrackMismatchId = ++timedTrackMismatchSequence;
+      const pending = timedTrackLifecycle.beginMismatch(mismatch, now);
+      if (pending.started) {
         logDiagnostic("warning", "synchronization", "timed-track-mismatch-started", {
-          mismatchId: activeTimedTrackMismatchId,
+          mismatchId: pending.mismatchId,
           reason: mismatch,
-          graceMs: TIMED_TRACK_MISMATCH_GRACE_MS,
+          graceMs: pending.graceMs,
           ...timedTrackMismatchDiagnostics(
             video,
             renderedText,
@@ -3068,9 +3056,7 @@
           ),
         }, naturalMatch ? cueKey(naturalMatch.cue) : "");
       }
-      if (now - timedTrackMismatchSince < TIMED_TRACK_MISMATCH_GRACE_MS) {
-        return true;
-      }
+      if (pending.withinGrace) return true;
 
       const cueDistance = matchingCue && naturalMatch
         ? Math.abs(matchingCue.index - naturalMatch.index)
@@ -3083,20 +3069,19 @@
         cueDistance > 1 &&
         Math.abs(offsetErrorSeconds) > 2
       ) {
-        const mismatchReason = lastTimedTrackMismatch;
-        const mismatchDurationMs = Math.round(now - timedTrackMismatchSince);
-        const mismatchId = activeTimedTrackMismatchId;
-        automaticCueTimeOffsetSeconds =
-          matchingCue.cue.start + 0.04 - Number(video.currentTime);
-        timedTrackMismatchSince = 0;
-        lastTimedTrackMismatch = "";
-        activeTimedTrackMismatchId = 0;
-        lastRenderedSyncText = renderedText;
+        const transition = timedTrackLifecycle.reanchor({
+          renderedText,
+          cueStart: matchingCue.cue.start,
+          videoTime: video.currentTime,
+          at: now,
+        });
         logDiagnostic("warning", "synchronization", "timed-track-reanchored", {
-          reason: mismatchReason,
-          mismatchId,
-          durationMs: mismatchDurationMs,
-          automaticOffsetMs: Math.round(automaticCueTimeOffsetSeconds * 1000),
+          reason: transition.previousReason,
+          mismatchId: transition.mismatchId,
+          durationMs: transition.durationMs,
+          automaticOffsetMs: Math.round(
+            transition.automaticOffsetSeconds * 1000,
+          ),
           cueDistance: Number.isFinite(cueDistance) ? cueDistance : null,
           matchQuality,
           ...matchResolutionDiagnostics(resolution),
@@ -3105,18 +3090,16 @@
       }
     }
 
-    if (timedTrackSyncState !== "mismatch") {
+    const confirmed = timedTrackLifecycle.confirmMismatch(
+      renderedText,
+      performance.now(),
+    );
+    if (confirmed.newlyConfirmed) {
       logDiagnostic("warning", "synchronization", "timed-track-mismatch-confirmed", {
-        mismatchId: activeTimedTrackMismatchId,
-        reason: exactMatchingCue
-          ? "known-cue-boundary"
-          : approximatedCue
-            ? "formatting-cue-boundary"
-            : "unknown-text",
+        mismatchId: confirmed.mismatchId,
+        reason: mismatch,
         retainedTimedSubtitle: true,
-        durationMs: timedTrackMismatchSince
-          ? Math.round(performance.now() - timedTrackMismatchSince)
-          : null,
+        durationMs: confirmed.durationMs,
         ...timedTrackMismatchDiagnostics(
           video,
           renderedText,
@@ -3127,8 +3110,6 @@
         ),
       }, naturalMatch ? cueKey(naturalMatch.cue) : "");
     }
-    timedTrackSyncState = "mismatch";
-    lastRenderedSyncText = renderedText;
     return false;
   }
 
@@ -3811,13 +3792,7 @@
       pausedCacheNoticeShown = false;
       pausedCacheCompleteNoticeShown = false;
       lastPlaybackWasPaused = false;
-      timedTrackSyncState = "unverified";
-      automaticCueTimeOffsetSeconds = 0;
-      lastRenderedSyncText = "";
-      timedTrackMismatchSince = 0;
-      lastTimedTrackMismatch = "";
-      timedTrackMismatchSequence = 0;
-      activeTimedTrackMismatchId = 0;
+      timedTrackLifecycle.reset({ resetSequence: true });
       lastFallbackText = "";
       renderedSubtitleCandidate = "";
       renderedSubtitleCandidateSince = 0;
@@ -3923,7 +3898,7 @@
       }
       if (
         !renderedObservation.stable &&
-        timedTrackSyncState !== "verified"
+        !timedTrackLifecycle.verified
       ) {
         currentStatus.playbackMode = `waiting for stable ${siteName()} subtitle`;
         updateDebugPanel();
@@ -3948,10 +3923,10 @@
         currentStatus.activeCueStart = null;
         currentStatus.activeCueEnd = null;
         currentStatus.playbackMode = renderedText
-          ? timedTrackSyncState === "mismatch"
+          ? timedTrackLifecycle.mismatched
             ? "DOM fallback (timed track out of sync)"
             : "DOM fallback (unverified timed track)"
-          : timedTrackSyncState === "mismatch"
+          : timedTrackLifecycle.mismatched
             ? "waiting for a line this track holds"
             : "waiting for subtitle sync";
         updateDebugPanel();
@@ -3966,7 +3941,7 @@
     const match = findCueAt(lookupTime);
 
     if (!match) {
-      if (!noTimedCueSince) noTimedCueSince = performance.now();
+      timedTrackLifecycle.noteNoCue(performance.now());
       currentStatus.activeCueStart = null;
       currentStatus.activeCueEnd = null;
       updateDebugPanel();
@@ -3976,7 +3951,7 @@
       if (
         lastRenderedCueKey &&
         !shouldRetainRenderedSubtitle(lastRenderedCueKey, video.currentTime) &&
-        performance.now() - noTimedCueSince > 220 &&
+        timedTrackLifecycle.noCueDuration(performance.now()) > 220 &&
         !findRenderedSubtitle()
       ) {
         removeExpiredRenderedSubtitles(video.currentTime);
@@ -3985,7 +3960,7 @@
       return;
     }
 
-    noTimedCueSince = 0;
+    timedTrackLifecycle.clearNoCue();
     currentStatus.activeCueStart = match.cue.start;
     currentStatus.activeCueEnd = match.cue.end;
     focusTranscriptCue(match);
@@ -4020,7 +3995,7 @@
         translated: displayed,
         naturalEndVideoTime:
           match.cue.end -
-          automaticCueTimeOffsetSeconds +
+          timedTrackLifecycle.automaticOffsetSeconds +
           syncOffsetSeconds(),
         videoTime: video.currentTime,
         source: "timed",
@@ -4173,7 +4148,7 @@
     // player's current cue.
     if (
       video &&
-      timedTrackSyncState !== "mismatch" &&
+      !timedTrackLifecycle.mismatched &&
       validateTimedTrackAgainstRendering(video, text)
     ) {
       return;
@@ -4321,12 +4296,7 @@
     // invalidate the synchronization already confirmed for it, so only
     // a replacement re-derives the timeline.
     if (!decision.union) {
-      timedTrackSyncState = "unverified";
-      automaticCueTimeOffsetSeconds = 0;
-      lastRenderedSyncText = "";
-      timedTrackMismatchSince = 0;
-      lastTimedTrackMismatch = "";
-      activeTimedTrackMismatchId = 0;
+      timedTrackLifecycle.reset();
       translationCoordinator = null;
       removeRenderedSubtitlesBySource("timed", "new-subtitle-track");
     }
@@ -4773,12 +4743,7 @@
     pausedCacheCompleteNoticeShown = false;
     // The file states its own timeline, so there is nothing to synchronize and
     // nothing to auto-align; the viewer's timing offset is the only adjustment.
-    timedTrackSyncState = "verified";
-    automaticCueTimeOffsetSeconds = 0;
-    lastRenderedSyncText = "";
-    timedTrackMismatchSince = 0;
-    lastTimedTrackMismatch = "";
-    activeTimedTrackMismatchId = 0;
+    timedTrackLifecycle.reset({ nextState: "verified" });
     lastRenderedCueKey = "";
     removeRenderedSubtitlesBySource("timed", "imported-track");
     currentStatus.captured = true;
@@ -4833,9 +4798,7 @@
     knownCachedKeys = new Set();
     knownCachedTranslations = new Map();
     pausedCacheFailedKeys = new Set();
-    timedTrackSyncState = "unverified";
-    automaticCueTimeOffsetSeconds = 0;
-    lastRenderedSyncText = "";
+    timedTrackLifecycle.reset();
     currentStatus.captured = false;
     currentStatus.cueCount = 0;
     currentStatus.translatedCount = 0;
@@ -5248,10 +5211,8 @@
     const now = Number(video?.currentTime);
     const decision = capturedTrackLifecycle.offerRestart({ videoTime: now });
     if (decision.action !== "adopt") return false;
-    if (timedTrackSyncState === "verified") {
-      timedTrackSyncState = "unverified";
-      automaticCueTimeOffsetSeconds = 0;
-      lastRenderedSyncText = "";
+    if (timedTrackLifecycle.verified) {
+      timedTrackLifecycle.withdraw();
       logDiagnostic("info", "synchronization", "timed-track-not-the-item", {
         reason: "item-restarted",
         videoTimeMs: decision.details.videoTimeMs,
@@ -5473,7 +5434,7 @@
           : needsTranslation
             ? "target-language-differs"
             : "already-target-language",
-        syncState: timedTrackSyncState,
+        syncState: timedTrackLifecycle.state,
         heldDocument: capturedTrackLifecycle.snapshot().held,
         heldDocumentAgeMs: capturedTrackLifecycle.snapshot().ageMs,
         episodeIdentity: {

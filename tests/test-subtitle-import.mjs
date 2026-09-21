@@ -1286,7 +1286,7 @@ const lookupScript = [
   "let cueTrackKind = 'imported';",
   "let importedTrack = { episodeKey: '8123', timingOffsetMs: 8000 };",
   "let settings = { subtitleTimingOffsetMs: 0 };",
-  "let automaticCueTimeOffsetSeconds = 0;",
+  "let timedTrackLifecycle = { automaticOffsetSeconds: 0 };",
   "let warnedMissingSubtitleImport = false;",
   nestedFunctionSource(contentSource, "clamp"),
   nestedFunctionSource(contentSource, "subtitleImport"),

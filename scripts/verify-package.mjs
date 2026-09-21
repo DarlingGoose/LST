@@ -62,6 +62,7 @@ const required = [
   "content/subtitle-parser.js",
   "content/session-lifecycle.js",
   "content/captured-track-lifecycle.js",
+  "content/timed-track-lifecycle.js",
   "content/styles.css",
   "page/page-hook.js",
   "sites/playback-site.js",
