@@ -10,7 +10,8 @@ manifest fields.
 - `src/background/` owns provider requests, storage, caches, and runtime message
   handling.
 - `src/content/` owns the isolated-world player session, subtitle overlay, and
-  translation scheduling.
+  translation scheduling. Its state-free timed-text parser and playback
+  lifecycle state machine load before the orchestration entry point.
 - `src/page/` owns the small main-world bridge that observes player network
   traffic.
 - `src/sites/` owns every streaming-service-specific fact.

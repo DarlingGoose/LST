@@ -29,6 +29,14 @@ const subtitleParserSource = await fs.readFile(
   new URL("../src/content/subtitle-parser.js", import.meta.url),
   "utf8",
 );
+const sessionLifecycleSource = await fs.readFile(
+  new URL("../src/content/session-lifecycle.js", import.meta.url),
+  "utf8",
+);
+const capturedTrackLifecycleSource = await fs.readFile(
+  new URL("../src/content/captured-track-lifecycle.js", import.meta.url),
+  "utf8",
+);
 const playbackPolicySource = await fs.readFile(
   new URL("../src/shared/playback-policy.js", import.meta.url),
   "utf8",
@@ -585,9 +593,14 @@ assert.match(
   "compact controls must hide non-warning show notices",
 );
 assert.match(
-  contentSource,
+  capturedTrackLifecycleSource,
   /decision\.incomingWithinExisting/,
   "a refused document that is the track in use is told apart from one that is not",
+);
+assert.match(
+  contentSource,
+  /capturedTrackLifecycle\.dropIfCurrentDocument/,
+  "the content runtime must delegate the held-document drop decision",
 );
 assert.match(
   contentSource,
@@ -600,8 +613,8 @@ assert.doesNotMatch(
   "silence must never be what clears a mismatch",
 );
 assert.match(
-  contentSource,
-  /held\.pageVideoId !== currentPageVideoId/,
+  capturedTrackLifecycleSource,
+  /capturedPageVideoId !== addressId/,
   "a held document's ownership is asked of the episode and the address it was captured for",
 );
 
@@ -988,6 +1001,10 @@ function createHarness(
     filename: "translation-coordinator.js",
   });
   vm.runInContext(subtitleParserSource, context, { filename: "subtitle-parser.js" });
+  vm.runInContext(sessionLifecycleSource, context, { filename: "session-lifecycle.js" });
+  vm.runInContext(capturedTrackLifecycleSource, context, {
+    filename: "captured-track-lifecycle.js",
+  });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 
   const debugEvents = () => {

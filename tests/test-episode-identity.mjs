@@ -28,6 +28,14 @@ const subtitleParserSource = await fs.readFile(
   new URL("../src/content/subtitle-parser.js", import.meta.url),
   "utf8",
 );
+const sessionLifecycleSource = await fs.readFile(
+  new URL("../src/content/session-lifecycle.js", import.meta.url),
+  "utf8",
+);
+const capturedTrackLifecycleSource = await fs.readFile(
+  new URL("../src/content/captured-track-lifecycle.js", import.meta.url),
+  "utf8",
+);
 const identityContext = vm.createContext({});
 vm.runInContext(identitySource, identityContext, {
   filename: "episode-identity.js",
@@ -1014,6 +1022,10 @@ function createHarness({
     filename: "translation-context.js",
   });
   vm.runInContext(subtitleParserSource, context, { filename: "subtitle-parser.js" });
+  vm.runInContext(sessionLifecycleSource, context, { filename: "session-lifecycle.js" });
+  vm.runInContext(capturedTrackLifecycleSource, context, {
+    filename: "captured-track-lifecycle.js",
+  });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 
   const debugEvents = () => {

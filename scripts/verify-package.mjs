@@ -60,6 +60,8 @@ const required = [
   "content/index.js",
   "content/capture-bridge.js",
   "content/subtitle-parser.js",
+  "content/session-lifecycle.js",
+  "content/captured-track-lifecycle.js",
   "content/styles.css",
   "page/page-hook.js",
   "sites/playback-site.js",

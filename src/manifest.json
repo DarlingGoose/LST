@@ -88,6 +88,8 @@
         "shared/subtitle-sync.js",
         "shared/translation-coordinator.js",
         "content/subtitle-parser.js",
+        "content/session-lifecycle.js",
+        "content/captured-track-lifecycle.js",
         "content/index.js"
       ],
       "run_at": "document_start",

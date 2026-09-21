@@ -7,6 +7,17 @@
   if (!subtitleParser) {
     throw new Error("subtitle-parser.js must load before content.js");
   }
+  const sessionLifecycleApi = globalThis.LSTSessionLifecycle;
+  if (!sessionLifecycleApi) {
+    throw new Error("session-lifecycle.js must load before content.js");
+  }
+  const sessionLifecycle = sessionLifecycleApi.createSessionLifecycle();
+  const capturedTrackLifecycleApi = globalThis.LSTCapturedTrackLifecycle;
+  if (!capturedTrackLifecycleApi) {
+    throw new Error("captured-track-lifecycle.js must load before content.js");
+  }
+  const capturedTrackLifecycle =
+    capturedTrackLifecycleApi.createCapturedTrackLifecycle();
   const DEFAULTS = settingsSchema.DEFAULTS;
   const RENDERED_SUBTITLE_STABILITY_MS = 90;
   const TIMED_TRACK_MISMATCH_GRACE_MS = 300;
@@ -99,11 +110,7 @@
   let diagnosticFlushTimer = null;
   let diagnosticTextIds = new Map();
   let nextDiagnosticTextId = 1;
-  let playbackActive = false;
-  let playbackGeneration = 0;
-  let cacheGeneration = 0;
   let lastQuickPillsHealthSignature = "";
-  const playerSessionTransitions = [];
   let lastCaptureSummary = {
     at: null,
     event: "none",
@@ -206,8 +213,7 @@
       reason: reason || "unspecified",
       siteId: currentSiteId() || "none",
     };
-    playerSessionTransitions.push(transition);
-    if (playerSessionTransitions.length > 12) playerSessionTransitions.shift();
+    sessionLifecycle.recordTransition(transition);
     logDiagnostic("info", "player", `session-${state}`, {
       reason: transition.reason,
       siteId: transition.siteId,
@@ -1064,7 +1070,7 @@
     // knows nothing about still reports a change of its own document title.
     const titleSelector = siteTitleObserverSelector();
     const observer = new MutationObserver((mutations) => {
-      if (!playbackActive || !isWatchPage()) return;
+      if (!sessionLifecycle.active || !isWatchPage()) return;
       const titleChanged = mutations.some((mutation) => {
         const target =
           mutation.target.nodeType === Node.ELEMENT_NODE
@@ -1238,7 +1244,7 @@
 
   function startFullscreenObserver() {
     const handleFullscreenChange = () => {
-      if (!playbackActive) return;
+      if (!sessionLifecycle.active) return;
       requestAnimationFrame(() => {
         ensureOverlay();
         syncOverlayHost();
@@ -2094,7 +2100,7 @@
       settings[key] =
         control.type === "checkbox" ? control.checked : Number(control.value);
       if (key === "translationPaused") {
-        cacheGeneration++;
+        sessionLifecycle.bumpCacheGeneration();
         precomputeCancelled = settings.translationPaused;
         if (settings.translationPaused) {
           removeRenderedSubtitlesBySource("timed", "translation-paused");
@@ -3553,7 +3559,7 @@
   }
 
   async function maintainLookAhead(currentCue, index) {
-    const generation = cacheGeneration;
+    const generation = sessionLifecycle.cacheGeneration;
     const seconds = Math.max(30, Number(settings.lookAheadSeconds) || 30);
     const playbackTime = Number(activeVideo()?.currentTime);
     const deadline =
@@ -3587,7 +3593,7 @@
     let failed = 0;
     try {
       for (let i = 0; i < ahead.length; i += batchSize) {
-        if (generation !== cacheGeneration || !playbackActive || !isWatchPage()) return;
+        if (generation !== sessionLifecycle.cacheGeneration || !sessionLifecycle.active || !isWatchPage()) return;
         const result = await translateCues(ahead.slice(i, i + batchSize));
         failed += result.failures.length;
       }
@@ -3694,7 +3700,7 @@
   }
 
   async function runPausedCaching(video) {
-    const generation = cacheGeneration;
+    const generation = sessionLifecycle.cacheGeneration;
     if (!pausedCacheNoticeShown) {
       pausedCacheNoticeShown = true;
       setStatus(
@@ -3704,8 +3710,8 @@
     }
 
     while (
-      generation === cacheGeneration &&
-      playbackActive &&
+      generation === sessionLifecycle.cacheGeneration &&
+      sessionLifecycle.active &&
       isWatchPage() &&
       video.paused &&
       settings.cacheWhilePaused &&
@@ -3765,7 +3771,7 @@
   }
 
   async function playbackLoop() {
-    if (!playbackActive || !isWatchPage()) return;
+    if (!sessionLifecycle.active || !isWatchPage()) return;
     ensureOverlay();
 
     if (Date.now() - lastTitleMetadataRefreshAt >= 2000) {
@@ -3789,7 +3795,7 @@
         settings.showNativeWhenTargetLanguage !== false &&
         sameLanguageTargetAcrossEpisode === normalizedTargetLanguage(),
       );
-      cacheGeneration++;
+      sessionLifecycle.bumpCacheGeneration();
       precomputeCancelled = true;
       cues = [];
       cueSourceUrl = "";
@@ -4079,7 +4085,7 @@
 
   async function handleFallbackRenderedSubtitle() {
     if (
-      !playbackActive ||
+      !sessionLifecycle.active ||
       !isWatchPage() ||
       !settings.enabled
     ) return;
@@ -4088,7 +4094,7 @@
     // it is a file — so reading the service's captions here would only add a
     // second, unrelated subtitle to the screen.
     if (trackIsImported()) return;
-    const generation = playbackGeneration;
+    const generation = sessionLifecycle.playbackGeneration;
 
     const observation = observeRenderedSubtitle();
     const text = observation.text;
@@ -4179,7 +4185,7 @@
 
     try {
       const result = await translateCues([fallbackCue]);
-      if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
+      if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
       const translated = result.entries[key] || "";
 
       if (translated && lastFallbackText === text) {
@@ -4212,7 +4218,7 @@
           result.failures[0].error || "Realtime translation failed";
       }
     } catch (error) {
-      if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
+      if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
       currentStatus.lastError = error.message;
       setStatus(`Realtime translation error: ${error.message}`, true);
     }
@@ -4220,7 +4226,7 @@
 
   function startFallbackObserver() {
     const observer = new MutationObserver(() => {
-      if (!playbackActive || !isWatchPage()) return;
+      if (!sessionLifecycle.active || !isWatchPage()) return;
       clearTimeout(fallbackTimer);
       fallbackTimer = setTimeout(handleFallbackRenderedSubtitle, 40);
     });
@@ -4248,7 +4254,7 @@
   // which rule chose it. It is recorded with the track so the event log can
   // explain a Prime capture, and it never carries the caption text.
   async function acceptSubtitleDocument(url, text, details = {}) {
-    if (!playbackActive || !isWatchPage()) return;
+    if (!sessionLifecycle.active || !isWatchPage()) return;
     // A track the viewer imported is the track this episode uses. Captured
     // documents keep arriving while it plays, and they are refused by name
     // rather than allowed to replace a file the viewer chose.
@@ -4259,7 +4265,7 @@
       });
       return;
     }
-    const generation = playbackGeneration;
+    const generation = sessionLifecycle.playbackGeneration;
     const parsed = parseSubtitleDocument(text);
     if (!parsed.length) return;
 
@@ -4285,14 +4291,13 @@
       // that follows: the viewer sees the previous episode's lines on the next
       // one. Every other refusal is kept, because a document that is *not* the
       // track in use may be the one the next episode needs.
-      if (
-        decision.incomingWithinExisting &&
-        heldCapturedDocument &&
-        heldCapturedDocument.text === text
-      ) {
-        heldCapturedDocument = null;
+      const heldDecision = capturedTrackLifecycle.dropIfCurrentDocument(
+        text,
+        decision,
+      );
+      if (heldDecision.action === "drop") {
         logDiagnostic("info", "track", "held-document-dropped", {
-          reason: "document-is-current-track",
+          reason: heldDecision.reason,
           trackReason: decision.reason || "unspecified",
           incomingUrl: shortUrl(url),
         });
@@ -4308,9 +4313,7 @@
     // A document that has been adopted is not held any more: the next capture
     // owns the slot, and this one must not be handed to a later episode as
     // though it were that episode's track.
-    if (heldCapturedDocument && heldCapturedDocument.text === text) {
-      heldCapturedDocument = null;
-    }
+    capturedTrackLifecycle.clearIfDocument(text);
     importedTrack = null;
     currentStatus.subtitleSource = "captured";
     currentStatus.importedFileName = "";
@@ -4385,10 +4388,10 @@
     } catch (error) {
       console.warn("[LST] Could not reconcile fallback translations:", error);
     }
-    if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
+    if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
 
     const allCached = await getCachedTranslations(cues);
-    if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
+    if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
     currentStatus.translatedCount = Object.keys(allCached).length;
     updateProgress();
 
@@ -4589,7 +4592,7 @@
   // Read what is known about this show. Called where the episode is, rather than
   // on a timer, so a viewer who never settles on a title asks nothing.
   async function refreshJimakuFinding({ reason = "episode", force = false } = {}) {
-    if (!playbackActive || !isWatchPage()) return;
+    if (!sessionLifecycle.active || !isWatchPage()) return;
     const api = subtitleImport();
     if (!api?.normalizeJimakuFinding) return;
     const key = showKey();
@@ -4751,7 +4754,7 @@
     // language they want now.
     Object.assign(normalized, resolveTranslateDecision(normalized));
 
-    cacheGeneration++;
+    sessionLifecycle.bumpCacheGeneration();
     precomputeCancelled = true;
     cues = parsed;
     cueTrackKind = "imported";
@@ -4818,7 +4821,7 @@
   // minus the episode change.
   function releaseImportedTrack(reason) {
     if (cueTrackKind !== "imported") return;
-    cacheGeneration++;
+    sessionLifecycle.bumpCacheGeneration();
     precomputeCancelled = true;
     cues = [];
     cueSourceUrl = "";
@@ -4850,8 +4853,8 @@
   // starts, when the episode changes, and when an import is added or removed on
   // another page, so the player never keeps a track the viewer has deleted.
   async function refreshImportedTrack({ reason = "playback-start", force = false } = {}) {
-    if (!playbackActive || !isWatchPage()) return;
-    const generation = playbackGeneration;
+    if (!sessionLifecycle.active || !isWatchPage()) return;
+    const generation = sessionLifecycle.playbackGeneration;
     const episodeKey = importedEpisodeKey();
     if (!episodeKey) {
       if (cueTrackKind === "imported") releaseImportedTrack("no-episode-key");
@@ -4874,7 +4877,7 @@
       });
       return;
     }
-    if (generation !== playbackGeneration || !playbackActive || !isWatchPage()) return;
+    if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
     // The viewer may have moved to another episode while the answer was in
     // flight, in which case the answer describes a track that is not this
     // page's track.
@@ -5067,7 +5070,7 @@
   }
 
   function startPrecomputeDetached() {
-    if (!playbackActive || !isWatchPage()) {
+    if (!sessionLifecycle.active || !isWatchPage()) {
       throw new Error(`Open a ${siteName()} watch page first.`);
     }
     if (precomputeInProgress) {
@@ -5108,21 +5111,9 @@
   // held document holds and the current track does not — the module's own rule
   // for an arriving document, applied to one that already arrived — and only
   // while it is fresh enough to belong to the episode being switched to. An
-  // older capture belonged to the episode that has just ended.
-  // Prime can ask for an episode's assets well before its video element mounts.
-  // Episode identity is the ownership check; this longer ceiling is only a
-  // memory-safety fallback for an abandoned player, not the primary decision.
-  const HELD_DOCUMENT_FRESH_MS = 120_000;
-  // The shape of an item restarting rather than a viewer rewinding: the player
-  // is within the first minute of what it is playing and the capture was made
-  // more than a minute into it. One item's clock only moves forward, so both
-  // halves have to hold at once for the item to have changed.
-  const RESTARTED_ITEM_SECONDS = 60;
-  let heldCapturedDocument = null;
-  // The rendered line already put to the held document, so a mismatch that
-  // repeats frame after frame is asked about once rather than sixty times a
-  // second.
-  let heldDocumentAskedFor = "";
+  // older capture belonged to the episode that has just ended. The held slot,
+  // freshness ceiling, ownership checks, and one-shot offers live in
+  // captured-track-lifecycle.js; this runtime performs the resulting effects.
 
   function holdCapturedDocument(payload) {
     const { url, text, site, capture = "", language = "", reason = "" } = payload || {};
@@ -5148,7 +5139,7 @@
       if (key) folded.add(key);
     }
     if (!folded.size) return null;
-    heldCapturedDocument = {
+    const result = capturedTrackLifecycle.hold({
       url: String(url || ""),
       text,
       details: { capture, language, reason },
@@ -5165,9 +5156,9 @@
       // the clock back.
       videoTime: Number(activeVideo()?.currentTime),
       at: Date.now(),
-      folded,
-    };
-    return heldCapturedDocument;
+      foldedLines: folded,
+    });
+    return result.action === "held" ? result.document : null;
   }
 
   function handleCapturedDocument(payload) {
@@ -5178,24 +5169,17 @@
     });
   }
 
-  function heldDocumentAgeMs(held) {
-    return Math.max(0, Date.now() - (Number(held?.at) || 0));
-  }
-
-  function acceptHeldDocument(held, reason, details = {}) {
-    // One document is adopted once. The next capture sets the slot again, and a
-    // document already adopted must not be handed to the next episode as though
-    // it were that episode's track.
-    heldCapturedDocument = null;
+  function acceptHeldDocument(decision) {
+    const held = decision.document;
     logDiagnostic("info", "track", "held-document-adopted", {
-      reason,
+      reason: decision.reason,
       capturedVideoId: held.videoId || "unknown",
       videoId: getVideoId(),
       capturedPageVideoId: held.pageVideoId || "unknown",
       pageVideoId: pageVideoId(),
-      ageMs: heldDocumentAgeMs(held),
+      ageMs: decision.ageMs,
       incomingUrl: shortUrl(held.url),
-      ...details,
+      ...decision.details,
     });
     acceptSubtitleDocument(held.url, held.text, held.details).catch((error) => {
       console.warn("[LST] Could not parse a held subtitle document:", error);
@@ -5217,29 +5201,16 @@
   // left, which is the whole reason this check exists: a capture from the
   // episode that ended must not become the next episode's subtitles.
   function adoptHeldCapturedDocument(reason) {
-    const held = heldCapturedDocument;
-    if (!held || cues.length) return false;
     const currentVideoId = getVideoId();
     const currentPageVideoId = pageVideoId();
-    const capturedAnotherAddress = Boolean(
-      held.pageVideoId &&
-        held.pageVideoId !== "unknown" &&
-        currentPageVideoId &&
-        currentPageVideoId !== "unknown" &&
-        held.pageVideoId !== currentPageVideoId,
-    );
-    const namesAnotherEpisode = Boolean(
-      held.videoId &&
-        held.videoId !== "unknown" &&
-        currentVideoId &&
-        currentVideoId !== "unknown" &&
-        held.videoId !== currentVideoId,
-    );
-    if (
-      held.details?.capture === "playback-resources" &&
-      capturedAnotherAddress &&
-      namesAnotherEpisode
-    ) {
+    const decision = capturedTrackLifecycle.offerEmptyTrack({
+      reason,
+      hasTrack: Boolean(cues.length),
+      currentVideoId,
+      currentPageVideoId,
+    });
+    if (decision.reason === "held-document-other-episode") {
+      const held = decision.document;
       logDiagnostic("info", "track", "held-document-other-episode", {
         reason,
         capturedVideoId: held.videoId,
@@ -5248,17 +5219,18 @@
       });
       return false;
     }
-    const ageMs = heldDocumentAgeMs(held);
-    if (ageMs > HELD_DOCUMENT_FRESH_MS) {
+    if (decision.reason === "held-document-stale") {
+      const held = decision.document;
       logDiagnostic("info", "track", "held-document-stale", {
         reason,
-        ageMs,
+        ageMs: decision.ageMs,
         capturedVideoId: held.videoId || "unknown",
         videoId: currentVideoId,
       });
       return false;
     }
-    acceptHeldDocument(held, reason);
+    if (decision.action !== "adopt") return false;
+    acceptHeldDocument(decision);
     return true;
   }
 
@@ -5273,31 +5245,20 @@
   // the previous episode's lines from being rendered — and the document the
   // service itself fetched for what is playing now takes the track's place.
   function noticeRestartedItem(video) {
-    const held = heldCapturedDocument;
-    if (!held || !held.folded) return false;
-    if (heldDocumentAgeMs(held) > HELD_DOCUMENT_FRESH_MS) return false;
-    if (held.restartOffered) return false;
     const now = Number(video?.currentTime);
-    const capturedAt = Number(held.videoTime);
-    if (!Number.isFinite(now) || !Number.isFinite(capturedAt)) return false;
-    if (!(now < RESTARTED_ITEM_SECONDS && capturedAt - now > RESTARTED_ITEM_SECONDS)) {
-      return false;
-    }
-    held.restartOffered = true;
+    const decision = capturedTrackLifecycle.offerRestart({ videoTime: now });
+    if (decision.action !== "adopt") return false;
     if (timedTrackSyncState === "verified") {
       timedTrackSyncState = "unverified";
       automaticCueTimeOffsetSeconds = 0;
       lastRenderedSyncText = "";
       logDiagnostic("info", "synchronization", "timed-track-not-the-item", {
         reason: "item-restarted",
-        videoTimeMs: Math.round(now * 1000),
-        capturedVideoTimeMs: Math.round(capturedAt * 1000),
+        videoTimeMs: decision.details.videoTimeMs,
+        capturedVideoTimeMs: decision.details.capturedVideoTimeMs,
       });
     }
-    acceptHeldDocument(held, "item-restarted-in-held-document", {
-      trackReason: "held-document-for-restarted-item",
-      capturedVideoTimeMs: Math.round(capturedAt * 1000),
-    });
+    acceptHeldDocument(decision);
     return true;
   }
 
@@ -5307,17 +5268,15 @@
   // subtitle-sync.js is asked to decide the same question it decides for a
   // document that arrives now.
   function adoptHeldDocumentForRenderedLine(renderedText) {
-    const held = heldCapturedDocument;
-    if (!held || !held.folded) return false;
-    if (heldDocumentAgeMs(held) > HELD_DOCUMENT_FRESH_MS) return false;
     const key = foldedSubtitleText(renderedText);
-    if (!key || !held.folded.has(key)) return false;
-    if (heldDocumentAskedFor === key) return false;
-    heldDocumentAskedFor = key;
-    if (cues.some((cue) => foldedSubtitleText(cue.text) === key)) return false;
-    acceptHeldDocument(held, "rendered-line-in-held-document", {
-      trackReason: "held-document-matches-rendered-line",
+    const decision = capturedTrackLifecycle.offerRenderedLine({
+      foldedText: key,
+      currentTrackHasLine: cues.some(
+        (cue) => foldedSubtitleText(cue.text) === key,
+      ),
     });
+    if (decision.action !== "adopt") return false;
+    acceptHeldDocument(decision);
     return true;
   }
 
@@ -5358,7 +5317,7 @@
       };
     }
 
-    if (!playbackActive || !isWatchPage()) {
+    if (!sessionLifecycle.active || !isWatchPage()) {
       // Only a document is worth keeping; a note about a capture that already
       // happened would describe a page state the log is no longer on. The
       // document is held rather than dropped: the request that carried it is
@@ -5450,10 +5409,10 @@
         playerPresenceReason: presence.reason || "unspecified",
       },
       session: {
-        active: playbackActive,
-        playbackGeneration,
-        cacheGeneration,
-        transitions: playerSessionTransitions.slice(),
+        active: sessionLifecycle.active,
+        playbackGeneration: sessionLifecycle.playbackGeneration,
+        cacheGeneration: sessionLifecycle.cacheGeneration,
+        transitions: sessionLifecycle.transitions(),
       },
       captureBridge,
       capture: { ...lastCaptureSummary },
@@ -5515,10 +5474,8 @@
             ? "target-language-differs"
             : "already-target-language",
         syncState: timedTrackSyncState,
-        heldDocument: Boolean(heldCapturedDocument),
-        heldDocumentAgeMs: heldCapturedDocument
-          ? heldDocumentAgeMs(heldCapturedDocument)
-          : null,
+        heldDocument: capturedTrackLifecycle.snapshot().held,
+        heldDocumentAgeMs: capturedTrackLifecycle.snapshot().ageMs,
         episodeIdentity: {
           available: Boolean(videoId && videoId !== "unknown"),
           kind: identityApi?.videoIdKind?.(videoId) || "unknown",
@@ -5601,7 +5558,7 @@
         case "IMPORT_CHANGED": {
           // An import was added, replaced or removed on another page. The player
           // picks the change up now instead of at the next episode change.
-          if (!playbackActive || !isWatchPage()) {
+          if (!sessionLifecycle.active || !isWatchPage()) {
             sendResponse({ ok: true, applied: false, reason: "not-playing" });
             return;
           }
@@ -5624,7 +5581,7 @@
           return;
 
         case "RELOAD_SETTINGS": {
-          if (!playbackActive || !isWatchPage()) {
+          if (!sessionLifecycle.active || !isWatchPage()) {
             await loadSettings();
             sendResponse({ ok: true });
             return;
@@ -5657,7 +5614,7 @@
           if (trackIsImported()) {
             const wasTranslating = trackNeedsTranslation();
             await refreshImportedTrack({ reason: "settings-changed", force: true });
-            if (playbackActive && wasTranslating !== trackNeedsTranslation()) {
+            if (sessionLifecycle.active && wasTranslating !== trackNeedsTranslation()) {
               setStatus(importedTrackStatusText(), true);
             }
           }
@@ -5682,8 +5639,7 @@
   function stopPlayback(reason = "playback-ended") {
     recordPlayerSessionTransition("stopped", reason);
     flushDiagnosticEvents();
-    playbackActive = false;
-    playbackGeneration++;
+    sessionLifecycle.stop();
     clearTimeout(quickPillsMinimizeTimer);
     quickPillsMinimizeTimer = null;
     precomputeCancelled = true;
@@ -5711,7 +5667,7 @@
     // survives this teardown. It is adopted only when the track is empty and
     // only while it is fresh, so a capture from the episode that has ended
     // cannot become the next episode's subtitles.
-    heldDocumentAskedFor = "";
+    capturedTrackLifecycle.resetRenderedLine();
     // A note belongs to the show that was on screen; the next one reads its own.
     jimakuFinding = null;
     jimakuFindingKey = "";
@@ -5822,11 +5778,11 @@
           ? "playback-site-unavailable"
           : "site-unsupported",
       );
-      if (playbackActive) stopPlayback("site-unsupported");
+      if (sessionLifecycle.active) stopPlayback("site-unsupported");
       return;
     }
     if (!isWatchPage()) {
-      if (playbackActive) stopPlayback("left-playback-page");
+      if (sessionLifecycle.active) stopPlayback("left-playback-page");
       return;
     }
 
@@ -5842,7 +5798,7 @@
       settings.showQuickPills &&
       siteEnabled(site.id) &&
       playerPresence().present &&
-      !playbackActive
+      !sessionLifecycle.active
     ) {
       ensureOverlay({ applyAppearance: false });
     }
@@ -5854,7 +5810,7 @@
     // class go, native subtitles stay untouched, and no reload is needed.
     if (!siteEnabled(site.id)) {
       reportSiteInactive("site-disabled");
-      if (playbackActive) stopPlayback("site-disabled");
+      if (sessionLifecycle.active) stopPlayback("site-disabled");
       else {
         for (const element of [overlay, hud, debugPanel, transcriptPanel]) {
           if (element) element.style.display = "none";
@@ -5872,7 +5828,7 @@
     // a brief absence is tolerated before LST withdraws, and a storefront the
     // viewer navigated back to is left alone within a couple of seconds.
     if (!playerPresence().present) {
-      if (!playbackActive) return;
+      if (!sessionLifecycle.active) return;
       playerAbsencePolls += 1;
       if (playerAbsencePolls < PLAYER_ABSENCE_GRACE_POLLS) return;
       playerAbsencePolls = 0;
@@ -5881,14 +5837,13 @@
     }
     playerAbsencePolls = 0;
 
-    if (playbackActive) {
+    if (sessionLifecycle.active) {
       lastInactiveSiteReason = "";
       return;
     }
-    playbackActive = true;
     recordPlayerSessionTransition("started", "player-present");
     lastInactiveSiteReason = "";
-    const generation = ++playbackGeneration;
+    const generation = sessionLifecycle.start();
     try {
       for (const element of [overlay, hud, debugPanel, transcriptPanel]) {
         if (element) element.style.display = "";
@@ -5917,8 +5872,7 @@
         console.warn("[LST] Could not read what Jimaku holds for this show:", error);
       });
     } catch (error) {
-      if (generation === playbackGeneration) {
-        playbackActive = false;
+      if (sessionLifecycle.deactivate(generation)) {
         stopTitleMetadataObserver();
         stopFallbackObserver();
         for (const element of [overlay, hud, debugPanel, transcriptPanel]) {

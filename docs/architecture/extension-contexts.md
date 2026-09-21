@@ -12,6 +12,9 @@ single service worker which imports the same dependencies.
 
 `src/content/index.js` can use extension APIs and interact with the page DOM,
 but it cannot directly replace the page's `fetch` or XHR implementations.
+State-only helpers under `src/content/`, such as the session and captured-track
+lifecycle modules, are loaded first and leave DOM and extension API effects to
+the entry point.
 
 ## Page main world
 

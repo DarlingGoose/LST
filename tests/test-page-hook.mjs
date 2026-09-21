@@ -12,6 +12,8 @@ const captureBridgeSource = await read("capture-bridge.js");
 const settingsSchemaSource = await read("settings-schema.js");
 const contentSource = await read("content.js");
 const subtitleParserSource = await read("subtitle-parser.js");
+const sessionLifecycleSource = await read("session-lifecycle.js");
+const capturedTrackLifecycleSource = await read("captured-track-lifecycle.js");
 const identitySource = await read("episode-identity.js");
 const translationContextSource = await read("translation-context.js");
 
@@ -886,6 +888,10 @@ function createContentHarness(href, { player = false } = {}) {
   vm.runInContext(identitySource, context, { filename: "episode-identity.js" });
   vm.runInContext(translationContextSource, context, { filename: "translation-context.js" });
   vm.runInContext(subtitleParserSource, context, { filename: "subtitle-parser.js" });
+  vm.runInContext(sessionLifecycleSource, context, { filename: "session-lifecycle.js" });
+  vm.runInContext(capturedTrackLifecycleSource, context, {
+    filename: "captured-track-lifecycle.js",
+  });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 
   return {

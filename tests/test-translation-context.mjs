@@ -857,6 +857,8 @@ function translate(items, contextItems, contextLevel) {
 const settingsSchemaSource = await read("settings-schema.js");
 const contentSource = await read("content.js");
 const subtitleParserSource = await read("subtitle-parser.js");
+const sessionLifecycleSource = await read("session-lifecycle.js");
+const capturedTrackLifecycleSource = await read("captured-track-lifecycle.js");
 const syncSource = await read("subtitle-sync.js");
 const identitySource = await read("episode-identity.js");
 const playbackSiteSource = await read("playback-site.js");
@@ -1173,6 +1175,10 @@ function createContentHarness({
     vm.runInContext(contextSource, context, { filename: "translation-context.js" });
   }
   vm.runInContext(subtitleParserSource, context, { filename: "subtitle-parser.js" });
+  vm.runInContext(sessionLifecycleSource, context, { filename: "session-lifecycle.js" });
+  vm.runInContext(capturedTrackLifecycleSource, context, {
+    filename: "captured-track-lifecycle.js",
+  });
   vm.runInContext(contentSource, context, { filename: "content.js" });
 
   const debugEvents = () => {

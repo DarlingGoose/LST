@@ -198,6 +198,20 @@ Important files:
   - Precompute behavior.
   - In-player controls and diagnostics.
 
+- `src/content/subtitle-parser.js`
+  - State-free TTML/WebVTT parsing and subtitle-document format routing.
+
+- `src/content/session-lifecycle.js`
+  - Owns playback activity, async generation counters, and bounded session
+    transition history; `content/index.js` owns the DOM and messaging effects.
+
+- `src/content/captured-track-lifecycle.js`
+  - Owns the one held captured-document slot and decides when a document is
+    current, stale, from another episode, or safe to offer after an episode
+    change, rendered-line mismatch, or item restart.
+  - Pure state: parsing, DOM reads, diagnostics, and installing the chosen track
+    remain effects in `content/index.js`.
+
 - `src/page/page-hook.js`
   - Runs in the page context.
   - Observes Netflix fetch/XHR traffic for subtitle/timed-text responses.

@@ -3,6 +3,8 @@ const extensionPaths = Object.freeze({
   "capture-bridge.js": "src/content/capture-bridge.js",
   "content.js": "src/content/index.js",
   "subtitle-parser.js": "src/content/subtitle-parser.js",
+  "session-lifecycle.js": "src/content/session-lifecycle.js",
+  "captured-track-lifecycle.js": "src/content/captured-track-lifecycle.js",
   "styles.css": "src/content/styles.css",
   "page-hook.js": "src/page/page-hook.js",
   "playback-site.js": "src/sites/playback-site.js",
