@@ -41,6 +41,10 @@
   const SITE_LABELS = Object.freeze({
     netflix: "Netflix",
     primevideo: "Prime Video",
+    // Extension-owned playback is not a web-service adapter: it has no host,
+    // match pattern, page hook, or content script. It still needs a namespace
+    // so a local file's cache can never collide with a streaming title.
+    local: "Local Video",
   });
 
   // Recognised video id shapes. Netflix uses numeric ids; Prime Video uses the
@@ -50,6 +54,7 @@
     { kind: "netflix-id", pattern: /^\d+$/ },
     { kind: "asin", pattern: /^[A-Z0-9]{10}$/ },
     { kind: "prime-gti", pattern: /^amzn1\.dv\.gti\.[A-Za-z0-9._-]+$/i },
+    { kind: "local-media", pattern: /^local-[a-f0-9]{16}$/ },
   ]);
 
   // What a name turned out to be. "unknown" is never returned by classifyName:
@@ -179,8 +184,10 @@
     const id = String(siteId || "");
     if (!id) return false;
     const api = globalThis.LSTPlaybackSite;
-    if (Array.isArray(api?.SITE_IDS)) return api.SITE_IDS.includes(id);
-    return Object.prototype.hasOwnProperty.call(SITE_LABELS, id);
+    return (
+      Object.prototype.hasOwnProperty.call(SITE_LABELS, id) ||
+      (Array.isArray(api?.SITE_IDS) && api.SITE_IDS.includes(id))
+    );
   }
 
   // A service is namespaced into the cache id only when it is not the default

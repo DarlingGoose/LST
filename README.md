@@ -44,6 +44,23 @@ halves are done.
 - First-run setup page for provider, target language, and subtitle layers
 - Import a subtitle file for the episode you are watching — from Jimaku, or one you already downloaded — for a title the service does not subtitle
 - A file already written in your target language is displayed as it is, without translating anything
+- Play a local video with an SRT file from the popup's **Local video** page, with background translation, progress, synchronized original/translated layers, and cache reuse
+
+## Local video playback
+
+Open the extension popup and choose **Local video**, then select or drop a video
+and its `.srt` subtitle file. LST reads both files in the extension page, keeps
+the video on the device through a temporary object URL, and sends only subtitle
+text through the configured translation pipeline. Playback can begin while
+translation continues in batches.
+
+The player preserves the SRT timestamps, follows seeking immediately, and can
+show the original text, translated text, or both. Translation progress and
+failures stay visible below the player. Reopening the same video/subtitle pair
+with the same provider, model, and target language reuses its local cache;
+changing the model or target language selects a separate cache. Normal browser
+video controls provide play/pause, seeking, volume, and fullscreen, with an
+additional playback-speed selector on the page.
 
 ## Importing subtitles
 

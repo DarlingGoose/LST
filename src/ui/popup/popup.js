@@ -536,6 +536,9 @@ $("toggleTranscript").addEventListener("click", async () => {
   );
 });
 $("settings").addEventListener("click", () => ext?.runtime?.openOptionsPage());
+$("localVideo").addEventListener("click", () => {
+  ext?.tabs?.create({ url: ext.runtime.getURL("ui/local-player/local-player.html") });
+});
 
 // Opening the import card directly, so a viewer who clicked here does not have
 // to find it in the settings page.

@@ -1,0 +1,63 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #090a0d;
+  color: #f7f7f8;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: radial-gradient(circle at 50% -20%, #29232a, #090a0d 48%); }
+button, input, select { font: inherit; }
+button, .file-button, select, input { border-radius: 10px; }
+button, .file-button { border: 0; background: #f5f5f6; color: #111216; font-weight: 700; cursor: pointer; padding: 11px 16px; }
+button.secondary, .file-button.secondary { background: #292b31; color: #f5f5f6; border: 1px solid #42454e; }
+button:disabled { cursor: default; opacity: .45; }
+
+header { height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid #25272d; background: rgba(9,10,13,.9); }
+.brand { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 10px; }
+.brand img { width: 32px; height: 32px; }
+.brand span { display: grid; line-height: 1.05; }
+.brand small { color: #a7aab3; font-size: 12px; margin-top: 4px; }
+.settings-link { color: #c8cad0; }
+
+main { width: min(1440px, 100%); margin: 0 auto; padding: 24px; display: grid; gap: 18px; }
+.drop-zone, .control-panel { background: #15171c; border: 1px solid #2d3037; border-radius: 16px; padding: 20px; }
+.drop-zone { display: grid; grid-template-columns: minmax(280px, 1fr) auto; align-items: center; gap: 18px; transition: border-color .15s, background .15s; }
+.drop-zone.dragging { border-color: #e25474; background: #21181e; }
+.eyebrow { color: #e46b87; text-transform: uppercase; letter-spacing: .12em; font-size: 11px; font-weight: 800; margin: 0 0 7px; }
+h1 { font-size: clamp(22px, 3vw, 34px); margin: 0; }
+.drop-zone p:last-child { color: #aaadb5; margin: 8px 0 0; }
+.file-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.file-button input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.selected-files { grid-column: 1 / -1; display: flex; gap: 10px; flex-wrap: wrap; color: #c7c9cf; font-size: 13px; }
+.selected-files span { background: #202228; border-radius: 999px; padding: 6px 10px; }
+
+.player-shell { position: relative; overflow: hidden; aspect-ratio: 16 / 9; min-height: 240px; max-height: calc(100vh - 360px); margin: auto; width: 100%; background: #000; border-radius: 16px; border: 1px solid #24262c; }
+video { width: 100%; height: 100%; display: block; object-fit: contain; }
+.empty-player { position: absolute; inset: 0; display: grid; place-items: center; color: #838690; pointer-events: none; }
+.subtitle-overlay { position: absolute; left: 5%; right: 5%; bottom: 11%; display: grid; justify-items: center; gap: 6px; pointer-events: none; text-align: center; text-shadow: 0 2px 5px #000, 0 0 2px #000; }
+.subtitle-overlay > div { white-space: pre-line; max-width: 95%; padding: 3px 10px; border-radius: 6px; background: rgba(0,0,0,.68); }
+.translated-line { font-size: clamp(23px, 3vw, 43px); font-weight: 700; }
+.original-line { font-size: clamp(17px, 2vw, 30px); color: #e4e5e8; }
+
+.control-panel { display: grid; gap: 18px; }
+.control-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; }
+label { display: grid; gap: 7px; color: #b8bac2; font-size: 12px; font-weight: 700; }
+select, input { width: 100%; border: 1px solid #3a3d45; background: #202228; color: #f5f5f6; padding: 10px 11px; }
+.translation-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(160px, 320px) auto auto auto; align-items: center; gap: 12px; }
+.progress-copy { display: grid; gap: 4px; }
+.progress-copy span { color: #a4a7af; font-size: 13px; min-height: 1.2em; }
+progress { width: 100%; accent-color: #df496c; }
+
+@media (max-width: 800px) {
+  main { padding: 14px; }
+  .drop-zone { grid-template-columns: 1fr; }
+  .file-actions { justify-content: flex-start; }
+  .control-grid { grid-template-columns: 1fr 1fr; }
+  .translation-row { grid-template-columns: 1fr 1fr; }
+  .progress-copy, progress { grid-column: 1 / -1; }
+}
+
+@media (max-width: 480px) {
+  .control-grid { grid-template-columns: 1fr; }
+}

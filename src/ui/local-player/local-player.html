@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Video — LST</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="../../assets/favicons/favicon-32x32.png">
+  <link rel="stylesheet" href="local-player.css">
+</head>
+<body>
+  <header>
+    <a class="brand" href="../options/options.html" aria-label="Open LST settings">
+      <img src="../../assets/favicons/favicon-32x32.png" alt="">
+      <span><strong>LST</strong><small>Local Video</small></span>
+    </a>
+    <a class="settings-link" href="../options/options.html">Settings</a>
+  </header>
+
+  <main>
+    <section id="dropZone" class="drop-zone" aria-labelledby="dropTitle">
+      <div>
+        <p class="eyebrow">Private, extension-owned playback</p>
+        <h1 id="dropTitle">Drop a video and an SRT file</h1>
+        <p>The files stay on this device. Only subtitle text is sent to your configured translation provider.</p>
+      </div>
+      <div class="file-actions">
+        <label class="file-button">Choose video<input id="videoInput" type="file" accept="video/*"></label>
+        <label class="file-button secondary">Choose subtitles<input id="subtitleInput" type="file" accept=".srt,application/x-subrip,text/plain"></label>
+      </div>
+      <div class="selected-files" aria-live="polite">
+        <span id="videoName">No video selected</span>
+        <span id="subtitleName">No subtitles selected</span>
+      </div>
+    </section>
+
+    <section id="playerShell" class="player-shell" aria-label="Local video player">
+      <video id="video" controls preload="metadata"></video>
+      <div id="subtitleOverlay" class="subtitle-overlay" aria-live="off">
+        <div id="translatedLine" class="translated-line"></div>
+        <div id="originalLine" class="original-line"></div>
+      </div>
+      <div id="emptyPlayer" class="empty-player">Choose a video to begin.</div>
+    </section>
+
+    <section class="control-panel">
+      <div class="control-grid">
+        <label>Subtitle display
+          <select id="displayMode">
+            <option value="translated">Translated</option>
+            <option value="original">Original</option>
+            <option value="both">Original + translated</option>
+          </select>
+        </label>
+        <label>Playback speed
+          <select id="playbackRate">
+            <option value="0.5">0.5×</option>
+            <option value="0.75">0.75×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.25">1.25×</option>
+            <option value="1.5">1.5×</option>
+            <option value="2">2×</option>
+          </select>
+        </label>
+        <label>Model
+          <select id="model"><option value="">Loading settings…</option></select>
+        </label>
+        <label>Target language
+          <input id="targetLanguage" type="text" value="English">
+        </label>
+      </div>
+      <div class="translation-row">
+        <div class="progress-copy">
+          <strong id="progressText">Attach an SRT file to translate it.</strong>
+          <span id="statusText" role="status" aria-live="polite"></span>
+        </div>
+        <progress id="progress" max="1" value="0">0%</progress>
+        <button id="translate" type="button" disabled>Translate / resume</button>
+        <button id="stop" class="secondary" type="button" disabled>Stop</button>
+        <button id="fullscreen" class="secondary" type="button">Fullscreen</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="../../shared/settings-schema.js"></script>
+  <script src="../../sites/playback-site.js"></script>
+  <script src="../../shared/episode-identity.js"></script>
+  <script src="../../shared/subtitle-import.js"></script>
+  <script src="../../shared/local-video.js"></script>
+  <script src="local-player.js"></script>
+</body>
+</html>
