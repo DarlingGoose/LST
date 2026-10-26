@@ -1697,6 +1697,58 @@ const NEXT_EPISODE_TRACK = [
   assert.equal(accepted[1].details.trackReason, "no-existing-track");
 }
 
+// Netflix: Navigating to the next episode clears the old episode's track,
+// adopts the new episode's subtitle document, and allows paused caching to run.
+{
+  const harness = createHarness(CUE_TRACK, {
+    site: "netflix",
+    settings: { model: "test-model", cacheWhilePaused: true },
+  });
+  await harness.start({ captureTrack: true });
+  await harness.show("Let's go.", 10.4);
+
+  // User pauses on episode 1: paused caching is available.
+  harness.video.paused = true;
+  await harness.frame(10.4);
+  let status = (await harness.pageMessage({ type: "GET_PAGE_STATUS" })).status;
+  assert.equal(status.pausedCacheReason, "ready");
+  assert.equal(status.pausedCacheBlocker, "");
+
+  // User navigates to next episode (URL changes to /watch/83165044).
+  harness.navigate("/watch/83165044");
+  await harness.frame(0);
+  await harness.flushDiagnostics();
+
+  status = (await harness.pageMessage({ type: "GET_PAGE_STATUS" })).status;
+  assert.equal(status.captured, false);
+  assert.equal(status.cueCount, 0);
+
+  // When paused before the new track arrives, paused cache explains why:
+  harness.video.paused = true;
+  await harness.frame(0);
+  status = (await harness.pageMessage({ type: "GET_PAGE_STATUS" })).status;
+  assert.equal(status.pausedCacheReason, "no-full-track");
+  assert.ok(status.pausedCacheBlocker);
+
+  // New episode's subtitle track is captured.
+  await harness.capture(NEXT_EPISODE_TRACK, {
+    url: "https://ipv4-c001-sjc002-ix.1.oca.nflxvideo.net/?textstream=true",
+  });
+  await harness.frame(0);
+  await harness.flushDiagnostics();
+
+  status = (await harness.pageMessage({ type: "GET_PAGE_STATUS" })).status;
+  assert.equal(status.captured, true);
+  assert.equal(status.cueCount, 2);
+
+  // Now when paused on episode 2, paused caching is available again.
+  harness.video.paused = true;
+  await harness.frame(0);
+  status = (await harness.pageMessage({ type: "GET_PAGE_STATUS" })).status;
+  assert.equal(status.pausedCacheReason, "ready");
+  assert.equal(status.pausedCacheBlocker, "");
+}
+
 // Two episodes of one series watched through one URL are two episodes of the
 // show: two names and two caches. A Prime Video detail page can keep the series
 // in its path while the player advances to the next episode inside it, so the URL

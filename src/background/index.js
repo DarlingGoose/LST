@@ -352,29 +352,38 @@ function translationSchema() {
   };
 }
 
-function systemPrompt(targetLanguage, hasContext = false, customPrompt = "") {
+function systemPrompt(targetLanguage, hasContext = false, customPrompt = "", showPrompt = "") {
+  let basePrompt = "";
   if (String(customPrompt || "").trim()) {
-    const custom = String(customPrompt).trim().replace(/\{\{targetLanguage\}\}/gi, targetLanguage);
+    basePrompt = String(customPrompt).trim().replace(/\{\{targetLanguage\}\}/gi, targetLanguage);
     if (hasContext) {
-      return `${custom} Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity. Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list.`;
+      basePrompt = `${basePrompt} Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity. Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list.`;
     }
-    return custom;
+  } else {
+    const instructions = [
+      "You are a subtitle translator.",
+      `Translate every requested subtitle into ${targetLanguage}.`,
+      "Use natural, concise language suitable for subtitles.",
+      "Preserve names, honorifics, punctuation, speaker labels, and intent.",
+      "Do not add explanations, notes, analysis, or romanization.",
+      "Do not merge, split, omit, or reorder items.",
+      "Never use fullwidth brackets (【 】 ［ ］) or Japanese punctuation to wrap JSON keys or IDs.",
+      "Never output multiple subtitle lines or IDs inside a single item's text."
+    ];
+    if (hasContext) {
+      instructions.push(
+        "Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity.",
+        "Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list."
+      );
+    }
+    basePrompt = instructions.join(" ");
   }
-  const instructions = [
-    "You are a subtitle translator.",
-    `Translate every requested subtitle into ${targetLanguage}.`,
-    "Use natural, concise language suitable for subtitles.",
-    "Preserve names, honorifics, punctuation, speaker labels, and intent.",
-    "Do not add explanations, notes, analysis, or romanization.",
-    "Do not merge, split, omit, or reorder items."
-  ];
-  if (hasContext) {
-    instructions.push(
-      "Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity.",
-      "Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list."
-    );
+
+  const showInstructions = String(showPrompt || "").trim();
+  if (showInstructions) {
+    return `${basePrompt} Show-specific instructions and glossary: ${showInstructions}`;
   }
-  return instructions.join(" ");
+  return basePrompt;
 }
 
 function cleanPlainTranslation(value) {
@@ -499,11 +508,12 @@ async function runStructuredTranslation(items, opts) {
           subtitles: ordinals.ids.map((id, index) => ({ id, text: input[index].text })),
           ...(contextInput.length ? { contextSubtitles: contextInput } : {})
     }),
-    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt)} ` +
-      "Return exactly one translation for every input item as JSON with a translations array of {id, text} objects. Copy each input id exactly.",
+    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt, opts.showPrompt)} ` +
+      "Return exactly one translation for every input item as JSON with a translations array of {id, text} objects. Copy each input id exactly using standard ASCII quotes and braces.",
     opts, true, input.length
   );
 
+  const parseStartedAt = Date.now();
   const data = result.data;
   const rawResponse = String(data.response || "");
   const extraction = responder.extractJson(rawResponse);
@@ -530,6 +540,7 @@ async function runStructuredTranslation(items, opts) {
 
   const { rows, shape } = responder.readRows(extraction.value);
   const alignment = responder.alignRows(ordinals.ids, rows);
+  const parseMs = Date.now() - parseStartedAt;
   const originalId = (ordinal) => ordinals.byOrdinal.get(ordinal);
 
   return {
@@ -540,6 +551,7 @@ async function runStructuredTranslation(items, opts) {
     missingIds: alignment.missing.map(originalId),
     diagnostics: {
       ...diagnostics,
+      parseMs,
       idRecovery: alignment.idRecovery,
       responseShape: shape,
       requestedIds: ordinals.ids,
@@ -561,20 +573,23 @@ async function runPlainSingleTranslation(item, opts) {
               contextSubtitles: contextInput
             })
           : String(item.text ?? ""),
-    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt)} ` +
+    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt, opts.showPrompt)} ` +
       (opts.guardHint ? `${String(opts.guardHint).trim()} ` : "") +
       "Return only the translated subtitle text. Do not return JSON or a label.",
     opts, false, 1
   );
 
+  const parseStartedAt = Date.now();
   const data = result.data;
   const translated = cleanPlainTranslation(data.response);
+  const parseMs = Date.now() - parseStartedAt;
 
   if (!translated) {
     const error = new Error("Plain-text fallback returned an empty translation.");
     error.diagnostics = {
       mode: "plain-fallback",
       elapsedMs: result.elapsedMs,
+      parseMs,
       rawResponse: truncate(data.response),
       doneReason: data.done_reason || "",
       evalCount: data.eval_count || 0
@@ -840,7 +855,9 @@ async function translateBatchResilient(items, opts, depth = 0) {
 
   try {
     const result = await runStructuredTranslation(items, opts);
+    const verificationStartedAt = Date.now();
     const check = verifyTranslationResults(items, result.translations, opts);
+    const verificationMs = Date.now() - verificationStartedAt;
     accepted = check.accepted;
     rejected = check.rejected;
     missingIds = result.missingIds;
@@ -853,6 +870,7 @@ async function translateBatchResilient(items, opts, depth = 0) {
         unanswered: missingIds.length
       },
       ...result.diagnostics,
+      verificationMs,
       verification: check.summary
     });
   } catch (error) {
@@ -911,6 +929,45 @@ async function translateBatchResilient(items, opts, depth = 0) {
     translations: [...accepted, ...recovered.translations],
     failures: recovered.failures,
     diagnostics
+  };
+}
+
+// A request trace is deliberately numeric and categorical. It is safe to keep
+// in the event log or copy into a bug report because it never contains prompt,
+// subtitle, response, endpoint, or credential data.
+function translationTrace(result, totalMs, setupMs = 0) {
+  const diagnostics = Array.isArray(result?.diagnostics) ? result.diagnostics : [];
+  const sum = (field) => diagnostics.reduce((total, entry) => {
+    const value = Number(entry?.[field]);
+    return total + (Number.isFinite(value) && value >= 0 ? value : 0);
+  }, 0);
+  const providerMs = sum("elapsedMs");
+  const responseProcessingMs = sum("parseMs") + sum("verificationMs");
+  const retryAttempts = diagnostics.filter((entry) =>
+    /retry|plain-fallback/.test(`${entry?.stage || ""} ${entry?.mode || ""}`)
+  ).length;
+  const splitAttempts = diagnostics.filter((entry) => Number(entry?.depth) > 0).length;
+  const accounted = setupMs + providerMs + responseProcessingMs;
+  const orchestrationMs = Math.max(0, totalMs - accounted);
+  const phases = [
+    { id: "setup", label: "Settings and request setup", elapsedMs: setupMs },
+    { id: "provider", label: "Provider round trips", elapsedMs: providerMs },
+    { id: "response", label: "Parse, align, and verify", elapsedMs: responseProcessingMs },
+    { id: "orchestration", label: "Fallback and orchestration overhead", elapsedMs: orchestrationMs },
+  ].map((phase) => ({
+    ...phase,
+    elapsedMs: Math.max(0, Math.round(phase.elapsedMs)),
+    percent: totalMs > 0 ? Math.round((phase.elapsedMs / totalMs) * 1000) / 10 : 0,
+  }));
+  const slowest = [...phases].sort((left, right) => right.elapsedMs - left.elapsedMs)[0];
+  return {
+    totalMs: Math.max(0, Math.round(totalMs)),
+    phases,
+    slowestPhase: slowest?.id || "",
+    slowestLabel: slowest?.label || "",
+    providerRequests: diagnostics.filter((entry) => Number.isFinite(Number(entry?.elapsedMs))).length,
+    retryAttempts,
+    splitAttempts,
   };
 }
 
@@ -1255,7 +1312,7 @@ async function listTranslationCaches() {
   return caches;
 }
 
-async function getTranslationCache(cacheId) {
+async function getTranslationCache(cacheId, includeCueKeys = false) {
   if (!cacheId) throw new Error("A cache ID is required.");
   const storageKey = cacheStorageKey(cacheId);
   const metadataKey = cacheMetadataKey(cacheId);
@@ -1278,7 +1335,10 @@ async function getTranslationCache(cacheId) {
     cacheId
   };
   const cues = Object.entries(entries || {})
-    .map(([key, translation]) => parseCachedCue(key, translation))
+    .map(([key, translation]) => ({
+      ...parseCachedCue(key, translation),
+      ...(includeCueKeys ? { cueKey: key } : {}),
+    }))
     .sort((a, b) => {
       if (a.startMs == null) return b.startMs == null ? 0 : 1;
       if (b.startMs == null) return -1;
@@ -1288,12 +1348,237 @@ async function getTranslationCache(cacheId) {
   return { metadata, cues };
 }
 
+function benchmarkSample(cues, requestedSize) {
+  const usable = (cues || []).filter((cue) => String(cue?.sourceText || "").trim());
+  const size = Math.max(1, Math.min(12, Math.round(Number(requestedSize) || 4)));
+  if (usable.length <= size) return usable;
+  if (size === 1) return [usable[Math.floor(usable.length / 2)]];
+
+  // Spread the sample across the episode instead of benchmarking only an
+  // opening recap or title card. The choice is deterministic so two runs are
+  // comparable.
+  const selected = [];
+  for (let index = 0; index < size; index += 1) {
+    selected.push(usable[Math.round((index * (usable.length - 1)) / (size - 1))]);
+  }
+  return selected;
+}
+
+function benchmarkContext(cues, selected, settings) {
+  if (!settings.useTranslationContext || !translationContext?.selectContext) return [];
+  const scope = (cues || []).map((cue) => ({
+    start: cue.startMs != null && Number.isFinite(Number(cue.startMs))
+      ? Number(cue.startMs) / 1000
+      : null,
+    end: cue.endMs != null && Number.isFinite(Number(cue.endMs))
+      ? Number(cue.endMs) / 1000
+      : null,
+    text: String(cue.sourceText || ""),
+  }));
+  const selectedSet = new Set(selected);
+  const targetIndexes = cues
+    .map((cue, index) => selectedSet.has(cue) ? index : -1)
+    .filter((index) => index >= 0);
+  return translationContext.selectContext({
+    scope,
+    targetIndexes,
+    requestedCount: targetIndexes.length,
+    level: settings.contextLevel,
+    enabled: true,
+  }).items;
+}
+
+async function benchmarkTranslation(message) {
+  const totalStartedAt = Date.now();
+  const cacheStartedAt = Date.now();
+  const detail = await getTranslationCache(message.cacheId, true);
+  const cacheReadMs = Date.now() - cacheStartedAt;
+  const sample = benchmarkSample(detail.cues, message.sampleSize);
+  if (!sample.length) throw new Error("That cache has no source subtitle lines to benchmark.");
+
+  const storedSettings = await getSettings();
+  const requestedSettings = settingsSchema.normalizePatch(message.settings || {});
+  const settings = { ...storedSettings, ...requestedSettings };
+  const opts = {
+    provider: settings.provider,
+    ollamaUrl: settings.ollamaUrl,
+    model: settings.model,
+    targetLanguage: settings.targetLanguage,
+    requestTimeoutSeconds: settings.requestTimeoutSeconds,
+    customTranslationPrompt: settings.customTranslationPrompt || "",
+    showPrompt: "",
+    verifyTranslations: settings.verifyTranslations !== false,
+    contextItems: benchmarkContext(detail.cues, sample, settings),
+  };
+  if (!["ollama", "deepseek", "gemini"].includes(opts.provider)) {
+    throw new Error("Unknown translation provider.");
+  }
+  if (!opts.model) throw new Error(`No ${providerName(opts.provider)} model selected.`);
+  if (opts.provider !== "ollama") await providerApiKey(opts.provider);
+
+  const setupMs = Date.now() - totalStartedAt;
+  const items = sample.map((cue, index) => ({ id: String(index), text: cue.sourceText }));
+  const result = await translateBatchResilient(items, opts);
+  const totalMs = Date.now() - totalStartedAt;
+  const trace = translationTrace(
+    result,
+    Math.max(0, totalMs - cacheReadMs),
+    Math.max(0, setupMs - cacheReadMs),
+  );
+  trace.totalMs = totalMs;
+  trace.phases.unshift({
+    id: "cache-read",
+    label: "Read benchmark sample from cache",
+    elapsedMs: cacheReadMs,
+    percent: totalMs > 0 ? Math.round((cacheReadMs / totalMs) * 1000) / 10 : 0,
+  });
+  trace.phases = trace.phases.map((phase) => ({
+    ...phase,
+    percent: totalMs > 0 ? Math.round((phase.elapsedMs / totalMs) * 1000) / 10 : 0,
+  }));
+  const slowest = [...trace.phases].sort((left, right) => right.elapsedMs - left.elapsedMs)[0];
+  trace.slowestPhase = slowest?.id || "";
+  trace.slowestLabel = slowest?.label || "";
+  const freshById = new Map((result.translations || []).map((entry) => [entry.id, entry.text]));
+  const failureById = new Map((result.failures || []).map((entry) => [entry.id, entry.error]));
+  const compatible =
+    String(detail.metadata?.provider || "ollama") === opts.provider &&
+    String(detail.metadata?.model || "") === opts.model &&
+    String(detail.metadata?.targetLanguage || "") === opts.targetLanguage;
+
+  await appendDiagnosticEvents([{
+    level: result.failures?.length ? "warning" : "info",
+    category: "translation",
+    event: "translation-benchmark-completed",
+    videoId: detail.metadata?.videoId || "unknown",
+    details: {
+      requested: items.length,
+      translated: result.translations?.length || 0,
+      failed: result.failures?.length || 0,
+      provider: opts.provider,
+      model: opts.model,
+      targetLanguage: opts.targetLanguage,
+      contextCueCount: opts.contextItems.length,
+      trace,
+      cacheChanged: false,
+    },
+  }]);
+
+  return {
+    benchmark: true,
+    provider: opts.provider,
+    model: opts.model,
+    targetLanguage: opts.targetLanguage,
+    contextCueCount: opts.contextItems.length,
+    cacheCompatible: compatible,
+    cacheCompatibilityReason: compatible
+      ? "settings-match-cache"
+      : "provider-model-or-language-differs",
+    cacheReadMs,
+    trace,
+    results: sample.map((cue, index) => ({
+      cueKey: cue.cueKey,
+      sourceText: cue.sourceText,
+      cachedText: cue.translatedText,
+      translatedText: freshById.get(String(index)) || "",
+      error: failureById.get(String(index)) || "",
+    })),
+  };
+}
+
+async function applyBenchmarkTranslations(message) {
+  const cacheId = String(message.cacheId || "");
+  if (!cacheId) throw new Error("A cache ID is required.");
+  const detail = await getTranslationCache(cacheId, true);
+  const expected = message.settings && typeof message.settings === "object"
+    ? message.settings
+    : {};
+  const actualProvider = String(detail.metadata?.provider || "ollama");
+  const actualModel = String(detail.metadata?.model || "");
+  const actualLanguage = String(detail.metadata?.targetLanguage || "");
+  if (
+    String(expected.provider || "") !== actualProvider ||
+    String(expected.model || "") !== actualModel ||
+    String(expected.targetLanguage || "") !== actualLanguage
+  ) {
+    throw new Error(
+      "These results use a different provider, model, or target language than this cache. " +
+      "Run the benchmark with matching settings before replacing cached lines.",
+    );
+  }
+
+  const existingKeys = new Set(detail.cues.map((cue) => cue.cueKey));
+  const replacements = {};
+  for (const entry of Array.isArray(message.entries) ? message.entries.slice(0, 12) : []) {
+    const cueKey = String(entry?.cueKey || "");
+    const translatedText = String(entry?.translatedText || "").trim();
+    if (!existingKeys.has(cueKey) || !translatedText) continue;
+    replacements[cueKey] = translatedText;
+  }
+  const replaced = Object.keys(replacements).length;
+  if (!replaced) throw new Error("This benchmark has no successful translations to apply.");
+  await cacheSet(cacheId, replacements);
+  await appendDiagnosticEvents([{
+    level: "info",
+    category: "translation",
+    event: "translation-benchmark-applied",
+    videoId: detail.metadata?.videoId || "unknown",
+    details: { replaced, cacheIdPresent: true },
+  }]);
+  return { replaced };
+}
+
 async function deleteTranslationCache(cacheId) {
   if (!cacheId) return false;
   const storageKey = cacheStorageKey(cacheId);
   const exists = (await ext.storage.local.get(storageKey))[storageKey] !== undefined;
   await ext.storage.local.remove([storageKey, cacheMetadataKey(cacheId)]);
   return exists;
+}
+
+async function deleteTranslationCacheCue(cacheId, cueKey) {
+  if (!cacheId || !cueKey) return false;
+  const storageKey = cacheStorageKey(cacheId);
+  const stored = await ext.storage.local.get(storageKey);
+  const entries = stored[storageKey];
+  if (!entries || !Object.prototype.hasOwnProperty.call(entries, cueKey)) return false;
+  delete entries[cueKey];
+  await ext.storage.local.set({ [storageKey]: entries });
+  return true;
+}
+
+async function regenerateTranslationCacheCue(cacheId, cueKey, sourceText) {
+  if (!cacheId || !cueKey) throw new Error("A cache ID and cue key are required.");
+  const settings = await getSettings();
+  const inferred = inferCacheMetadata(cacheId);
+  const targetLanguage = inferred.targetLanguage || settings.targetLanguage;
+
+  const textToTranslate = String(sourceText || "").trim() || parseCachedCue(cueKey, "").sourceText;
+  if (!textToTranslate) throw new Error("No source text available to translate.");
+
+  let showPrompt = "";
+  const identity = globalThis.LSTEpisodeIdentity;
+  const showKey = identity?.encodeShowKey
+    ? identity.encodeShowKey({ showName: inferred.showName || "", siteId: inferred.siteId || "" })
+    : "";
+  if (showKey) {
+    const storedShows = await showSettings();
+    const currentShowSettings = normalizedShowSettings(storedShows[showKey]);
+    showPrompt = String(currentShowSettings.promptInstructions || "").trim();
+  }
+
+  const single = await runPlainSingleTranslation(
+    { id: "0", text: textToTranslate },
+    {
+      ...settings,
+      targetLanguage,
+      showPrompt
+    }
+  );
+
+  const translatedText = single.translation.text;
+  await cacheSet(cacheId, { [cueKey]: translatedText });
+  return { cueKey, translatedText };
 }
 
 async function clearTranslationCache() {
@@ -1791,13 +2076,18 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const showKey = String(message.showKey || "").trim();
         const name = String(message.name || "");
         if (!showKey) throw new Error("This show has not been identified yet.");
-        if (!SHOW_SETTING_NAMES.has(name) || typeof message.value !== "boolean") {
+        if (!SHOW_SETTING_NAMES.has(name)) {
           throw new Error("Unknown per-show setting.");
+        }
+        if (name === "promptInstructions") {
+          if (typeof message.value !== "string") throw new Error("promptInstructions must be a string.");
+        } else if (typeof message.value !== "boolean") {
+          throw new Error("Setting value must be boolean.");
         }
         const stored = await showSettings();
         stored[showKey] = {
           ...normalizedShowSettings(stored[showKey]),
-          [name]: message.value,
+          [name]: typeof message.value === "string" ? message.value.trim() : message.value,
         };
         await ext.storage.local.set({ [SHOW_SETTINGS_KEY]: stored });
         sendResponse({ ok: true, settings: stored[showKey] });
@@ -2030,6 +2320,7 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       case "TRANSLATE_BATCH": {
+        const traceStartedAt = Date.now();
         const settings = await getSettings();
         if (settings.translationPaused) {
           sendResponse({ ok: false, error: "Subtitle translation is paused." });
@@ -2046,6 +2337,13 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ),
           sent: Array.isArray(message.contextItems) ? message.contextItems.length : 0
         };
+        let showPrompt = String(message.showPrompt || "").trim();
+        if (!showPrompt && message.showKey) {
+          const storedShows = await showSettings();
+          const currentShowSettings = normalizedShowSettings(storedShows[message.showKey]);
+          showPrompt = String(currentShowSettings.promptInstructions || "").trim();
+        }
+
         const opts = {
           provider: message.provider || settings.provider,
           ollamaUrl: message.ollamaUrl || settings.ollamaUrl,
@@ -2054,6 +2352,7 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
           requestTimeoutSeconds:
             message.requestTimeoutSeconds || settings.requestTimeoutSeconds,
           customTranslationPrompt: settings.customTranslationPrompt || "",
+          showPrompt,
           verifyTranslations: settings.verifyTranslations !== false,
           // Context arrives in a message, so it is checked here, once, before it
           // can reach a provider: the report travels back with the response so
@@ -2069,8 +2368,10 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!opts.model) throw new Error(`No ${providerName(opts.provider)} model selected.`);
         if (opts.provider !== "ollama") await providerApiKey(opts.provider);
 
-        const startedAt = Date.now();
+        const setupMs = Date.now() - traceStartedAt;
         const result = await translateBatchResilient(message.items || [], opts);
+        const elapsedMs = Date.now() - traceStartedAt;
+        const trace = translationTrace(result, elapsedMs, setupMs);
 
         sendResponse({
           ok: true,
@@ -2079,7 +2380,7 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
             requested: (message.items || []).length,
             translated: result.translations.length,
             failed: result.failures.length,
-            elapsedMs: Date.now() - startedAt,
+            elapsedMs,
             model: opts.model,
             provider: opts.provider,
             targetLanguage: opts.targetLanguage,
@@ -2087,9 +2388,20 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
             contextSentCues: context.sent,
             contextReason: context.reason,
             contextRefusedCues: context.refused || 0,
-            contextDecisions: context.decisions || []
+            contextDecisions: context.decisions || [],
+            trace
           }
         });
+        return;
+      }
+
+      case "BENCHMARK_TRANSLATION": {
+        sendResponse({ ok: true, ...(await benchmarkTranslation(message)) });
+        return;
+      }
+
+      case "APPLY_BENCHMARK_TRANSLATIONS": {
+        sendResponse({ ok: true, ...(await applyBenchmarkTranslations(message)) });
         return;
       }
 
@@ -2143,6 +2455,26 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "DELETE_TRANSLATION_CACHE": {
         sendResponse({ ok: true, removed: await deleteTranslationCache(message.cacheId) });
+        return;
+      }
+
+      case "DELETE_TRANSLATION_CACHE_CUE": {
+        sendResponse({
+          ok: true,
+          removed: await deleteTranslationCacheCue(message.cacheId, message.cueKey)
+        });
+        return;
+      }
+
+      case "REGENERATE_TRANSLATION_CACHE_CUE": {
+        sendResponse({
+          ok: true,
+          ...(await regenerateTranslationCacheCue(
+            message.cacheId,
+            message.cueKey,
+            message.sourceText
+          ))
+        });
         return;
       }
 

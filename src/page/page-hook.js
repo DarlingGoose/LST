@@ -77,13 +77,22 @@
       pendingCaptures.delete(String(event.data.eventId || ""));
       return;
     }
-    if (event.data.type !== "CAPTURE_CONSUMER_READY") return;
-    window.postMessage(
-      { source: SOURCE, channel: PAGE_CHANNEL, type: "CAPTURE_BRIDGE_READY" },
-      "*",
-    );
-    for (const message of pendingCaptures.values()) {
-      window.postMessage({ ...message, delivery: "replay" }, "*");
+    if (
+      event.data.type === "CAPTURE_CONSUMER_READY" ||
+      event.data.type === "CAPTURE_ROUTE_CHANGED"
+    ) {
+      if (event.data.type === "CAPTURE_CONSUMER_READY") {
+        window.postMessage(
+          { source: SOURCE, channel: PAGE_CHANNEL, type: "CAPTURE_BRIDGE_READY" },
+          "*",
+        );
+        for (const message of pendingCaptures.values()) {
+          window.postMessage({ ...message, delivery: "replay" }, "*");
+        }
+      }
+      resyncSubtitles();
+      setTimeout(resyncSubtitles, 600);
+      setTimeout(resyncSubtitles, 1800);
     }
   });
 
@@ -141,6 +150,7 @@
 
   function publish(siteId, url, text, extra = {}) {
     if (!isLikelySubtitleText(text)) return false;
+    if (url) rememberCaptured(url);
     postCapture("SUBTITLE_DOCUMENT", {
       url: String(url || ""),
       text,
@@ -192,6 +202,47 @@
     } catch {
       return "";
     }
+  }
+
+  function checkRecentResourceTimings(detected) {
+    if (!detected || typeof window.performance?.getEntriesByType !== "function") return;
+    try {
+      const entries = window.performance.getEntriesByType("resource");
+      for (let i = entries.length - 1; i >= 0 && i >= entries.length - 40; i--) {
+        const url = entries[i]?.name;
+        if (url && matchesSubtitleUrl(detected.site, url) && !alreadyCaptured(url)) {
+          fetchTrackText(url).then((text) => {
+            if (text && isLikelySubtitleText(text)) {
+              publish(detected.siteId, url, text, { capture: "resource-timing" });
+            }
+          }).catch(() => {});
+        }
+      }
+    } catch {}
+  }
+
+  function checkActiveTrack(detected) {
+    if (!detected?.site?.activeTimedTextTrack) return;
+    try {
+      const found = detected.site.activeTimedTextTrack(window);
+      if (found?.url && !alreadyCaptured(found.url)) {
+        fetchTrackText(found.url).then((text) => {
+          if (text && isLikelySubtitleText(text)) {
+            publish(detected.siteId, found.url, text, {
+              language: found.language || "",
+              capture: "player-api",
+            });
+          }
+        }).catch(() => {});
+      }
+    } catch {}
+  }
+
+  function resyncSubtitles() {
+    const detected = currentSite();
+    if (!detected) return;
+    checkRecentResourceTimings(detected);
+    checkActiveTrack(detected);
   }
 
   // A listing that arrived over XHR, in whichever response type the player
@@ -372,11 +423,22 @@
           ) {
             return;
           }
-          if (this.responseType && this.responseType !== "" && this.responseType !== "text") {
-            return;
+          if (this.responseType === "" || this.responseType === "text") {
+            publish(detected.siteId, url, this.responseText);
+          } else if (
+            this.responseType === "arraybuffer" &&
+            this.response &&
+            typeof TextDecoder !== "undefined"
+          ) {
+            try {
+              const text = new TextDecoder("utf-8").decode(this.response);
+              publish(detected.siteId, url, text);
+            } catch {}
+          } else if (this.responseType === "blob" && this.response) {
+            this.response.text().then((text) => {
+              publish(detected.siteId, url, text);
+            }).catch(() => {});
           }
-
-          publish(detected.siteId, url, this.responseText);
         } catch {
           // Ignore capture failures.
         }
@@ -385,4 +447,29 @@
 
     return originalSend.apply(this, args);
   };
+
+  if (typeof window.PerformanceObserver === "function") {
+    try {
+      const observer = new PerformanceObserver((list) => {
+        const detected = currentSite();
+        if (!detected) return;
+        for (const entry of list.getEntries()) {
+          const url = entry?.name;
+          if (url && matchesSubtitleUrl(detected.site, url) && !alreadyCaptured(url)) {
+            fetchTrackText(url).then((text) => {
+              if (text && isLikelySubtitleText(text)) {
+                publish(detected.siteId, url, text, { capture: "resource-timing" });
+              }
+            }).catch(() => {});
+          }
+        }
+      });
+      observer.observe({ type: "resource", buffered: true });
+    } catch {}
+  }
+
+  window.addEventListener("popstate", () => {
+    setTimeout(resyncSubtitles, 400);
+    setTimeout(resyncSubtitles, 1200);
+  });
 })();

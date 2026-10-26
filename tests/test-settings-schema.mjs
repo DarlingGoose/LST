@@ -14,7 +14,7 @@ assert.equal(schema.VERSION, 1);
 assert.equal(schema.DEFAULTS.showQuickPills, true);
 assert.deepEqual(
   [...schema.PER_SHOW_NAMES],
-  ["showTranslated", "hideNativeSubtitles", "showTranscriptSidebar"],
+  ["showTranslated", "hideNativeSubtitles", "showTranscriptSidebar", "promptInstructions"],
 );
 
 // A v0.5-style profile has the Netflix-specific spelling and no pill setting.
@@ -77,13 +77,15 @@ assert.equal("unknown" in patch, false);
 
 const effective = schema.resolveEffective(
   { showTranslated: true, hideNativeSubtitles: false },
-  { showTranslated: false, hideNativeSubtitles: "invalid", showOriginal: true },
+  { showTranslated: false, hideNativeSubtitles: "invalid", showOriginal: true, promptInstructions: " Tina, Paruna " },
 );
 assert.equal(effective.settings.showTranslated, false);
 assert.equal(effective.sources.showTranslated, "show");
 assert.equal(effective.settings.hideNativeSubtitles, false);
 assert.equal(effective.sources.hideNativeSubtitles, "global");
 assert.equal(effective.settings.showOriginal, false);
+assert.equal(effective.settings.promptInstructions, "Tina, Paruna");
+assert.equal(effective.sources.promptInstructions, "show");
 
 const install = schema.installPatch({
   model: "legacy-model",

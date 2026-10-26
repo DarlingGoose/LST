@@ -5,7 +5,7 @@
   const h = globalThis.LSTPlaybackSiteInternals;
   if (!registry || !h) throw new Error("playback-site.js must load before netflix.js");
 
-  const SUBTITLE_URL = String.raw`(?:subtitle|timedtext|caption|dfxp|webvtt|\.vtt(?:\?|$)|\.xml(?:\?|$)|\?o=)`;
+  const SUBTITLE_URL = String.raw`(?:subtitle|timedtext|textstream|caption|dfxp|ttml|\.ttml(?:\b|[?&]|$)|\.dfxp(?:\b|[?&]|$)|\.vtt(?:\b|[?&]|$)|\.xml(?:\b|[?&]|$)|[?&]o=)`;
   const TITLE_CONTAINERS = [
     '[data-uia="video-title"]',
     '[data-uia="player-title"]',
@@ -128,9 +128,112 @@
     timedText: Object.freeze({
       capture: "url-heuristic",
       urlPatterns: Object.freeze([SUBTITLE_URL]),
-      contentTypes: Object.freeze(["ttml", "vtt", "xml", "text/plain"]),
+      contentTypes: Object.freeze([
+        "ttml",
+        "vtt",
+        "xml",
+        "text/plain",
+        "application/xml",
+        "application/ttml+xml",
+      ]),
       reason: "netflix-delivers-timed-text-as-a-document",
     }),
+    activeTimedTextTrack(win) {
+      try {
+        const videoPlayer = win?.netflix?.appContext?.state?.playerApp?.getAPI?.()?.videoPlayer;
+        if (!videoPlayer) return null;
+        const sessionIds = videoPlayer.getAllPlayerSessionIds?.();
+        if (!sessionIds || !sessionIds.length) return null;
+        const player = videoPlayer.getVideoPlayerBySessionId(sessionIds[sessionIds.length - 1]);
+        if (!player) return null;
+
+        let manifest = null;
+        for (const method of ["getManifest", "getMovieManifest", "getPlaybackInfo"]) {
+          try {
+            if (typeof player[method] === "function") {
+              manifest = player[method]();
+              if (manifest && (manifest.timedtexttracks || manifest.textTracks)) break;
+              manifest = null;
+            }
+          } catch {}
+        }
+        if (!manifest) {
+          for (const key of Object.keys(player)) {
+            const val = player[key];
+            if (val && typeof val === "object" && (val.timedtexttracks || val.textTracks)) {
+              manifest = val;
+              break;
+            }
+          }
+        }
+        const tracks = manifest?.timedtexttracks || manifest?.textTracks || [];
+        if (!tracks.length) return null;
+
+        const currentTrack = player.getTimedTextTrack?.() || player.getCurrentTimedTextTrack?.();
+        const currentTrackId = currentTrack?.trackId || currentTrack?.new_track_id;
+        const currentLang = currentTrack?.bcp47 || currentTrack?.language;
+
+        let target = null;
+        if (currentTrackId) {
+          target = tracks.find(
+            (t) => t.trackId === currentTrackId || t.new_track_id === currentTrackId,
+          );
+        }
+        if (!target && currentLang) {
+          target = tracks.find(
+            (t) => !t.isForced && (t.bcp47 === currentLang || t.language === currentLang),
+          );
+        }
+        if (!target) {
+          target = tracks.find((t) => !t.isForced) || tracks[0];
+        }
+        if (!target) return null;
+
+        const dl =
+          target.ttDownloadables ||
+          target.downloadables ||
+          target.downloadUrls ||
+          target.urls;
+        let url = "";
+        if (dl && typeof dl === "object") {
+          for (const format of ["ttml", "dfxp", "webvtt", "vtt"]) {
+            const item = dl[format];
+            if (typeof item === "string" && item) {
+              url = item;
+              break;
+            }
+            if (Array.isArray(item?.urls) && item.urls[0]) {
+              const u = item.urls[0];
+              url = typeof u === "string" ? u : u?.url || "";
+              if (url) break;
+            }
+            if (item?.downloadUrls) {
+              const first = Object.values(item.downloadUrls)[0];
+              if (typeof first === "string" && first) {
+                url = first;
+                break;
+              }
+            }
+          }
+          if (!url) {
+            for (const val of Object.values(dl)) {
+              if (typeof val === "string" && val) {
+                url = val;
+                break;
+              }
+              if (Array.isArray(val?.urls) && val.urls[0]) {
+                const u = val.urls[0];
+                url = typeof u === "string" ? u : u?.url || "";
+                if (url) break;
+              }
+            }
+          }
+        }
+        return url ? { url, language: target.bcp47 || target.language || "" } : null;
+      } catch {
+        return null;
+      }
+    },
   };
 
   registry.registerSite(adapter);

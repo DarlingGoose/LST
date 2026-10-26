@@ -368,6 +368,12 @@
       return { ...result, reason: "no-letters" };
     }
 
+    // Leaked JSON schema structure or delimiter hallucination. Subtitles
+    // should never contain raw schema properties like `【id":` or `{"id":`.
+    if (/[【\[{]\s*(?:id|cue|i)["'\s]*[:=]/i.test(translated)) {
+      return { ...result, verdict: "reject", reason: "schema-leak" };
+    }
+
     // 4. The ordinary case: the output uses one of the target's scripts.
     if (observedScripts.some((script) => expectedScripts.includes(script))) {
       return { ...result, reason: "expected-script" };
@@ -423,6 +429,8 @@
         return observed
           ? `Verification failed: the result is written in ${observed}, not ${target}.`
           : `Verification failed: the result was not written in ${target}.`;
+      case "schema-leak":
+        return "Verification failed: the model output leaked JSON structure or brackets.";
       default:
         return `Verification failed for ${target}.`;
     }

@@ -13,6 +13,7 @@
     "showTranslated",
     "hideNativeSubtitles",
     "showTranscriptSidebar",
+    "promptInstructions",
   ]);
   const INTERFACE_NAMES = Object.freeze([
     "hideNativeSubtitles",
@@ -167,7 +168,11 @@
     const result = {};
     if (!value || typeof value !== "object" || Array.isArray(value)) return result;
     for (const name of PER_SHOW_NAMES) {
-      if (typeof value[name] === "boolean") result[name] = value[name];
+      if (name === "promptInstructions") {
+        if (typeof value[name] === "string") result[name] = value[name].trim();
+      } else if (typeof value[name] === "boolean") {
+        result[name] = value[name];
+      }
     }
     return result;
   }

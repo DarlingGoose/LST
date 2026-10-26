@@ -351,6 +351,67 @@ assert.deepEqual(
   [0, 1000]
 );
 
+const cacheBeforeBenchmark = JSON.stringify(values[`translationCache:${cacheId}`]);
+response = await send({
+  type: "BENCHMARK_TRANSLATION",
+  cacheId,
+  sampleSize: 2,
+  settings: {
+    provider: "ollama",
+    model: "qwen3:8b",
+    targetLanguage: "English",
+    useTranslationContext: true,
+    contextLevel: "minimal",
+    verifyTranslations: false,
+  },
+});
+assert.equal(response.ok, true);
+assert.equal(response.benchmark, true);
+assert.equal(response.results.length, 2);
+assert.equal(response.results[0].cachedText, "Hello");
+assert.match(response.results[0].translatedText, /^translated:/);
+assert.equal(response.trace.slowestPhase.length > 0, true);
+assert.equal(response.trace.phases.some((phase) => phase.id === "cache-read"), true);
+assert.equal(response.trace.providerRequests, 1);
+assert.equal(response.cacheCompatible, true);
+assert.equal(JSON.stringify(values[`translationCache:${cacheId}`]), cacheBeforeBenchmark,
+  "a benchmark never rewrites cached translations");
+assert.equal(
+  values.diagnosticLog.at(-1).event,
+  "translation-benchmark-completed",
+  "the redacted benchmark trace is available in diagnostics",
+);
+const benchmarkResponse = response;
+const incompatibleApply = await send({
+  type: "APPLY_BENCHMARK_TRANSLATIONS",
+  cacheId,
+  settings: { provider: "ollama", model: "other-model", targetLanguage: "English" },
+  entries: benchmarkResponse.results,
+});
+assert.equal(incompatibleApply.ok, false, "results from another cache identity are refused");
+assert.equal(JSON.stringify(values[`translationCache:${cacheId}`]), cacheBeforeBenchmark);
+response = await send({
+  type: "APPLY_BENCHMARK_TRANSLATIONS",
+  cacheId,
+  settings: {
+    provider: benchmarkResponse.provider,
+    model: benchmarkResponse.model,
+    targetLanguage: benchmarkResponse.targetLanguage,
+  },
+  entries: [{
+    cueKey: benchmarkResponse.results[0].cueKey,
+    translatedText: benchmarkResponse.results[0].translatedText,
+  }],
+});
+assert.equal(response.replaced, 1);
+assert.equal(
+  values[`translationCache:${cacheId}`][benchmarkResponse.results[0].cueKey],
+  benchmarkResponse.results[0].translatedText,
+  "an explicitly applied benchmark replaces only its tested cache entry",
+);
+assert.equal(values.diagnosticLog.at(-1).event, "translation-benchmark-applied");
+await send({ type: "CLEAR_DEBUG_EVENTS" });
+
 response = await send({ type: "DELETE_TRANSLATION_CACHE", cacheId });
 assert.equal(response.removed, true);
 assert.equal((await send({ type: "LIST_TRANSLATION_CACHES" })).caches.length, 0);
@@ -1054,5 +1115,27 @@ function functionSource(source, name) {
     grouping.cacheShowKey(entry("Example Show", "primevideo")),
   );
 }
+
+// Delete single cue
+await send({
+  type: "CACHE_SET",
+  cacheId: "single-cue-test:m:English",
+  entries: {
+    "0:1000:line one": "Translation one",
+    "1000:2000:line two": "Translation two"
+  }
+});
+const delCueRes = await send({
+  type: "DELETE_TRANSLATION_CACHE_CUE",
+  cacheId: "single-cue-test:m:English",
+  cueKey: "0:1000:line one"
+});
+assert.equal(delCueRes.removed, true);
+const singleCache = await send({
+  type: "GET_TRANSLATION_CACHE",
+  cacheId: "single-cue-test:m:English"
+});
+assert.equal(singleCache.cues.length, 1);
+assert.equal(singleCache.cues[0].sourceText, "line two");
 
 console.log("Translation cache management checks passed.");

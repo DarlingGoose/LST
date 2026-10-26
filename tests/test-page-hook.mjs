@@ -149,6 +149,7 @@ function createPageHarness(href) {
   let windowRef;
   context = vm.createContext({
     XMLHttpRequest: MockXHR,
+    TextDecoder,
     console,
     setTimeout,
     clearTimeout,
@@ -204,6 +205,16 @@ function createPageHarness(href) {
       xhr.open("GET", url);
       xhr.responseURL = url;
       xhr.responseText = body;
+      xhr.headers = { "content-type": contentType };
+      xhr.send();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    },
+    async xhrArrayBuffer(url, contentType, body) {
+      const xhr = new MockXHR();
+      xhr.open("GET", url);
+      xhr.responseURL = url;
+      xhr.responseType = "arraybuffer";
+      xhr.response = Buffer.from(body);
       xhr.headers = { "content-type": contentType };
       xhr.send();
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -273,6 +284,33 @@ const captureCases = [
     "https://www.netflix.com/api/timedtext?o=123",
     "text/xml",
     NETFLIX_TTML,
+    "netflix",
+  ],
+  [
+    "Netflix watch page, &o= timed-text shape",
+    "https://www.netflix.com/watch/80100172",
+    "fetch",
+    "https://ipv4-c001-sjc002-ix.1.oca.nflxvideo.net/range/1234?trackId=155573558&o=123",
+    "text/xml",
+    NETFLIX_TTML,
+    "netflix",
+  ],
+  [
+    "Netflix watch page, textstream url shape",
+    "https://www.netflix.com/watch/80100172",
+    "fetch",
+    "https://ipv4-c001-sjc002-ix.1.oca.nflxvideo.net/?textstream=true",
+    "text/xml",
+    NETFLIX_TTML,
+    "netflix",
+  ],
+  [
+    "Netflix watch page, arraybuffer over XHR",
+    "https://www.netflix.com/watch/80100172",
+    "xhrArrayBuffer",
+    "https://www.netflix.com/subtitle.vtt",
+    "text/vtt",
+    VTT,
     "netflix",
   ],
   [

@@ -88,6 +88,8 @@
   let renderedSubtitleCandidateSince = 0;
   let lastTitleMetadataRefreshAt = 0;
   let titleMetadataRefreshTimer = null;
+  let lastObservedVideoId = "";
+  let lastCaptureProbeAt = 0;
 
   let warnedMissingTranslationContext = false;
   let translationCoordinator;
@@ -151,6 +153,7 @@
     lastOllamaMode: "",
     lastOllamaRaw: "",
     lastDiagnostics: [],
+    lastTrace: null,
     message: "Waiting for subtitles…",
     messageTone: "warning",
     // Which track is playing: the service's own captions, or a subtitle file the
@@ -1184,12 +1187,21 @@
     if (key !== showKey()) return false;
     const overrides = response.settings || {};
     for (const name of SHOW_SETTING_NAMES) {
-      settings[name] = typeof overrides[name] === "boolean"
-        ? overrides[name]
-        : globalShowDefaults[name];
-      effectiveSettingSources[name] = typeof overrides[name] === "boolean"
-        ? "show"
-        : globalSettingSources[name] || "default";
+      if (name === "promptInstructions") {
+        settings[name] = typeof overrides[name] === "string"
+          ? overrides[name]
+          : "";
+        effectiveSettingSources[name] = typeof overrides[name] === "string" && overrides[name]
+          ? "show"
+          : "default";
+      } else {
+        settings[name] = typeof overrides[name] === "boolean"
+          ? overrides[name]
+          : globalShowDefaults[name];
+        effectiveSettingSources[name] = typeof overrides[name] === "boolean"
+          ? "show"
+          : globalSettingSources[name] || "default";
+      }
     }
     appliedShowSettingsKey = key;
     applySubtitleAppearance();
@@ -1207,7 +1219,7 @@
       type: "SET_SHOW_SETTING",
       showKey: key,
       name,
-      value: Boolean(value),
+      value: name === "promptInstructions" ? String(value || "").trim() : Boolean(value),
     });
   }
 
@@ -1342,6 +1354,14 @@
             <div class="lst-pill-actions">
               <button type="button" data-pill-action="import">Import subtitles…</button>
               <button type="button" data-pill-action="check-jimaku">Check Jimaku</button>
+              <button type="button" data-pill-action="prompt">Names & prompt…</button>
+            </div>
+            <div id="lst-pill-prompt-drawer" class="lst-pill-prompt-drawer" hidden>
+              <label for="lst-pill-prompt-input" class="lst-pill-prompt-label">Character names / show prompt:</label>
+              <textarea id="lst-pill-prompt-input" class="lst-pill-prompt-input" rows="3" placeholder="e.g. Tina, Paruna, Demon King, Valman"></textarea>
+              <div class="lst-pill-prompt-actions">
+                <button type="button" data-pill-action="save-prompt" class="lst-pill-prompt-save">Save for this show</button>
+              </div>
             </div>
           </section>
           <section class="lst-pill-section" aria-labelledby="lst-visibility-heading">
@@ -1523,8 +1543,49 @@
       const translation = knownCachedTranslations.get(key) || "";
       translated.textContent = translation || "Translation pending";
       translated.dataset.pending = translation ? "false" : "true";
+
+      const actions = document.createElement("div");
+      actions.className = "lst-transcript-actions";
+      const regenBtn = document.createElement("button");
+      regenBtn.type = "button";
+      regenBtn.className = "lst-transcript-action-regen";
+      regenBtn.title = "Regenerate translation for this line";
+      regenBtn.setAttribute("aria-label", "Regenerate translation for this line");
+      regenBtn.textContent = "↻";
+
+      regenBtn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        regenBtn.disabled = true;
+        regenBtn.textContent = "…";
+        translated.textContent = "Regenerating…";
+        translated.dataset.pending = "true";
+        try {
+          const res = await sendRuntimeMessage({
+            type: "REGENERATE_TRANSLATION_CACHE_CUE",
+            cacheId: cacheId(),
+            cueKey: key,
+            sourceText: cue.text
+          });
+          if (res?.ok && res.translatedText) {
+            rememberCachedEntries({ [key]: res.translatedText });
+          } else {
+            throw new Error(res?.error || "Failed to regenerate line.");
+          }
+        } catch (err) {
+          logDiagnostic("error", "translation", "transcript-regenerate-failed", {
+            error: err.message
+          }, key);
+          translated.textContent = translation || "Regeneration failed";
+          translated.dataset.pending = !translation ? "true" : "false";
+        } finally {
+          regenBtn.textContent = "↻";
+          regenBtn.disabled = false;
+        }
+      });
+
+      actions.appendChild(regenBtn);
       text.append(original, translated);
-      row.append(time, text);
+      row.append(time, text, actions);
       fragment.appendChild(row);
       transcriptRowsByKey.set(key, row);
     });
@@ -2078,6 +2139,27 @@
             true,
           );
         });
+      } else if (action === "prompt") {
+        const drawer = quickPillsPanel.querySelector("#lst-pill-prompt-drawer");
+        const textarea = quickPillsPanel.querySelector("#lst-pill-prompt-input");
+        if (drawer) {
+          drawer.hidden = !drawer.hidden;
+          if (!drawer.hidden && textarea) {
+            textarea.value = settings.promptInstructions || "";
+            textarea.focus();
+          }
+        }
+      } else if (action === "save-prompt") {
+        const drawer = quickPillsPanel.querySelector("#lst-pill-prompt-drawer");
+        const textarea = quickPillsPanel.querySelector("#lst-pill-prompt-input");
+        const val = textarea ? textarea.value.trim() : "";
+        settings.promptInstructions = val;
+        saveShowSetting("promptInstructions", val).then(() => {
+          if (drawer) drawer.hidden = true;
+          setStatus(val ? "Show prompt instructions saved." : "Show prompt instructions cleared.", true);
+        }).catch((err) => {
+          setStatus(`Could not save show prompt: ${err.message}`, true);
+        });
       } else if (action === "hide-overlay") {
         settings.showQuickPills = false;
         setQuickPillsMenu(false);
@@ -2283,6 +2365,7 @@
       `cache ahead ${formatAheadDuration(currentStatus.cachedAheadSeconds)}`,
       `precompute  ${currentStatus.precomputing ? "RUNNING" : "idle"} · batch ${currentStatus.currentBatch || 0}/${currentStatus.totalBatches || 0}`,
       `request     ${currentStatus.requestState || "idle"} · ${formatMs(currentStatus.lastRequestMs)}`,
+      `slowest     ${currentStatus.lastTrace?.slowestLabel || "—"}`,
       `result      ${currentStatus.lastRequestTranslated || 0}/${currentStatus.lastRequestRequested || 0} translated · ${currentStatus.lastRequestFailed || 0} failed`,
       `ollama      ${currentStatus.lastOllamaMode || "—"}`,
       `playback    ${currentStatus.playbackMode || "waiting"}`,
@@ -3281,6 +3364,7 @@
   }
 
   async function translateOwnedCues(selectedCues) {
+    const timelineStartedAt = performance.now();
     if (!translationMayRun(findRenderedSubtitle())) {
       return { entries: {}, failures: [] };
     }
@@ -3302,7 +3386,9 @@
     // A navigation must not write late results into the next episode.
     const requestedCacheId = cacheId();
     const requestedCacheMetadata = cacheMetadata();
+    const cacheLookupStartedAt = performance.now();
     const cached = await getCachedTranslations(deduped, requestedCacheId);
+    const cacheLookupMs = Math.round(performance.now() - cacheLookupStartedAt);
     const missing = deduped.filter(
       (cue) => !Object.prototype.hasOwnProperty.call(cached, cueKey(cue)),
     );
@@ -3310,6 +3396,9 @@
     if (!missing.length) {
       logDiagnostic("info", "translation", "translation-cache-hit", {
         count: deduped.length,
+        cacheLookupMs,
+        totalMs: Math.round(performance.now() - timelineStartedAt),
+        slowestPhase: "cache-lookup",
       }, cueKey(deduped[0]));
       return { entries: cached, failures: [] };
     }
@@ -3338,6 +3427,8 @@
           id: cueKey(cue),
           text: cue.text,
         })),
+        showKey: showKey(),
+        showPrompt: settings.promptInstructions || "",
         contextItems,
         // The level the context above was chosen under, so the background checks
         // the list against the amount the viewer asked for rather than a guess.
@@ -3366,6 +3457,7 @@
         cueKey(missing[0]),
       );
       currentStatus.lastDiagnostics = response.diagnostics || [];
+      currentStatus.lastTrace = response.summary?.trace || null;
 
       // The background is the last check before a request reaches a provider. If
       // it refused or shortened the context this request sent, the reason travels
@@ -3425,14 +3517,37 @@
           : newEntries;
       if (requestedCacheId === cacheId()) rememberCachedEntries(persistedEntries);
 
+      let cacheWriteMs = 0;
       if (Object.keys(persistedEntries).length) {
+        const cacheWriteStartedAt = performance.now();
         await runtimeMessage({
           type: "CACHE_SET",
           cacheId: requestedCacheId,
           entries: persistedEntries,
           metadata: requestedCacheMetadata,
         });
+        cacheWriteMs = Math.round(performance.now() - cacheWriteStartedAt);
       }
+
+      const backgroundTrace = response.summary?.trace || null;
+      const phases = [
+        { id: "cache-lookup", elapsedMs: cacheLookupMs },
+        ...(backgroundTrace?.phases || []),
+        { id: "cache-write", elapsedMs: cacheWriteMs },
+      ];
+      const slowest = [...phases].sort(
+        (left, right) => Number(right.elapsedMs || 0) - Number(left.elapsedMs || 0),
+      )[0];
+      logDiagnostic("info", "translation", "translation-timeline", {
+        totalMs: Math.round(performance.now() - timelineStartedAt),
+        cacheLookupMs,
+        cacheWriteMs,
+        providerRequests: backgroundTrace?.providerRequests || 0,
+        retryAttempts: backgroundTrace?.retryAttempts || 0,
+        splitAttempts: backgroundTrace?.splitAttempts || 0,
+        slowestPhase: slowest?.id || "unknown",
+        phases,
+      }, cueKey(missing[0]));
 
       return {
         entries: { ...cached, ...newEntries },
@@ -3770,7 +3885,12 @@
       return;
     }
 
-    if (cueVideoId && cueVideoId !== getVideoId()) {
+    const activeVideoId = getVideoId();
+    if (
+      (cueVideoId && cueVideoId !== activeVideoId) ||
+      (lastObservedVideoId && lastObservedVideoId !== activeVideoId && activeVideoId !== "unknown")
+    ) {
+      lastObservedVideoId = activeVideoId;
       const keepNativeCaptions = Boolean(
         cueTrackKind === "captured" &&
         settings.showNativeWhenTargetLanguage !== false &&
@@ -3781,7 +3901,7 @@
       cues = [];
       cueSourceUrl = "";
       capturedTrackLanguage = "";
-      cueVideoId = getVideoId();
+      cueVideoId = activeVideoId;
       translationCoordinator = null;
       knownCachedKeys = new Set();
       knownCachedTranslations = new Map();
@@ -3845,6 +3965,7 @@
       // been cleared. It is offered to the empty track now, rather than waiting
       // for a request the player makes only once.
       adoptHeldCapturedDocument("episode-changed");
+      notifyCaptureRouteChanged();
       requestAnimationFrame(playbackLoop);
       return;
     }
@@ -3853,6 +3974,10 @@
 
     if (!cues.length) {
       if (pausedCacheBlockerChanged) updateQuickPills();
+      if (Date.now() - lastCaptureProbeAt >= 3000) {
+        lastCaptureProbeAt = Date.now();
+        notifyCaptureRouteChanged();
+      }
       requestAnimationFrame(playbackLoop);
       return;
     }
@@ -4283,6 +4408,7 @@
     cues = adoptCapturedTrack(existingCues, parsed, decision);
     cueSourceUrl = url || "captured";
     cueVideoId = getVideoId();
+    lastObservedVideoId = cueVideoId;
     cueTrackKind = "captured";
     capturedTrackLanguage = String(details.language || "").trim();
     // A document that has been adopted is not held any more: the next capture
@@ -5197,6 +5323,21 @@
     return true;
   }
 
+  function notifyCaptureRouteChanged() {
+    if (globalThis.LSTCaptureBridge?.requestResync) {
+      globalThis.LSTCaptureBridge.requestResync();
+    } else if (typeof window.postMessage === "function") {
+      window.postMessage(
+        {
+          source: SOURCE,
+          channel: "content-capture",
+          type: "CAPTURE_ROUTE_CHANGED",
+        },
+        "*",
+      );
+    }
+  }
+
   // The other piece of evidence, for a player that draws no line at all: a
   // viewer who has the service's own captions off. Then nothing the player draws
   // can say which document belongs to this episode, and the clock says it
@@ -5655,6 +5796,7 @@
       progressPercent: 0,
       playbackMode: "waiting",
       requestState: "idle",
+      lastTrace: null,
       subtitleSource: "none",
       importedFileName: "",
       pausedCacheReason: "",
@@ -5817,11 +5959,13 @@
       stopTitleMetadataObserver = startTitleMetadataObserver();
       stopFallbackObserver = startFallbackObserver();
       requestAnimationFrame(playbackLoop);
+      lastObservedVideoId = getVideoId();
       // A track the page world captured before this pass is this episode's
       // track: the request that carried it is not repeated, so holding it would
       // mean waiting for a capture that is never asked for again. The same
       // applies to a track captured while LST was withdrawn between episodes.
       adoptHeldCapturedDocument("playback-start");
+      notifyCaptureRouteChanged();
       // A subtitle file the viewer imported for this episode is this episode's
       // track, whether or not the service is rendering captions of its own.
       refreshImportedTrack({ reason: "playback-start" }).catch((error) => {

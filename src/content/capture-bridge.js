@@ -84,6 +84,9 @@
         if (subscriber === handler) subscriber = null;
       };
     },
+    requestResync() {
+      post("CAPTURE_ROUTE_CHANGED");
+    },
     // Counts only: never expose a captured payload, subtitle text, or URL to a
     // diagnostic page. This makes startup ordering failures visible without
     // making a troubleshooting report contain viewing data.

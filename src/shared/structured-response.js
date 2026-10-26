@@ -161,6 +161,35 @@
     return { value: undefined, strategy: "none", truncated: !scan.balanced };
   }
 
+  const EMBEDDED_CUE_START = /[【\[]\s*(?:id|cue|i)["'\s]*[:=]/i;
+  const EMBEDDED_CUE_SPLIT = /[【\[]\s*(?:id|cue|i)["'\s]*[:=]\s*["']?(\d+)["']?\s*,\s*["']?(?:text|translation|target|output|value)["'\s]*[:=]\s*["']?([\s\S]*?)(?:["']?\s*[】\]])/gi;
+
+  /**
+   * Some local models (or constrained GBNF grammars) replace JSON delimiters
+   * with fullwidth brackets like `【id":"2","text":"..."】` inside a previous
+   * item's text string instead of closing the string and array element cleanly.
+   * If detected, recover the intended head text and extract embedded items.
+   */
+  function recoverEmbeddedCues(row) {
+    const text = String(row?.text ?? "");
+    const matchIdx = text.search(EMBEDDED_CUE_START);
+    if (matchIdx < 0) return [row];
+
+    const headText = text.slice(0, matchIdx).replace(/[【】\[\]\s]+$/, "").trim();
+    const tailText = text.slice(matchIdx);
+    const rows = [{ id: row.id, text: headText }];
+
+    let match;
+    while ((match = EMBEDDED_CUE_SPLIT.exec(tailText)) !== null) {
+      const id = match[1];
+      let cueText = match[2].trim();
+      cueText = cueText.replace(/\\n/g, "\n").replace(/^["']+|["']+$/g, "").trim();
+      rows.push({ id, text: cueText });
+    }
+
+    return rows;
+  }
+
   function asRow(row) {
     if (typeof row === "string") return { id: "", text: row.trim() };
     if (Array.isArray(row)) {
@@ -178,12 +207,14 @@
    * a bare array, a wrapped array, an id-keyed object, and a single bare row.
    */
   function readRows(value) {
-    if (Array.isArray(value)) return { rows: value.map(asRow), shape: "array" };
+    const expand = (rows) => rows.flatMap(recoverEmbeddedCues);
+
+    if (Array.isArray(value)) return { rows: expand(value.map(asRow)), shape: "array" };
     if (!value || typeof value !== "object") return { rows: [], shape: "none" };
 
     for (const [key, candidate] of Object.entries(value)) {
       if (!ROW_KEYS.includes(key.toLowerCase())) continue;
-      if (Array.isArray(candidate)) return { rows: candidate.map(asRow), shape: key };
+      if (Array.isArray(candidate)) return { rows: expand(candidate.map(asRow)), shape: key };
     }
 
     // {"translations": {"1": "text", "2": "text"}}
@@ -193,7 +224,7 @@
       const pairs = Object.entries(candidate).filter(([, text]) => typeof text === "string");
       if (pairs.length) {
         return {
-          rows: pairs.map(([id, text]) => ({ id, text: text.trim() })),
+          rows: expand(pairs.map(([id, text]) => ({ id, text: text.trim() }))),
           shape: `${key}-map`
         };
       }
@@ -202,7 +233,7 @@
     const isRow = (object) =>
       object && typeof object === "object" &&
       (object.text != null || object.translation != null || object.target != null);
-    if (isRow(value)) return { rows: [asRow(value)], shape: "row" };
+    if (isRow(value)) return { rows: expand([asRow(value)]), shape: "row" };
 
     return { rows: [], shape: "none" };
   }

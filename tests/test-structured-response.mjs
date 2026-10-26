@@ -511,4 +511,18 @@ const three = cues("alpha", "bravo", "charlie");
   await send({ type: "SAVE_SETTINGS", settings: { verifyTranslations: true } });
 }
 
+// K. Hallucinated delimiter recovery: fullwidth brackets or pseudo-cues inside
+//    an item's text are split into intended cues rather than corrupting item 1.
+{
+  scenario = () =>
+    '{"translations":[{"id":"1","text":"Alpha line.】【id\\":\\"2\\",\\"text\\":\\"Beta line.】【id\\":\\"3\\",\\"text\\":\\"Gamma line.】]"}]}';
+  requests.length = 0;
+  const result = await send({ type: "TRANSLATE_BATCH", items: three });
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.translations.length, 3);
+  assert.equal(result.translations[0].text, "Alpha line.");
+  assert.equal(result.translations[1].text, "Beta line.");
+  assert.equal(result.translations[2].text, "Gamma line.");
+}
+
 console.log("Structured response alignment checks passed.");

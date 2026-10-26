@@ -101,4 +101,14 @@ assert.deepEqual(JSON.parse(JSON.stringify(summary)), {
   reason: "source-language-leaked",
 });
 
+// Leaked JSON schema structure or delimiter hallucination is rejected.
+assert.equal(
+  verdict("本当だ。", "True.】【id\":\"2\",\"text\":\"Wait", "English").verdict,
+  "reject",
+);
+assert.equal(
+  verdict("本当だ。", "True.】【id\":\"2\",\"text\":\"Wait", "English").reason,
+  "schema-leak",
+);
+
 console.log("Translation guard checks passed.");

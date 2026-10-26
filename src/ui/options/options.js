@@ -36,6 +36,8 @@ const TAB_DETAILS = {
 };
 let diagnosticLogEvents = [];
 let currentPlayerHealthSnapshot = null;
+let translationCaches = [];
+let latestBenchmark = null;
 
 // Where the LST control button and its status may sit inside a player, and the
 // legacy spelling of the setting that hides the service's own captions.
@@ -379,6 +381,8 @@ function createCacheItem(cache) {
 }
 
 function renderCacheLibrary(caches, totalBytes) {
+  translationCaches = caches;
+  renderBenchmarkCacheOptions();
   const list = $("cacheList");
   list.replaceChildren();
   const groups = new Map();
@@ -410,21 +414,91 @@ function renderCacheLibrary(caches, totalBytes) {
     return;
   }
 
-  for (const episodes of groups.values()) {
+  for (const [groupShowKey, episodes] of groups.entries()) {
     const group = document.createElement("section");
     group.className = "cache-show";
-    const heading = document.createElement("h3");
+    group.dataset.showKey = groupShowKey;
+
+    const heading = document.createElement("div");
     heading.className = "cache-show-title";
+    const headingLeft = document.createElement("div");
+    headingLeft.className = "cache-show-title-left";
     const headingName = document.createElement("span");
+    headingName.className = "cache-show-name";
     headingName.textContent = cacheGroupName(episodes);
     const headingCount = document.createElement("span");
     headingCount.className = "cache-show-count";
     headingCount.textContent = `${episodes.length} episode${episodes.length === 1 ? "" : "s"}`;
-    heading.append(headingName, headingCount);
+    headingLeft.append(headingName, headingCount);
+
+    const promptBtn = document.createElement("button");
+    promptBtn.type = "button";
+    promptBtn.className = "secondary cache-show-prompt-toggle";
+    promptBtn.textContent = "Show prompt & names";
+    promptBtn.setAttribute("aria-expanded", "false");
+
+    heading.append(headingLeft, promptBtn);
+
+    const promptDrawer = document.createElement("div");
+    promptDrawer.className = "cache-show-prompt-drawer";
+    promptDrawer.hidden = true;
+
+    const field = document.createElement("div");
+    field.className = "field";
+    const label = document.createElement("label");
+    label.textContent = `Character names and instructions for ${headingName.textContent}:`;
+    const textarea = document.createElement("textarea");
+    textarea.rows = 3;
+    textarea.spellcheck = false;
+    textarea.placeholder = "e.g. Tina, Paruna, Demon King, Valman. Always translate X as Y.";
+    const help = document.createElement("p");
+    help.className = "help";
+    help.textContent = "Injected into the translation model's prompt when translating episodes of this show.";
+    field.append(label, textarea, help);
+
+    const cardActions = document.createElement("div");
+    cardActions.className = "card-actions";
+    const savePromptBtn = document.createElement("button");
+    savePromptBtn.type = "button";
+    savePromptBtn.className = "secondary cache-show-prompt-save";
+    savePromptBtn.textContent = "Save prompt for show";
+    cardActions.appendChild(savePromptBtn);
+
+    promptDrawer.append(field, cardActions);
+
+    promptBtn.addEventListener("click", async () => {
+      const isHidden = promptDrawer.hidden;
+      promptDrawer.hidden = !isHidden;
+      promptBtn.setAttribute("aria-expanded", String(isHidden));
+      if (isHidden) {
+        try {
+          const res = await runtimeMessage({ type: "GET_SHOW_SETTINGS", showKey: groupShowKey });
+          textarea.value = res?.settings?.promptInstructions || "";
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    savePromptBtn.addEventListener("click", async () => {
+      const val = textarea.value.trim();
+      try {
+        await runtimeMessage({
+          type: "SET_SHOW_SETTING",
+          showKey: groupShowKey,
+          name: "promptInstructions",
+          value: val
+        });
+        setStatus(`Show prompt saved for ${headingName.textContent}.`, "success");
+      } catch (err) {
+        setStatus(`Could not save show prompt: ${err.message}`, "error");
+      }
+    });
+
     const episodeList = document.createElement("div");
     episodeList.className = "cache-episodes";
     for (const cache of episodes) episodeList.appendChild(createCacheItem(cache));
-    group.append(heading, episodeList);
+    group.append(heading, promptDrawer, episodeList);
     list.appendChild(group);
   }
 }
@@ -433,7 +507,7 @@ async function loadCacheDetails(cacheId) {
   return runtimeMessage({ type: "GET_TRANSLATION_CACHE", cacheId });
 }
 
-function renderCachePreview(container, detail) {
+function renderCachePreview(container, detail, cacheId) {
   container.replaceChildren();
   const { cues } = preferredCacheCues(detail);
   if (!cues.length) {
@@ -447,7 +521,7 @@ function renderCachePreview(container, detail) {
   table.className = "cache-preview-table";
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const label of ["Timestamp", "Original", "Translation"]) {
+  for (const label of ["Timestamp", "Original", "Translation", "Actions"]) {
     const cell = document.createElement("th");
     cell.scope = "col";
     cell.textContent = label;
@@ -458,11 +532,85 @@ function renderCachePreview(container, detail) {
   const body = document.createElement("tbody");
   for (const cue of cues) {
     const row = document.createElement("tr");
+    const cueKey = cue.fallback
+      ? cue.sourceText
+      : `${cue.startMs}:${cue.endMs}:${cue.sourceText}`;
+    row.dataset.cueKey = cueKey;
+
     for (const value of [cueTimestamp(cue), cue.sourceText, cue.translatedText]) {
       const cell = document.createElement("td");
       cell.textContent = value || "—";
       row.appendChild(cell);
     }
+
+    const actionCell = document.createElement("td");
+    actionCell.className = "cache-preview-actions";
+
+    const regenBtn = document.createElement("button");
+    regenBtn.type = "button";
+    regenBtn.className = "quiet cache-cue-action";
+    regenBtn.title = "Regenerate translation for this line";
+    regenBtn.textContent = "↻";
+    regenBtn.setAttribute("aria-label", "Regenerate translation for this line");
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "quiet cache-cue-action cache-cue-delete";
+    deleteBtn.title = "Delete this line from cache";
+    deleteBtn.textContent = "✕";
+    deleteBtn.setAttribute("aria-label", "Delete this line from cache");
+
+    regenBtn.addEventListener("click", async () => {
+      regenBtn.disabled = true;
+      deleteBtn.disabled = true;
+      regenBtn.textContent = "…";
+      try {
+        const res = await runtimeMessage({
+          type: "REGENERATE_TRANSLATION_CACHE_CUE",
+          cacheId: cacheId || detail?.metadata?.cacheId,
+          cueKey,
+          sourceText: cue.sourceText
+        });
+        if (res.ok && res.translatedText) {
+          row.children[2].textContent = res.translatedText;
+          cue.translatedText = res.translatedText;
+          setStatus("Subtitle line regenerated.", "success");
+        } else {
+          throw new Error(res.error || "Failed to regenerate line.");
+        }
+      } catch (err) {
+        setStatus(`Regeneration failed: ${err.message}`, "error");
+      } finally {
+        regenBtn.textContent = "↻";
+        regenBtn.disabled = false;
+        deleteBtn.disabled = false;
+      }
+    });
+
+    deleteBtn.addEventListener("click", async () => {
+      regenBtn.disabled = true;
+      deleteBtn.disabled = true;
+      try {
+        const res = await runtimeMessage({
+          type: "DELETE_TRANSLATION_CACHE_CUE",
+          cacheId: cacheId || detail?.metadata?.cacheId,
+          cueKey
+        });
+        if (res.ok) {
+          row.remove();
+          setStatus("Subtitle line removed from cache.", "success");
+        } else {
+          throw new Error(res.error || "Failed to remove line.");
+        }
+      } catch (err) {
+        setStatus(`Deletion failed: ${err.message}`, "error");
+        regenBtn.disabled = false;
+        deleteBtn.disabled = false;
+      }
+    });
+
+    actionCell.append(regenBtn, deleteBtn);
+    row.appendChild(actionCell);
     body.appendChild(row);
   }
   table.append(head, body);
@@ -507,6 +655,154 @@ async function loadCacheLibrary() {
   $("cacheSummary").textContent = "Loading cached episodes…";
   const response = await runtimeMessage({ type: "LIST_TRANSLATION_CACHES" });
   renderCacheLibrary(response.caches || [], response.totalBytes || 0);
+}
+
+function renderBenchmarkCacheOptions() {
+  const select = $("benchmarkCache");
+  if (!select) return;
+  const selected = select.value;
+  select.replaceChildren();
+  if (!translationCaches.length) {
+    select.appendChild(new Option("No cached episodes available", ""));
+    $("runBenchmark").disabled = true;
+    return;
+  }
+  for (const cache of translationCaches) {
+    const episode = cache.episodeName || cache.title ||
+      globalThis.LSTEpisodeIdentity?.fallbackEpisodeName(cache.videoId) || "Cached episode";
+    select.appendChild(new Option(
+      `${cacheShowName(cache)} · ${episode} · ${cache.cueCount || 0} lines`,
+      cache.cacheId,
+    ));
+  }
+  if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+  $("runBenchmark").disabled = false;
+}
+
+function formatDuration(ms) {
+  const value = Math.max(0, Number(ms) || 0);
+  return value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(2)} s`;
+}
+
+function renderBenchmark(response, cacheId) {
+  const trace = response.trace || { phases: [] };
+  latestBenchmark = { ...response, cacheId };
+  $("benchmarkResults").hidden = false;
+  $("benchmarkTotal").textContent = formatDuration(trace.totalMs);
+  $("benchmarkSlowest").textContent = trace.slowestLabel || "Unknown";
+  $("benchmarkRequests").textContent = String(trace.providerRequests || 0);
+  const succeeded = (response.results || []).filter((entry) => entry.translatedText).length;
+  $("benchmarkOutcome").textContent = `${succeeded}/${(response.results || []).length} translated`;
+  const applyActions = $("benchmarkApplyActions");
+  const applyButton = $("applyBenchmark");
+  applyActions.hidden = succeeded === 0;
+  applyButton.disabled = !response.cacheCompatible || succeeded === 0;
+  applyButton.textContent = `Replace ${succeeded} tested cached line${succeeded === 1 ? "" : "s"}`;
+  $("benchmarkApplyHelp").textContent = response.cacheCompatible
+    ? "Only these successful fresh results will be written; all other cached lines stay unchanged."
+    : "Replacement is disabled because the provider, model, or target language differs from this cache.";
+
+  const timeline = $("benchmarkTimeline");
+  timeline.replaceChildren();
+  for (const phase of trace.phases || []) {
+    const row = document.createElement("div");
+    row.className = "benchmark-phase";
+    row.dataset.slowest = String(phase.id === trace.slowestPhase);
+    const label = document.createElement("span");
+    label.textContent = phase.label;
+    const bar = document.createElement("div");
+    bar.className = "benchmark-phase-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${Math.max(0, Math.min(100, Number(phase.percent) || 0))}%`;
+    bar.appendChild(fill);
+    const value = document.createElement("span");
+    value.className = "benchmark-phase-value";
+    value.textContent = `${formatDuration(phase.elapsedMs)} · ${phase.percent || 0}%`;
+    row.append(label, bar, value);
+    timeline.appendChild(row);
+  }
+
+  const comparison = $("benchmarkComparison");
+  comparison.replaceChildren();
+  for (const result of response.results || []) {
+    const row = document.createElement("tr");
+    for (const value of [
+      result.sourceText,
+      result.cachedText || "—",
+      result.translatedText || result.error || "No result",
+    ]) {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.appendChild(cell);
+    }
+    row.lastElementChild.dataset.error = String(!result.translatedText);
+    comparison.appendChild(row);
+  }
+}
+
+async function runTranslationBenchmark() {
+  const cacheId = $("benchmarkCache").value;
+  if (!cacheId) throw new Error("Choose a cached episode first.");
+  const button = $("runBenchmark");
+  button.disabled = true;
+  button.textContent = "Running…";
+  $("benchmarkResults").hidden = true;
+  $("benchmarkApplyActions").hidden = true;
+  latestBenchmark = null;
+  $("benchmarkStatus").textContent = "Translating a fresh sample…";
+  try {
+    const response = await runtimeMessage({
+      type: "BENCHMARK_TRANSLATION",
+      cacheId,
+      sampleSize: Math.max(1, Math.min(12, Number($("benchmarkSize").value) || 4)),
+      settings: collectSettings(),
+    });
+    renderBenchmark(response, cacheId);
+    $("benchmarkStatus").textContent =
+      `${PROVIDER_NAMES[response.provider] || response.provider} · ${response.model} · ` +
+      `${response.targetLanguage} · ${response.contextCueCount || 0} context lines · cache unchanged`;
+    setStatus(`Benchmark completed in ${formatDuration(response.trace?.totalMs)}.`, "success");
+  } finally {
+    button.disabled = !translationCaches.length;
+    button.textContent = "Run benchmark";
+  }
+}
+
+async function applyBenchmarkTranslations() {
+  if (!latestBenchmark) throw new Error("Run a benchmark first.");
+  const entries = latestBenchmark.results
+    .filter((entry) => entry.translatedText)
+    .map((entry) => ({
+      cueKey: entry.cueKey,
+      translatedText: entry.translatedText,
+    }));
+  if (!entries.length) throw new Error("This benchmark has no successful translations to apply.");
+  if (!confirm(
+    `Replace ${entries.length} tested cached translation${entries.length === 1 ? "" : "s"}? ` +
+    "The previous text for those lines cannot be restored automatically.",
+  )) return;
+
+  const button = $("applyBenchmark");
+  button.disabled = true;
+  button.textContent = "Replacing…";
+  const response = await runtimeMessage({
+    type: "APPLY_BENCHMARK_TRANSLATIONS",
+    cacheId: latestBenchmark.cacheId,
+    settings: {
+      provider: latestBenchmark.provider,
+      model: latestBenchmark.model,
+      targetLanguage: latestBenchmark.targetLanguage,
+    },
+    entries,
+  });
+  button.textContent = `${response.replaced} cached line${response.replaced === 1 ? "" : "s"} replaced`;
+  $("benchmarkApplyHelp").textContent =
+    "The tested lines now use the fresh translations. Other cached lines were preserved.";
+  await loadCacheLibrary();
+  setStatus(
+    `Replaced ${response.replaced} cached translation${response.replaced === 1 ? "" : "s"}.`,
+    "success",
+  );
 }
 
 function clampNumber(id, fallback) {
@@ -1928,6 +2224,21 @@ $("refreshCache").addEventListener("click", () => {
   loadCacheLibrary().catch((error) => setStatus(`Could not load cached episodes: ${error.message}`, "error"));
 });
 
+$("runBenchmark").addEventListener("click", () => {
+  runTranslationBenchmark().catch((error) => {
+    $("benchmarkStatus").textContent = `Benchmark failed: ${error.message}`;
+    setStatus(`Benchmark failed: ${error.message}`, "error");
+  });
+});
+
+$("applyBenchmark").addEventListener("click", () => {
+  applyBenchmarkTranslations().catch((error) => {
+    $("benchmarkApplyHelp").textContent = `Could not replace cached lines: ${error.message}`;
+    $("applyBenchmark").disabled = false;
+    setStatus(`Cache replacement failed: ${error.message}`, "error");
+  });
+});
+
 $("cacheList").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-cache-action]");
   if (!button) return;
@@ -1953,7 +2264,7 @@ $("cacheList").addEventListener("click", async (event) => {
         preview.textContent = "Loading translation…";
         button.textContent = "Hide preview";
         button.setAttribute("aria-expanded", "true");
-        renderCachePreview(preview, await loadCacheDetails(cacheId));
+        renderCachePreview(preview, await loadCacheDetails(cacheId), cacheId);
       }
     } else if (action === "export") {
       const omittedFallbackCount = exportCache(await loadCacheDetails(cacheId));
