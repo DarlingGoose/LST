@@ -1455,7 +1455,7 @@ assert.equal(
 // card's search box both ask this module to trim the show's name, so the two
 // cannot trim it differently.
 assert.equal(
-  contentSource.split("\n").filter((line) => line.includes("queryFromShowName")).length,
+  (contentSource.match(/\.queryFromShowName\(/g) || []).length,
   1,
   "the player trims the query in exactly one place, and the module owns it",
 );

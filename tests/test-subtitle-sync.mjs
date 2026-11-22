@@ -978,6 +978,7 @@ function createHarness(
     },
   });
   context.addEventListener = (type, handler) => windowListeners.set(type, handler);
+  context.postMessage = () => {};
   // content.js compares event.source against the page window, so expose the vm's
   // own global object as `window` and dispatch with that exact reference.
   const windowRef = vm.runInContext(
@@ -1690,6 +1691,9 @@ const NEXT_EPISODE_TRACK = [
     pathname: "/watch/80100173",
     renderedText: "Let's go.",
   });
+  await harness.routeTick();
+  await harness.frame();
+  await harness.flushDiagnostics();
 
   const accepted = harness.eventsNamed("subtitle-track-accepted");
   assert.equal(accepted.length, 2);

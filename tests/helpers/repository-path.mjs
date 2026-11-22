@@ -14,6 +14,7 @@ const extensionPaths = Object.freeze({
   "episode-identity.js": "src/shared/episode-identity.js",
   "playback-policy.js": "src/shared/playback-policy.js",
   "settings-schema.js": "src/shared/settings-schema.js",
+  "prompt-policy.js": "src/shared/prompt-policy.js",
   "structured-response.js": "src/shared/structured-response.js",
   "subtitle-import.js": "src/shared/subtitle-import.js",
   "subtitle-sync.js": "src/shared/subtitle-sync.js",

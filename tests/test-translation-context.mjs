@@ -631,6 +631,7 @@ async function loadBackground({ withContextModule = true } = {}) {
   });
   for (const file of [
     "settings-schema.js",
+    "prompt-policy.js",
     "episode-identity.js",
     "translation-guard.js",
     "structured-response.js",
@@ -1163,6 +1164,7 @@ function createContentHarness({
     },
   });
   context.addEventListener = (type, handler) => windowListeners.set(type, handler);
+  context.postMessage = () => {};
   const windowRef = vm.runInContext("globalThis.window = globalThis", context);
 
   vm.runInContext(settingsSchemaSource, context, { filename: "settings-schema.js" });

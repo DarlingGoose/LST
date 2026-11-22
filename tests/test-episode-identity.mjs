@@ -1019,6 +1019,7 @@ function createHarness({
     },
   });
   context.addEventListener = (type, handler) => windowListeners.set(type, handler);
+  context.postMessage = () => {};
   const windowRef = vm.runInContext("globalThis.window = globalThis", context);
 
   vm.runInContext(settingsSchemaSource, context, { filename: "settings-schema.js" });
