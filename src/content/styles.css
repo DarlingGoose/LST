@@ -123,6 +123,21 @@ html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
 #not-status[data-tone="warning"] { border-left: 3px solid #ffc866; }
 #not-status[data-tone="error"] { border-left: 3px solid #ff7078; }
 
+#lst-caption-notice {
+  order: 4;
+  max-width: 100%;
+  padding: 9px 12px;
+  border-left: 3px solid #8fb8ff;
+  border-radius: 8px;
+  background: rgba(12, 15, 20, 0.92);
+  color: #f5f5f5;
+  font: 13px/1.35 system-ui, sans-serif;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+#lst-caption-notice[hidden] { display: none; }
+#lst-caption-notice[data-tone="on"] { border-left-color: #43d39e; }
+#lst-caption-notice[data-tone="off"] { border-left-color: #ffc866; }
+
 #lst-jimaku-note {
   display: flex;
   order: 3;
@@ -241,6 +256,8 @@ html.lst-hide-native-subtitles .atvwebplayersdk-captions-text {
    out in content.js and drawn by one function, so they cannot disagree. */
 .lst-pill-percent { flex: 0 0 auto; color: #f7f8fa; font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
 .lst-pill-percent[hidden] { display: none; }
+.lst-pill-eta { flex: 0 0 auto; color: #a7afbc; font-size: 11px; white-space: nowrap; }
+.lst-pill-eta[hidden] { display: none; }
 .lst-pill-progress {
   position: absolute;
   right: 0;

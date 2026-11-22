@@ -2,7 +2,8 @@
   const ext = globalThis.browser || globalThis.chrome;
   const SOURCE = "lst-local-subtitle-translate";
   const settingsSchema = globalThis.LSTSettingsSchema;
-  if (!settingsSchema) throw new Error("settings-schema.js must load before content.js");
+  if (!settingsSchema)
+    throw new Error("settings-schema.js must load before content.js");
   const subtitleParser = globalThis.LSTSubtitleParser;
   if (!subtitleParser) {
     throw new Error("subtitle-parser.js must load before content.js");
@@ -65,6 +66,9 @@
   let overlay;
   let subtitleStack;
   let statusLine;
+  let captionNotice;
+  let captionNoticeTimer = null;
+  let captionNoticeHideTimer = null;
   let hud;
   let quickPillsPanel;
   let quickPillsMenu;
@@ -100,6 +104,8 @@
   let lookAheadReadyNoticeShown = false;
   let precomputeInProgress = false;
   let precomputePromise = null;
+  let precomputeInitialMissing = 0;
+  let precomputeCompletedCues = 0;
   let precomputeCancelled = false;
   let pausedCachingPromise = null;
   let pausedCacheNoticeShown = false;
@@ -184,7 +190,10 @@
     if (!diagnosticEvents.length) return;
     const events = diagnosticEvents.splice(0, diagnosticEvents.length);
     try {
-      const pending = ext.runtime.sendMessage({ type: "APPEND_DEBUG_EVENTS", events });
+      const pending = ext.runtime.sendMessage({
+        type: "APPEND_DEBUG_EVENTS",
+        events,
+      });
       if (pending?.catch) pending.catch(() => {});
     } catch {}
   }
@@ -246,7 +255,9 @@
   let playbackSiteCache = { href: null, detected: null };
 
   function detectedSite() {
-    const href = String(location.href || `${location.pathname || ""}${location.search || ""}`);
+    const href = String(
+      location.href || `${location.pathname || ""}${location.search || ""}`,
+    );
     if (playbackSiteCache.href !== href) {
       const api = playbackSite();
       playbackSiteCache = {
@@ -257,7 +268,12 @@
               site: null,
               siteId: "",
               matchPattern: "",
-              view: { href, pathname: String(location.pathname || ""), search: "", host: "" },
+              view: {
+                href,
+                pathname: String(location.pathname || ""),
+                search: "",
+                host: "",
+              },
               reason: "playback-site-unavailable",
             },
       };
@@ -296,7 +312,8 @@
   // answer leaves LST idle rather than guessed-on.
   function playerPresence() {
     const site = currentSite();
-    if (!site?.playerPresence) return { present: false, reason: "adapter-unavailable" };
+    if (!site?.playerPresence)
+      return { present: false, reason: "adapter-unavailable" };
     try {
       return site.playerPresence(document);
     } catch {
@@ -613,12 +630,15 @@
     const parsed = new DOMParser().parseFromString(String(html), "text/html");
     const showName = classifiedName(
       cleanSitePageTitle(
-        parsed.title || parsed.querySelector('meta[property="og:title"]')?.content,
+        parsed.title ||
+          parsed.querySelector('meta[property="og:title"]')?.content,
       ),
     );
     return {
       reason: found.reason,
-      episodeNumber: Number.isInteger(found.episodeNumber) ? found.episodeNumber : null,
+      episodeNumber: Number.isInteger(found.episodeNumber)
+        ? found.episodeNumber
+        : null,
       metadata: {
         showName: showName.kind === "specific" ? showName.name : "",
         episodeName: api.episodeNameFromParts(found),
@@ -643,16 +663,23 @@
       credentials: "same-origin",
     })
       .then((response) => {
-        if (!response.ok) throw new Error(`Netflix returned ${response.status}`);
+        if (!response.ok)
+          throw new Error(`Netflix returned ${response.status}`);
         return response.text();
       })
       .then((html) => {
-        const { metadata, reason, episodeNumber } = episodeMetadataFromHtml(html, videoId);
+        const { metadata, reason, episodeNumber } = episodeMetadataFromHtml(
+          html,
+          videoId,
+        );
         if (Number.isInteger(episodeNumber) && episodeNumber > 0) {
           lastEpisodeNumber = episodeNumber;
         }
         if (!metadata?.episodeName) {
-          logEpisodeMetadata("episode-metadata-lookup-empty", { videoId, reason });
+          logEpisodeMetadata("episode-metadata-lookup-empty", {
+            videoId,
+            reason,
+          });
           return;
         }
         const previous = titleMetadataByVideoId.get(videoId) || {};
@@ -855,8 +882,11 @@
       episodeNameReason: classifiedName(remembered.episodeName).reason,
       episodeTitleKind: classifiedName(episodeTitle).kind,
       episodeTitleReason: classifiedName(episodeTitle).reason,
-      episodeNameFrom:
-        episodeName ? "page" : previousEpisodeName ? "previous" : "placeholder",
+      episodeNameFrom: episodeName
+        ? "page"
+        : previousEpisodeName
+          ? "previous"
+          : "placeholder",
       lookupSource:
         lastTitleResolution.lookupSource ||
         (hasSpecificEpisode ? "player" : "episode-page-pending"),
@@ -890,7 +920,10 @@
     const api = episodeIdentity();
     const pageId = pageVideoId();
     const stated = normalizeText(payload?.videoId || "");
-    const videoId = stated && (!api?.isKnownVideoId || api.isKnownVideoId(stated)) ? stated : "";
+    const videoId =
+      stated && (!api?.isKnownVideoId || api.isKnownVideoId(stated))
+        ? stated
+        : "";
     const showName = showNameFromTitle(payload?.showName || "");
     const episodeNumber =
       Number.isInteger(payload?.episodeNumber) && payload.episodeNumber > 0
@@ -914,7 +947,9 @@
       showName,
       episodeName,
       episodeNumber,
-      seasonNumber: Number.isInteger(payload?.seasonNumber) ? payload.seasonNumber : null,
+      seasonNumber: Number.isInteger(payload?.seasonNumber)
+        ? payload.seasonNumber
+        : null,
     };
     if (episodeNumber != null) lastEpisodeNumber = episodeNumber;
 
@@ -925,7 +960,8 @@
       const previous = titleMetadataByVideoId.get(key) || {};
       titleMetadataByVideoId.set(key, {
         showName: showName || previous.showName || siteName(),
-        episodeName: episodeName || previous.episodeName || fallbackEpisodeName(key),
+        episodeName:
+          episodeName || previous.episodeName || fallbackEpisodeName(key),
         // A name the service's catalog stated outranks one scraped from a page,
         // so a later pass over the document title cannot replace it.
         source: "catalog",
@@ -1002,7 +1038,10 @@
     // That happens even when nothing can be cached, because the case that needs
     // it most — a title the service does not subtitle — has no cues at all.
     refreshJimakuFinding({ reason: "title-resolved" }).catch((error) => {
-      console.warn("[LST] Could not read what Jimaku holds for this show:", error);
+      console.warn(
+        "[LST] Could not read what Jimaku holds for this show:",
+        error,
+      );
     });
     const blocked = !cues.length
       ? "no-cues"
@@ -1081,7 +1120,8 @@
         return [...mutation.addedNodes].some(
           (node) =>
             node.nodeType === Node.ELEMENT_NODE &&
-            (node.matches?.(titleSelector) || node.querySelector?.(titleSelector)),
+            (node.matches?.(titleSelector) ||
+              node.querySelector?.(titleSelector)),
         );
       });
       if (!titleChanged) return;
@@ -1138,7 +1178,9 @@
     currentStatus.progressPercent = remainingCues.length
       ? Math.min(
           100,
-          Number(((remainingTranslated / remainingCues.length) * 100).toFixed(1)),
+          Number(
+            ((remainingTranslated / remainingCues.length) * 100).toFixed(1),
+          ),
         )
       : 100;
   }
@@ -1183,24 +1225,29 @@
     const key = showKey();
     if (!key) return false;
     if (!force && key === appliedShowSettingsKey) return false;
-    const response = await runtimeMessage({ type: "GET_SHOW_SETTINGS", showKey: key });
+    const response = await runtimeMessage({
+      type: "GET_SHOW_SETTINGS",
+      showKey: key,
+    });
     if (key !== showKey()) return false;
     const overrides = response.settings || {};
     for (const name of SHOW_SETTING_NAMES) {
       if (name === "promptInstructions") {
-        settings[name] = typeof overrides[name] === "string"
-          ? overrides[name]
-          : "";
-        effectiveSettingSources[name] = typeof overrides[name] === "string" && overrides[name]
-          ? "show"
-          : "default";
+        settings[name] =
+          typeof overrides[name] === "string" ? overrides[name] : "";
+        effectiveSettingSources[name] =
+          typeof overrides[name] === "string" && overrides[name]
+            ? "show"
+            : "default";
       } else {
-        settings[name] = typeof overrides[name] === "boolean"
-          ? overrides[name]
-          : globalShowDefaults[name];
-        effectiveSettingSources[name] = typeof overrides[name] === "boolean"
-          ? "show"
-          : globalSettingSources[name] || "default";
+        settings[name] =
+          typeof overrides[name] === "boolean"
+            ? overrides[name]
+            : globalShowDefaults[name];
+        effectiveSettingSources[name] =
+          typeof overrides[name] === "boolean"
+            ? "show"
+            : globalSettingSources[name] || "default";
       }
     }
     appliedShowSettingsKey = key;
@@ -1212,14 +1259,20 @@
 
   function saveShowSetting(name, value) {
     const key = showKey();
-    if (!key) return Promise.reject(new Error("This show has not been identified yet."));
+    if (!key)
+      return Promise.reject(
+        new Error("This show has not been identified yet."),
+      );
     appliedShowSettingsKey = key;
     effectiveSettingSources[name] = "show";
     return runtimeMessage({
       type: "SET_SHOW_SETTING",
       showKey: key,
       name,
-      value: name === "promptInstructions" ? String(value || "").trim() : Boolean(value),
+      value:
+        name === "promptInstructions"
+          ? String(value || "").trim()
+          : Boolean(value),
     });
   }
 
@@ -1298,6 +1351,15 @@
       hud.appendChild(statusLine);
     }
 
+    if (!captionNotice?.isConnected) {
+      captionNotice = document.createElement("div");
+      captionNotice.id = "lst-caption-notice";
+      captionNotice.hidden = true;
+      captionNotice.setAttribute("role", "status");
+      captionNotice.setAttribute("aria-live", "polite");
+      hud.appendChild(captionNotice);
+    }
+
     if (!jimakuNote?.isConnected) {
       // A note about Jimaku outlives the status line, which is where every other
       // message goes and is replaced by the next one — often within a second of
@@ -1313,10 +1375,15 @@
         <button type="button" data-jimaku-action="dismiss" aria-label="Dismiss what LST knows about this show">×</button>
       `;
       jimakuNote.addEventListener("click", (event) => {
-        if (event.target.closest("[data-jimaku-action]")?.dataset.jimakuAction !== "dismiss") return;
+        if (
+          event.target.closest("[data-jimaku-action]")?.dataset.jimakuAction !==
+          "dismiss"
+        )
+          return;
         // Dismissal lasts as long as the page does, and one show's dismissal is
         // not another's.
-        if (jimakuFinding?.showKey) jimakuNoteDismissed.add(jimakuFinding.showKey);
+        if (jimakuFinding?.showKey)
+          jimakuNoteDismissed.add(jimakuFinding.showKey);
         logDiagnostic("info", "import", "jimaku-note-dismissed", {});
         updatePillSubtitleSource();
       });
@@ -1333,6 +1400,7 @@
           <strong>LST</strong>
           <span id="lst-pill-state">Waiting</span>
           <span id="lst-pill-percent" class="lst-pill-percent" hidden></span>
+          <span id="lst-pill-eta" class="lst-pill-eta" hidden></span>
           <span id="lst-pill-ahead" class="lst-pill-ahead"></span>
           <span id="lst-pill-source" class="lst-pill-source" hidden></span>
           <span class="lst-pill-controls-label">Controls</span>
@@ -1461,10 +1529,9 @@
       `;
       document.documentElement.appendChild(transcriptPanel);
       transcriptList = transcriptPanel.querySelector("#lst-transcript-list");
-      transcriptPanel.querySelector("#lst-transcript-close").addEventListener(
-        "click",
-        () => setTranscriptSidebarVisible(false),
-      );
+      transcriptPanel
+        .querySelector("#lst-transcript-close")
+        .addEventListener("click", () => setTranscriptSidebarVisible(false));
       renderTranscript();
     }
 
@@ -1514,7 +1581,10 @@
     transcriptRowsByKey = new Map();
     transcriptActiveIndex = -1;
     const count = transcriptPanel.querySelector("#lst-transcript-count");
-    if (count) count.textContent = cues.length ? `${cues.length} cues` : "Waiting for track";
+    if (count)
+      count.textContent = cues.length
+        ? `${cues.length} cues`
+        : "Waiting for track";
 
     if (!cues.length) {
       const empty = document.createElement("p");
@@ -1550,7 +1620,10 @@
       regenBtn.type = "button";
       regenBtn.className = "lst-transcript-action-regen";
       regenBtn.title = "Regenerate translation for this line";
-      regenBtn.setAttribute("aria-label", "Regenerate translation for this line");
+      regenBtn.setAttribute(
+        "aria-label",
+        "Regenerate translation for this line",
+      );
       regenBtn.textContent = "↻";
 
       regenBtn.addEventListener("click", async (event) => {
@@ -1564,7 +1637,7 @@
             type: "REGENERATE_TRANSLATION_CACHE_CUE",
             cacheId: cacheId(),
             cueKey: key,
-            sourceText: cue.text
+            sourceText: cue.text,
           });
           if (res?.ok && res.translatedText) {
             rememberCachedEntries({ [key]: res.translatedText });
@@ -1572,9 +1645,15 @@
             throw new Error(res?.error || "Failed to regenerate line.");
           }
         } catch (err) {
-          logDiagnostic("error", "translation", "transcript-regenerate-failed", {
-            error: err.message
-          }, key);
+          logDiagnostic(
+            "error",
+            "translation",
+            "transcript-regenerate-failed",
+            {
+              error: err.message,
+            },
+            key,
+          );
           translated.textContent = translation || "Regeneration failed";
           translated.dataset.pending = !translation ? "true" : "false";
         } finally {
@@ -1631,8 +1710,15 @@
         video ? findCueAt(subtitleLookupTime(video.currentTime)) : null,
       );
     }
-    logDiagnostic("info", "transcript", visible ? "sidebar-opened" : "sidebar-closed");
-    saveShowSetting("showTranscriptSidebar", settings.showTranscriptSidebar).catch((error) =>
+    logDiagnostic(
+      "info",
+      "transcript",
+      visible ? "sidebar-opened" : "sidebar-closed",
+    );
+    saveShowSetting(
+      "showTranscriptSidebar",
+      settings.showTranscriptSidebar,
+    ).catch((error) =>
       setStatus(`Could not save transcript setting: ${error.message}`, true),
     );
   }
@@ -1679,10 +1765,8 @@
     const useSameLanguageNativeCaptions = Boolean(
       settings.showNativeWhenTargetLanguage !== false &&
       !trackIsImported() &&
-      (
-        (currentStatus.captured && !trackNeedsTranslation()) ||
-        sameLanguageTargetAcrossEpisode === normalizedTargetLanguage()
-      ),
+      ((currentStatus.captured && !trackNeedsTranslation()) ||
+        sameLanguageTargetAcrossEpisode === normalizedTargetLanguage()),
     );
     document.documentElement.classList.toggle(
       "lst-hide-native-subtitles",
@@ -1808,6 +1892,25 @@
     return `${value >= 100 ? 100 : Math.min(value, 99)}%`;
   }
 
+  function precomputeEtaLabel() {
+    if (
+      settings.showCacheEta !== true ||
+      !precomputeInProgress ||
+      !precomputeCompletedCues ||
+      currentStatus.failedCount ||
+      !precomputeInitialMissing
+    ) return "";
+    const remaining = precomputeInitialMissing - precomputeCompletedCues;
+    if (remaining <= 0) return "";
+    const elapsed = Date.now() - currentStatus.jobStartedAt;
+    if (elapsed < 1_000) return "";
+    const seconds = Math.ceil((elapsed * remaining) / precomputeCompletedCues / 1_000);
+    if (!Number.isFinite(seconds) || seconds <= 0) return "";
+    return seconds < 60
+      ? `~${seconds}s left`
+      : `~${Math.ceil(seconds / 60)}m left`;
+  }
+
   function describeLoadProgress(progress) {
     if (!progress.visible) return "";
     return progress.complete
@@ -1820,6 +1923,7 @@
     if (!quickPillsPanel) return;
     const progress = loadProgress();
     const percent = quickPillsPanel.querySelector("#lst-pill-percent");
+    const eta = quickPillsPanel.querySelector("#lst-pill-eta");
     const bar = quickPillsPanel.querySelector("#lst-pill-progress");
     const fill = quickPillsPanel.querySelector("#lst-pill-progress-fill");
     const note = quickPillsPanel.querySelector("#lst-pill-load-note");
@@ -1832,6 +1936,12 @@
       percent.title = figure
         ? `${figure} of this episode's subtitles cached`
         : "";
+    }
+    if (eta) {
+      const label = progress.visible ? precomputeEtaLabel() : "";
+      eta.hidden = !label;
+      eta.textContent = label ? `· ${label}` : "";
+      eta.title = label ? `Estimated time to finish this precompute pass: ${label}` : "";
     }
     if (bar) bar.hidden = !progress.visible;
     if (fill) fill.style.width = figure || "0%";
@@ -1849,7 +1959,9 @@
     if (!quickPillsPanel) return;
     const chip = quickPillsPanel.querySelector("#lst-pill-source");
     const sourceNote = quickPillsPanel.querySelector("#lst-pill-source-note");
-    const jimakuPillNote = quickPillsPanel.querySelector("#lst-pill-jimaku-note");
+    const jimakuPillNote = quickPillsPanel.querySelector(
+      "#lst-pill-jimaku-note",
+    );
     const imported = trackIsImported();
     if (chip) {
       chip.hidden = !imported;
@@ -1859,8 +1971,7 @@
     quickPillsPanel.dataset.source = imported ? "imported" : "service";
     if (sourceNote) {
       if (imported && importedTrack.translate !== false) {
-        sourceNote.textContent =
-          `Using ${importedTrack.fileName || "an imported file"}, imported for this episode.`;
+        sourceNote.textContent = `Using ${importedTrack.fileName || "an imported file"}, imported for this episode.`;
       } else if (imported) {
         sourceNote.textContent =
           `Using ${importedTrack.fileName || "an imported file"} — already ` +
@@ -1909,12 +2020,13 @@
       ahead.textContent = aheadLabel ? `· ${aheadLabel} cached` : "";
     }
     if (panelStatus) {
-      panelStatus.textContent = currentStatus.pausedCacheBlocker ||
+      panelStatus.textContent =
+        currentStatus.pausedCacheBlocker ||
         (status.state === "completed"
           ? "Completed · episode cached"
           : status.label === "Ready from here"
             ? "Ready from here · remaining subtitles cached"
-          : `${status.label}${aheadLabel ? ` · ${aheadLabel} cached ahead` : ""}`);
+            : `${status.label}${aheadLabel ? ` · ${aheadLabel} cached ahead` : ""}`);
       panelStatus.dataset.state = status.state;
     }
     for (const control of quickPillsPanel.querySelectorAll(
@@ -1965,7 +2077,12 @@
           offsetMs: 0,
           limitMs: 0,
         }
-      : { scope: "global", episodeKey: "", offsetMs: globalOffsetMs, limitMs: 2000 };
+      : {
+          scope: "global",
+          episodeKey: "",
+          offsetMs: globalOffsetMs,
+          limitMs: 2000,
+        };
   }
 
   function updateQuickPillsTiming() {
@@ -1987,7 +2104,8 @@
     }
 
     const described = subtitleImport()?.describeFileTiming?.(target.offsetMs);
-    if (output) output.textContent = described?.label || `${target.offsetMs} ms`;
+    if (output)
+      output.textContent = described?.label || `${target.offsetMs} ms`;
     if (!note) return;
     note.hidden = false;
     // The global setting still applies while a file is in use, so a viewer who
@@ -2034,7 +2152,10 @@
         showUnifiedControlsStatus("Saved");
       })
       .catch((error) =>
-        showUnifiedControlsStatus(`Could not save the timing: ${error.message}`, true),
+        showUnifiedControlsStatus(
+          `Could not save the timing: ${error.message}`,
+          true,
+        ),
       );
   }
 
@@ -2075,7 +2196,8 @@
       setQuickPillsCompact(false);
     });
     quickPillsPanel.addEventListener("focusout", (event) => {
-      if (!quickPillsPanel.contains(event.relatedTarget)) scheduleQuickPillsMinimize();
+      if (!quickPillsPanel.contains(event.relatedTarget))
+        scheduleQuickPillsMinimize();
     });
     quickPillsPanel.addEventListener("click", (event) => {
       const fileStep = event.target.closest("[data-file-timing-step]");
@@ -2092,7 +2214,9 @@
       } else if (action === "file-timing-reset") {
         nudgeImportedFileTiming(
           -(
-            subtitleImport()?.normalizeFileTiming?.(importedTrack?.timingOffsetMs) || 0
+            subtitleImport()?.normalizeFileTiming?.(
+              importedTrack?.timingOffsetMs,
+            ) || 0
           ),
         );
       } else if (["earlier", "timing-reset", "later"].includes(action)) {
@@ -2124,9 +2248,11 @@
         // The card that chooses a file, opened at the card itself. A subtitle
         // file is chosen from a list, so it needs the page rather than a pill.
         setQuickPillsMenu(false);
-        runtimeMessage({ type: "OPEN_OPTIONS", hash: "#import" }).catch((error) => {
-          setStatus(`Could not open the import card: ${error.message}`, true);
-        });
+        runtimeMessage({ type: "OPEN_OPTIONS", hash: "#import" }).catch(
+          (error) => {
+            setStatus(`Could not open the import card: ${error.message}`, true);
+          },
+        );
       } else if (action === "check-jimaku") {
         // The viewer's own click, which is what makes asking Jimaku here allowed:
         // nothing is sent for a page they only opened.
@@ -2141,7 +2267,9 @@
         });
       } else if (action === "prompt") {
         const drawer = quickPillsPanel.querySelector("#lst-pill-prompt-drawer");
-        const textarea = quickPillsPanel.querySelector("#lst-pill-prompt-input");
+        const textarea = quickPillsPanel.querySelector(
+          "#lst-pill-prompt-input",
+        );
         if (drawer) {
           drawer.hidden = !drawer.hidden;
           if (!drawer.hidden && textarea) {
@@ -2151,15 +2279,24 @@
         }
       } else if (action === "save-prompt") {
         const drawer = quickPillsPanel.querySelector("#lst-pill-prompt-drawer");
-        const textarea = quickPillsPanel.querySelector("#lst-pill-prompt-input");
+        const textarea = quickPillsPanel.querySelector(
+          "#lst-pill-prompt-input",
+        );
         const val = textarea ? textarea.value.trim() : "";
         settings.promptInstructions = val;
-        saveShowSetting("promptInstructions", val).then(() => {
-          if (drawer) drawer.hidden = true;
-          setStatus(val ? "Show prompt instructions saved." : "Show prompt instructions cleared.", true);
-        }).catch((err) => {
-          setStatus(`Could not save show prompt: ${err.message}`, true);
-        });
+        saveShowSetting("promptInstructions", val)
+          .then(() => {
+            if (drawer) drawer.hidden = true;
+            setStatus(
+              val
+                ? "Show prompt instructions saved."
+                : "Show prompt instructions cleared.",
+              true,
+            );
+          })
+          .catch((err) => {
+            setStatus(`Could not save show prompt: ${err.message}`, true);
+          });
       } else if (action === "hide-overlay") {
         settings.showQuickPills = false;
         setQuickPillsMenu(false);
@@ -2243,7 +2380,10 @@
     quickPillsPanel.dataset.compact = next ? "true" : "false";
     quickPillsPanel
       .querySelector("#lst-pill-trigger")
-      ?.setAttribute("aria-label", next ? "Expand LST subtitle controls" : "Open LST subtitle controls");
+      ?.setAttribute(
+        "aria-label",
+        next ? "Expand LST subtitle controls" : "Open LST subtitle controls",
+      );
     updateStatusLineVisibility();
     updateJimakuNote();
     logQuickPillsHealth();
@@ -2259,7 +2399,8 @@
       if (
         quickPillsPanel.matches?.(":hover") ||
         quickPillsPanel.contains?.(document.activeElement)
-      ) return;
+      )
+        return;
       setQuickPillsCompact(true);
     }, seconds * 1000);
   }
@@ -2425,7 +2566,11 @@
     if (/\b(?:error|failed|could not|unavailable|refused)\b/i.test(text)) {
       return "error";
     }
-    if (/\b(?:waiting|warning|paused|stopped|mismatch|retry|turn on|choose|nothing|no subtitles)\b/i.test(text)) {
+    if (
+      /\b(?:waiting|warning|paused|stopped|mismatch|retry|turn on|choose|nothing|no subtitles)\b/i.test(
+        text,
+      )
+    ) {
       return "warning";
     }
     return "info";
@@ -2455,6 +2600,41 @@
     updateDebugPanel();
   }
 
+  function clearCaptionNotice() {
+    clearTimeout(captionNoticeTimer);
+    clearTimeout(captionNoticeHideTimer);
+    captionNoticeTimer = null;
+    captionNoticeHideTimer = null;
+    if (captionNotice) captionNotice.hidden = true;
+  }
+
+  function scheduleCaptionNotice() {
+    clearCaptionNotice();
+    if (settings.showNetflixCaptionNotice !== true || currentSiteId() !== "netflix") return;
+    const episodeId = getVideoId();
+    captionNoticeTimer = setTimeout(() => {
+      if (!sessionLifecycle.active || getVideoId() !== episodeId) return;
+      const selection = currentSite()?.captionSelection?.(window, document) || {
+        state: "unknown",
+        reason: "selection-unavailable",
+      };
+      ensureOverlay();
+      if (!captionNotice) return;
+      captionNotice.textContent = selection.state === "on"
+        ? "Netflix subtitles are on. LST will try to translate the selected track."
+        : selection.state === "off"
+          ? trackIsImported()
+            ? "Netflix subtitles are off. LST is using your imported file."
+            : "Netflix subtitles are off. Turn on a subtitle track to translate."
+          : "Netflix subtitle setting could not be confirmed yet.";
+      captionNotice.dataset.tone = selection.state;
+      captionNotice.hidden = false;
+      captionNoticeHideTimer = setTimeout(() => {
+        if (captionNotice) captionNotice.hidden = true;
+      }, 4_000);
+    }, 1_500);
+  }
+
   function maximumVisibleSubtitles() {
     return Math.round(clamp(settings.maximumVisibleSubtitles, 1, 4, 2));
   }
@@ -2464,10 +2644,16 @@
     if (excess > 0) {
       const removed = renderedSubtitles.slice(0, excess);
       renderedSubtitles.splice(0, excess);
-      logDiagnostic("info", "rendering", "subtitle-stack-trimmed", {
-        reason: "maximum-visible-subtitles",
-        removedCount: removed.length,
-      }, removed.at(-1)?.key);
+      logDiagnostic(
+        "info",
+        "rendering",
+        "subtitle-stack-trimmed",
+        {
+          reason: "maximum-visible-subtitles",
+          removedCount: removed.length,
+        },
+        removed.at(-1)?.key,
+      );
     }
     if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
       lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
@@ -2507,10 +2693,16 @@
   function removeRenderedSubtitle(key, reason = "unspecified") {
     const next = renderedSubtitles.filter((entry) => entry.key !== key);
     if (next.length === renderedSubtitles.length) return;
-    logDiagnostic("info", "rendering", "subtitle-cleared", {
-      reason,
-      removedCount: renderedSubtitles.length - next.length,
-    }, key);
+    logDiagnostic(
+      "info",
+      "rendering",
+      "subtitle-cleared",
+      {
+        reason,
+        removedCount: renderedSubtitles.length - next.length,
+      },
+      key,
+    );
     renderedSubtitles = next;
     if (lastRenderedCueKey === key) {
       lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
@@ -2521,11 +2713,17 @@
   function removeRenderedSubtitlesBySource(source, reason = "unspecified") {
     const next = renderedSubtitles.filter((entry) => entry.source !== source);
     if (next.length === renderedSubtitles.length) return;
-    logDiagnostic("warning", "rendering", "subtitle-source-cleared", {
-      reason,
-      source,
-      removedCount: renderedSubtitles.length - next.length,
-    }, lastRenderedCueKey);
+    logDiagnostic(
+      "warning",
+      "rendering",
+      "subtitle-source-cleared",
+      {
+        reason,
+        source,
+        removedCount: renderedSubtitles.length - next.length,
+      },
+      lastRenderedCueKey,
+    );
     renderedSubtitles = next;
     if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
       lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
@@ -2535,10 +2733,16 @@
 
   function clearRenderedSubtitle(reason = "unspecified") {
     if (renderedSubtitles.length) {
-      logDiagnostic("warning", "rendering", "subtitle-stack-cleared", {
-        reason,
-        removedCount: renderedSubtitles.length,
-      }, lastRenderedCueKey);
+      logDiagnostic(
+        "warning",
+        "rendering",
+        "subtitle-stack-cleared",
+        {
+          reason,
+          removedCount: renderedSubtitles.length,
+        },
+        lastRenderedCueKey,
+      );
     }
     renderedSubtitles = [];
     lastRenderedCueKey = "";
@@ -2569,11 +2773,19 @@
       (entry) => entry.source === source,
     );
     if (previous.length !== renderedSubtitles.length) {
-      logDiagnostic("info", "rendering", "subtitle-source-handoff", {
-        from: previous.find((entry) => entry.source !== source)?.source || "unknown",
-        to: source,
-        removedCount: previous.length - renderedSubtitles.length,
-      }, key);
+      logDiagnostic(
+        "info",
+        "rendering",
+        "subtitle-source-handoff",
+        {
+          from:
+            previous.find((entry) => entry.source !== source)?.source ||
+            "unknown",
+          to: source,
+          removedCount: previous.length - renderedSubtitles.length,
+        },
+        key,
+      );
     }
     const existing = renderedSubtitles.find((entry) => entry.key === key);
     const endVideoTime = Number.isFinite(naturalEnd) ? naturalEnd : now;
@@ -2641,10 +2853,16 @@
       (entry) => now < entry.retainUntilVideoTime,
     );
     if (next.length === renderedSubtitles.length) return;
-    logDiagnostic("info", "rendering", "subtitle-expired", {
-      reason: "retention-ended",
-      removedCount: renderedSubtitles.length - next.length,
-    }, lastRenderedCueKey);
+    logDiagnostic(
+      "info",
+      "rendering",
+      "subtitle-expired",
+      {
+        reason: "retention-ended",
+        removedCount: renderedSubtitles.length - next.length,
+      },
+      lastRenderedCueKey,
+    );
     renderedSubtitles = next;
     if (!renderedSubtitles.some((entry) => entry.key === lastRenderedCueKey)) {
       lastRenderedCueKey = renderedSubtitles.at(-1)?.key || "";
@@ -2838,7 +3056,9 @@
     if (!trackIsImported()) return 0;
     const api = subtitleImport();
     const value = importedTrack?.timingOffsetMs;
-    return api?.normalizeFileTiming ? api.normalizeFileTiming(value) : Number(value) || 0;
+    return api?.normalizeFileTiming
+      ? api.normalizeFileTiming(value)
+      : Number(value) || 0;
   }
 
   function syncOffsetSeconds() {
@@ -2873,7 +3093,9 @@
     for (const selector of selectors) {
       const elements = [...document.querySelectorAll(selector)];
       const lengths = elements.map((element) => {
-        const text = normalizeText(element.innerText || element.textContent || "");
+        const text = normalizeText(
+          element.innerText || element.textContent || "",
+        );
         return {
           length: text.length,
           comparableLength: comparableSubtitleText(text).length,
@@ -2900,8 +3122,11 @@
       selectedTextLength: normalizeText(renderedText).length,
       representationCount: new Set(nonEmptyTextIds).size,
       representationsDisagree: new Set(nonEmptyTextIds).size > 1,
-      selectedLooksDuplicated: Number.isInteger(midpoint) && midpoint > 0 &&
-        simplifiedSelected.slice(0, midpoint) === simplifiedSelected.slice(midpoint),
+      selectedLooksDuplicated:
+        Number.isInteger(midpoint) &&
+        midpoint > 0 &&
+        simplifiedSelected.slice(0, midpoint) ===
+          simplifiedSelected.slice(midpoint),
       observations,
     };
   }
@@ -2920,11 +3145,15 @@
       : [];
     const simplifiedRendered = simplifiedDiagnosticText(renderedText);
     const simplifiedMatches = simplifiedRendered
-      ? cues.filter((cue) => simplifiedDiagnosticText(cue.text) === simplifiedRendered)
+      ? cues.filter(
+          (cue) => simplifiedDiagnosticText(cue.text) === simplifiedRendered,
+        )
       : [];
-    let nearbyIndex = naturalMatch?.index ?? cues.findIndex(
-      (cue) => cue.start > naturalSubtitleLookupTime(video.currentTime),
-    );
+    let nearbyIndex =
+      naturalMatch?.index ??
+      cues.findIndex(
+        (cue) => cue.start > naturalSubtitleLookupTime(video.currentTime),
+      );
     if (nearbyIndex < 0) nearbyIndex = cues.length - 1;
     const nearby = [];
     for (
@@ -2934,17 +3163,24 @@
     ) {
       const cue = cues[index];
       nearby.push({
-        relation: index === nearbyIndex ? "current" : index < nearbyIndex ? "previous" : "next",
+        relation:
+          index === nearbyIndex
+            ? "current"
+            : index < nearbyIndex
+              ? "previous"
+              : "next",
         startMs: Math.round(cue.start * 1000),
         endMs: Math.round(cue.end * 1000),
         textLength: normalizeText(cue.text).length,
         textId: diagnosticTextId(cue.text),
       });
     }
-    const nearbySimplified = nearbyIndex >= 0
-      ? cues.slice(Math.max(0, nearbyIndex - 1), nearbyIndex + 2)
-        .map((cue) => simplifiedDiagnosticText(cue.text))
-      : [];
+    const nearbySimplified =
+      nearbyIndex >= 0
+        ? cues
+            .slice(Math.max(0, nearbyIndex - 1), nearbyIndex + 2)
+            .map((cue) => simplifiedDiagnosticText(cue.text))
+        : [];
     const combinedNearbyMatch = nearbySimplified.some(
       (value, index) =>
         nearbySimplified[index + 1] &&
@@ -2953,7 +3189,9 @@
     const partialNearbyMatch = Boolean(
       simplifiedRendered.length >= 4 &&
       nearbySimplified.some(
-        (value) => value.includes(simplifiedRendered) || simplifiedRendered.includes(value),
+        (value) =>
+          value.includes(simplifiedRendered) ||
+          simplifiedRendered.includes(value),
       ),
     );
     const naturalTime = naturalSubtitleLookupTime(video.currentTime);
@@ -2961,10 +3199,18 @@
 
     return {
       ...renderedSubtitleDomDiagnostics(renderedText),
-      stableForMs: Math.max(0, Math.round(performance.now() - renderedSubtitleCandidateSince)),
+      stableForMs: Math.max(
+        0,
+        Math.round(performance.now() - renderedSubtitleCandidateSince),
+      ),
       trackCueCount: cues.length,
       naturalLookupMs: Math.round(naturalTime * 1000),
-      userTimingOffsetMs: clamp(settings.subtitleTimingOffsetMs, -2000, 2000, 0),
+      userTimingOffsetMs: clamp(
+        settings.subtitleTimingOffsetMs,
+        -2000,
+        2000,
+        0,
+      ),
       automaticTimingOffsetMs: Math.round(
         timedTrackLifecycle.automaticOffsetSeconds * 1000,
       ),
@@ -2972,13 +3218,15 @@
       exactTrackMatch: matchQuality === "exact",
       ...matchResolutionDiagnostics(resolution),
       foldedTrackMatchCount: foldedMatches.length,
-      foldedMatchCue: foldedMatches.length === 1
-        ? diagnosticCue(cueKey(foldedMatches[0]))
-        : "",
+      foldedMatchCue:
+        foldedMatches.length === 1
+          ? diagnosticCue(cueKey(foldedMatches[0]))
+          : "",
       simplifiedTrackMatchCount: simplifiedMatches.length,
-      simplifiedMatchCue: simplifiedMatches.length === 1
-        ? diagnosticCue(cueKey(simplifiedMatches[0]))
-        : "",
+      simplifiedMatchCue:
+        simplifiedMatches.length === 1
+          ? diagnosticCue(cueKey(simplifiedMatches[0]))
+          : "",
       combinedNearbyMatch,
       partialNearbyMatch,
       matchedCue: matchingCue ? diagnosticCue(cueKey(matchingCue.cue)) : "",
@@ -3015,12 +3263,18 @@
       // line is what resolves it.
       const idle = timedTrackLifecycle.noteIdle(performance.now());
       if (idle.reported) {
-        logDiagnostic("info", "synchronization", "timed-track-mismatch-idle", {
-          mismatchId: idle.mismatchId,
-          outcome: "no-line-drawn",
-          durationMs: idle.durationMs,
-          previousReason: idle.previousReason,
-        }, naturalMatch ? cueKey(naturalMatch.cue) : "");
+        logDiagnostic(
+          "info",
+          "synchronization",
+          "timed-track-mismatch-idle",
+          {
+            mismatchId: idle.mismatchId,
+            outcome: "no-line-drawn",
+            durationMs: idle.durationMs,
+            previousReason: idle.previousReason,
+          },
+          naturalMatch ? cueKey(naturalMatch.cue) : "",
+        );
       }
       return idle.verified;
     }
@@ -3034,13 +3288,19 @@
         performance.now(),
       );
       if (transition.resolved) {
-        logDiagnostic("info", "synchronization", "timed-track-mismatch-resolved", {
-          mismatchId: transition.resolved.mismatchId,
-          outcome: "exact-match",
-          durationMs: transition.resolved.durationMs,
-          previousReason: transition.resolved.previousReason,
-          renderedTextId: diagnosticTextId(renderedText),
-        }, cueKey(naturalMatch.cue));
+        logDiagnostic(
+          "info",
+          "synchronization",
+          "timed-track-mismatch-resolved",
+          {
+            mismatchId: transition.resolved.mismatchId,
+            outcome: "exact-match",
+            durationMs: transition.resolved.durationMs,
+            previousReason: transition.resolved.previousReason,
+            renderedTextId: diagnosticTextId(renderedText),
+          },
+          cueKey(naturalMatch.cue),
+        );
       }
       return true;
     }
@@ -3069,21 +3329,33 @@
         performance.now(),
       );
       if (transition.resolved) {
-        logDiagnostic("info", "synchronization", "timed-track-mismatch-resolved", {
-          mismatchId: transition.resolved.mismatchId,
-          outcome: "formatting-current-cue-match",
-          durationMs: transition.resolved.durationMs,
-          previousReason: transition.resolved.previousReason,
-          ...matchResolutionDiagnostics(approximatedCue),
-        }, cueKey(naturalMatch.cue));
+        logDiagnostic(
+          "info",
+          "synchronization",
+          "timed-track-mismatch-resolved",
+          {
+            mismatchId: transition.resolved.mismatchId,
+            outcome: "formatting-current-cue-match",
+            durationMs: transition.resolved.durationMs,
+            previousReason: transition.resolved.previousReason,
+            ...matchResolutionDiagnostics(approximatedCue),
+          },
+          cueKey(naturalMatch.cue),
+        );
       }
       if (!subtitleTextsMatch(previousRenderedText, renderedText)) {
-        logDiagnostic("info", "synchronization", "formatting-match-accepted", {
-          matchQuality,
-          ...matchResolutionDiagnostics(approximatedCue),
-          renderedTextLength: normalizeText(renderedText).length,
-          capturedTextLength: normalizeText(naturalMatch.cue.text).length,
-        }, cueKey(naturalMatch.cue));
+        logDiagnostic(
+          "info",
+          "synchronization",
+          "formatting-match-accepted",
+          {
+            matchQuality,
+            ...matchResolutionDiagnostics(approximatedCue),
+            renderedTextLength: normalizeText(renderedText).length,
+            capturedTextLength: normalizeText(naturalMatch.cue.text).length,
+          },
+          cueKey(naturalMatch.cue),
+        );
       }
       return true;
     }
@@ -3093,10 +3365,7 @@
       return true;
     }
 
-    if (
-      matchingCue &&
-      timedTrackLifecycle.state === "unverified"
-    ) {
+    if (matchingCue && timedTrackLifecycle.state === "unverified") {
       // Captured subtitle fragments can use a timeline starting at zero even when
       // playback began in the middle of an episode. Anchor that timeline to the
       // line the player is displaying. A later visible line will refine the anchor.
@@ -3105,13 +3374,19 @@
         cueStart: matchingCue.cue.start,
         videoTime: video.currentTime,
       });
-      logDiagnostic("info", "synchronization", "timed-track-anchored", {
-        matchQuality,
-        ...matchResolutionDiagnostics(resolution),
-        automaticOffsetMs: Math.round(
-          transition.automaticOffsetSeconds * 1000,
-        ),
-      }, cueKey(matchingCue.cue));
+      logDiagnostic(
+        "info",
+        "synchronization",
+        "timed-track-anchored",
+        {
+          matchQuality,
+          ...matchResolutionDiagnostics(resolution),
+          automaticOffsetMs: Math.round(
+            transition.automaticOffsetSeconds * 1000,
+          ),
+        },
+        cueKey(matchingCue.cue),
+      );
       return true;
     }
 
@@ -3125,50 +3400,59 @@
       const now = performance.now();
       const pending = timedTrackLifecycle.beginMismatch(mismatch, now);
       if (pending.started) {
-        logDiagnostic("warning", "synchronization", "timed-track-mismatch-started", {
-          mismatchId: pending.mismatchId,
-          reason: mismatch,
-          graceMs: pending.graceMs,
-          ...timedTrackMismatchDiagnostics(
-            video,
-            renderedText,
-            naturalMatch,
-            matchingCue,
-            matchQuality,
-            resolution,
-          ),
-        }, naturalMatch ? cueKey(naturalMatch.cue) : "");
+        logDiagnostic(
+          "warning",
+          "synchronization",
+          "timed-track-mismatch-started",
+          {
+            mismatchId: pending.mismatchId,
+            reason: mismatch,
+            graceMs: pending.graceMs,
+            ...timedTrackMismatchDiagnostics(
+              video,
+              renderedText,
+              naturalMatch,
+              matchingCue,
+              matchQuality,
+              resolution,
+            ),
+          },
+          naturalMatch ? cueKey(naturalMatch.cue) : "",
+        );
       }
       if (pending.withinGrace) return true;
 
-      const cueDistance = matchingCue && naturalMatch
-        ? Math.abs(matchingCue.index - naturalMatch.index)
-        : Infinity;
+      const cueDistance =
+        matchingCue && naturalMatch
+          ? Math.abs(matchingCue.index - naturalMatch.index)
+          : Infinity;
       const offsetErrorSeconds = matchingCue
         ? matchingCue.cue.start - naturalTime
         : 0;
-      if (
-        matchingCue &&
-        cueDistance > 1 &&
-        Math.abs(offsetErrorSeconds) > 2
-      ) {
+      if (matchingCue && cueDistance > 1 && Math.abs(offsetErrorSeconds) > 2) {
         const transition = timedTrackLifecycle.reanchor({
           renderedText,
           cueStart: matchingCue.cue.start,
           videoTime: video.currentTime,
           at: now,
         });
-        logDiagnostic("warning", "synchronization", "timed-track-reanchored", {
-          reason: transition.previousReason,
-          mismatchId: transition.mismatchId,
-          durationMs: transition.durationMs,
-          automaticOffsetMs: Math.round(
-            transition.automaticOffsetSeconds * 1000,
-          ),
-          cueDistance: Number.isFinite(cueDistance) ? cueDistance : null,
-          matchQuality,
-          ...matchResolutionDiagnostics(resolution),
-        }, cueKey(matchingCue.cue));
+        logDiagnostic(
+          "warning",
+          "synchronization",
+          "timed-track-reanchored",
+          {
+            reason: transition.previousReason,
+            mismatchId: transition.mismatchId,
+            durationMs: transition.durationMs,
+            automaticOffsetMs: Math.round(
+              transition.automaticOffsetSeconds * 1000,
+            ),
+            cueDistance: Number.isFinite(cueDistance) ? cueDistance : null,
+            matchQuality,
+            ...matchResolutionDiagnostics(resolution),
+          },
+          cueKey(matchingCue.cue),
+        );
         return true;
       }
     }
@@ -3178,20 +3462,26 @@
       performance.now(),
     );
     if (confirmed.newlyConfirmed) {
-      logDiagnostic("warning", "synchronization", "timed-track-mismatch-confirmed", {
-        mismatchId: confirmed.mismatchId,
-        reason: mismatch,
-        retainedTimedSubtitle: true,
-        durationMs: confirmed.durationMs,
-        ...timedTrackMismatchDiagnostics(
-          video,
-          renderedText,
-          naturalMatch,
-          matchingCue,
-          matchQuality,
-          resolution,
-        ),
-      }, naturalMatch ? cueKey(naturalMatch.cue) : "");
+      logDiagnostic(
+        "warning",
+        "synchronization",
+        "timed-track-mismatch-confirmed",
+        {
+          mismatchId: confirmed.mismatchId,
+          reason: mismatch,
+          retainedTimedSubtitle: true,
+          durationMs: confirmed.durationMs,
+          ...timedTrackMismatchDiagnostics(
+            video,
+            renderedText,
+            naturalMatch,
+            matchingCue,
+            matchQuality,
+            resolution,
+          ),
+        },
+        naturalMatch ? cueKey(naturalMatch.cue) : "",
+      );
     }
     return false;
   }
@@ -3242,10 +3532,16 @@
           );
         }
         renderedChanged = true;
-        logDiagnostic("info", "translation", "translation-attached", {
-          source: "shared-result",
-          translationLength: String(translation).length,
-        }, key);
+        logDiagnostic(
+          "info",
+          "translation",
+          "translation-attached",
+          {
+            source: "shared-result",
+            translationLength: String(translation).length,
+          },
+          key,
+        );
       }
     }
     if (renderedChanged) renderSubtitleStack();
@@ -3300,7 +3596,11 @@
   }
 
   function surroundingTranslationContext(selectedCues) {
-    if (!settings.useTranslationContext || !cues.length || !selectedCues.length) {
+    if (
+      !settings.useTranslationContext ||
+      !cues.length ||
+      !selectedCues.length
+    ) {
       return [];
     }
 
@@ -3394,12 +3694,18 @@
     );
 
     if (!missing.length) {
-      logDiagnostic("info", "translation", "translation-cache-hit", {
-        count: deduped.length,
-        cacheLookupMs,
-        totalMs: Math.round(performance.now() - timelineStartedAt),
-        slowestPhase: "cache-lookup",
-      }, cueKey(deduped[0]));
+      logDiagnostic(
+        "info",
+        "translation",
+        "translation-cache-hit",
+        {
+          count: deduped.length,
+          cacheLookupMs,
+          totalMs: Math.round(performance.now() - timelineStartedAt),
+          slowestPhase: "cache-lookup",
+        },
+        cueKey(deduped[0]),
+      );
       return { entries: cached, failures: [] };
     }
 
@@ -3412,11 +3718,17 @@
 
       const requestStartedAt = Date.now();
       const contextItems = surroundingTranslationContext(missing);
-      logDiagnostic("info", "translation", "translation-request-started", {
-        count: missing.length,
-        source: precomputeInProgress ? "precompute" : "playback",
-        contextCueCount: contextItems.length,
-      }, cueKey(missing[0]));
+      logDiagnostic(
+        "info",
+        "translation",
+        "translation-request-started",
+        {
+          count: missing.length,
+          source: precomputeInProgress ? "precompute" : "playback",
+          contextCueCount: contextItems.length,
+        },
+        cueKey(missing[0]),
+      );
       const response = await runtimeMessage({
         type: "TRANSLATE_BATCH",
         provider: settings.provider,
@@ -3487,11 +3799,17 @@
         (failure) => failure?.verification,
       );
       if (rejectedFailures.length) {
-        logDiagnostic("warning", "translation", "translation-verification-failed", {
-          count: rejectedFailures.length,
-          reason: rejectedFailures[0].verification,
-          error: rejectedFailures[0].error || "",
-        }, cueKey(missing[0]));
+        logDiagnostic(
+          "warning",
+          "translation",
+          "translation-verification-failed",
+          {
+            count: rejectedFailures.length,
+            reason: rejectedFailures[0].verification,
+            error: rejectedFailures[0].error || "",
+          },
+          cueKey(missing[0]),
+        );
       }
 
       const latestDiag = currentStatus.lastDiagnostics.length
@@ -3515,7 +3833,8 @@
         requestedCacheId === cacheId()
           ? promoteFallbackEntries(newEntries)
           : newEntries;
-      if (requestedCacheId === cacheId()) rememberCachedEntries(persistedEntries);
+      if (requestedCacheId === cacheId())
+        rememberCachedEntries(persistedEntries);
 
       let cacheWriteMs = 0;
       if (Object.keys(persistedEntries).length) {
@@ -3536,18 +3855,25 @@
         { id: "cache-write", elapsedMs: cacheWriteMs },
       ];
       const slowest = [...phases].sort(
-        (left, right) => Number(right.elapsedMs || 0) - Number(left.elapsedMs || 0),
+        (left, right) =>
+          Number(right.elapsedMs || 0) - Number(left.elapsedMs || 0),
       )[0];
-      logDiagnostic("info", "translation", "translation-timeline", {
-        totalMs: Math.round(performance.now() - timelineStartedAt),
-        cacheLookupMs,
-        cacheWriteMs,
-        providerRequests: backgroundTrace?.providerRequests || 0,
-        retryAttempts: backgroundTrace?.retryAttempts || 0,
-        splitAttempts: backgroundTrace?.splitAttempts || 0,
-        slowestPhase: slowest?.id || "unknown",
-        phases,
-      }, cueKey(missing[0]));
+      logDiagnostic(
+        "info",
+        "translation",
+        "translation-timeline",
+        {
+          totalMs: Math.round(performance.now() - timelineStartedAt),
+          cacheLookupMs,
+          cacheWriteMs,
+          providerRequests: backgroundTrace?.providerRequests || 0,
+          retryAttempts: backgroundTrace?.retryAttempts || 0,
+          splitAttempts: backgroundTrace?.splitAttempts || 0,
+          slowestPhase: slowest?.id || "unknown",
+          phases,
+        },
+        cueKey(missing[0]),
+      );
 
       return {
         entries: { ...cached, ...newEntries },
@@ -3565,10 +3891,16 @@
         ];
       }
       updateDebugPanel();
-      logDiagnostic("error", "translation", "translation-request-failed", {
-        error: error.message,
-        count: missing.length,
-      }, cueKey(missing[0]));
+      logDiagnostic(
+        "error",
+        "translation",
+        "translation-request-failed",
+        {
+          error: error.message,
+          count: missing.length,
+        },
+        cueKey(missing[0]),
+      );
       throw error;
     } finally {
       updateDebugPanel();
@@ -3599,11 +3931,17 @@
     if (!translationMayRun(findRenderedSubtitle())) return;
 
     const key = cueKey(cue);
-    logDiagnostic("info", "translation", "active-cue-translation-requested", {
-      cueStartMs: Math.round(cue.start * 1000),
-      cueEndMs: Math.round(cue.end * 1000),
-      textLength: normalizeText(cue.text).length,
-    }, key);
+    logDiagnostic(
+      "info",
+      "translation",
+      "active-cue-translation-requested",
+      {
+        cueStartMs: Math.round(cue.start * 1000),
+        cueEndMs: Math.round(cue.end * 1000),
+        textLength: normalizeText(cue.text).length,
+      },
+      key,
+    );
     const cached = await getCachedTranslations([cue]);
 
     if (cached[key]) {
@@ -3617,10 +3955,16 @@
           activeVideo()?.currentTime,
         );
       } else {
-        logDiagnostic("warning", "translation", "translation-not-rendered", {
-          reason: "cue-no-longer-current",
-          source: "cache",
-        }, key);
+        logDiagnostic(
+          "warning",
+          "translation",
+          "translation-not-rendered",
+          {
+            reason: "cue-no-longer-current",
+            source: "cache",
+          },
+          key,
+        );
       }
     } else {
       const currentResult = await translateCues([cue]);
@@ -3635,10 +3979,16 @@
             activeVideo()?.currentTime,
           );
         } else {
-          logDiagnostic("warning", "translation", "translation-not-rendered", {
-            reason: "cue-no-longer-current",
-            source: "realtime",
-          }, key);
+          logDiagnostic(
+            "warning",
+            "translation",
+            "translation-not-rendered",
+            {
+              reason: "cue-no-longer-current",
+              source: "realtime",
+            },
+            key,
+          );
         }
       }
     }
@@ -3689,7 +4039,12 @@
     let failed = 0;
     try {
       for (let i = 0; i < ahead.length; i += batchSize) {
-        if (generation !== sessionLifecycle.cacheGeneration || !sessionLifecycle.active || !isWatchPage()) return;
+        if (
+          generation !== sessionLifecycle.cacheGeneration ||
+          !sessionLifecycle.active ||
+          !isWatchPage()
+        )
+          return;
         const result = await translateCues(ahead.slice(i, i + batchSize));
         failed += result.failures.length;
       }
@@ -3714,7 +4069,7 @@
   function pausedCacheDecision(video) {
     const complete = Boolean(
       currentStatus.remainingCueCount > 0 &&
-      currentStatus.remainingTranslatedCount >= currentStatus.remainingCueCount
+      currentStatus.remainingTranslatedCount >= currentStatus.remainingCueCount,
     );
     const input = {
       videoPaused: Boolean(video?.paused),
@@ -3726,19 +4081,21 @@
       precomputing: precomputeInProgress,
       complete,
     };
-    return globalThis.LSTPlaybackPolicy?.pausedCacheDecision?.(input) || {
-      allowed: Boolean(
-        input.videoPaused &&
-        input.cacheWhilePaused &&
-        !input.translationPaused &&
-        input.model &&
-        input.cueCount &&
-        input.needsTranslation &&
-        !input.precomputing &&
-        !input.complete
-      ),
-      reason: "policy-unavailable",
-    };
+    return (
+      globalThis.LSTPlaybackPolicy?.pausedCacheDecision?.(input) || {
+        allowed: Boolean(
+          input.videoPaused &&
+          input.cacheWhilePaused &&
+          !input.translationPaused &&
+          input.model &&
+          input.cueCount &&
+          input.needsTranslation &&
+          !input.precomputing &&
+          !input.complete,
+        ),
+        reason: "policy-unavailable",
+      }
+    );
   }
 
   function updatePausedCacheBlocker(video) {
@@ -3762,14 +4119,18 @@
       ? ""
       : globalThis.LSTPlaybackPolicy?.describePausedCacheDecision?.(decision) ||
         "Paused caching is unavailable.";
-    const changed = previousReason !== currentStatus.pausedCacheReason ||
+    const changed =
+      previousReason !== currentStatus.pausedCacheReason ||
       previousBlocker !== currentStatus.pausedCacheBlocker;
     if (changed) {
       logDiagnostic(
         decision.allowed ? "info" : "warning",
         "cache",
         "paused-cache-eligibility-changed",
-        { allowed: Boolean(decision.allowed), reason: decision.reason || "unspecified" },
+        {
+          allowed: Boolean(decision.allowed),
+          reason: decision.reason || "unspecified",
+        },
       );
     }
     return changed;
@@ -3888,7 +4249,9 @@
     const activeVideoId = getVideoId();
     if (
       (cueVideoId && cueVideoId !== activeVideoId) ||
-      (lastObservedVideoId && lastObservedVideoId !== activeVideoId && activeVideoId !== "unknown")
+      (lastObservedVideoId &&
+        lastObservedVideoId !== activeVideoId &&
+        activeVideoId !== "unknown")
     ) {
       lastObservedVideoId = activeVideoId;
       const keepNativeCaptions = Boolean(
@@ -3937,6 +4300,7 @@
       lastEpisodeNumber = null;
       appliedShowSettingsKey = "";
       logDiagnostic("info", "track", "episode-changed", {});
+      scheduleCaptionNotice();
       applySubtitleAppearance();
       setStatus(
         keepNativeCaptions
@@ -3952,13 +4316,18 @@
       importedTrack = null;
       currentStatus.subtitleSource = "none";
       currentStatus.importedFileName = "";
-      refreshImportedTrack({ reason: "episode-changed", force: true }).catch((error) => {
-        console.warn("[LST] Could not check for imported subtitles:", error);
-      });
+      refreshImportedTrack({ reason: "episode-changed", force: true }).catch(
+        (error) => {
+          console.warn("[LST] Could not check for imported subtitles:", error);
+        },
+      );
       // Another episode may be another show, and a show LST already knows
       // something about should say so on the episode the viewer moved to.
       refreshJimakuFinding({ reason: "episode-changed" }).catch((error) => {
-        console.warn("[LST] Could not read what Jimaku holds for this show:", error);
+        console.warn(
+          "[LST] Could not read what Jimaku holds for this show:",
+          error,
+        );
       });
       // The new episode's own document may have arrived before the route change
       // was noticed, in which case it was judged against the track that has just
@@ -4021,10 +4390,7 @@
         requestAnimationFrame(playbackLoop);
         return;
       }
-      if (
-        !renderedObservation.stable &&
-        !timedTrackLifecycle.verified
-      ) {
+      if (!renderedObservation.stable && !timedTrackLifecycle.verified) {
         currentStatus.playbackMode = `waiting for stable ${siteName()} subtitle`;
         updateDebugPanel();
         requestAnimationFrame(playbackLoop);
@@ -4055,7 +4421,12 @@
             ? "waiting for a line this track holds"
             : "waiting for subtitle sync";
         updateDebugPanel();
-        focusTranscriptCue(findCueMatchingText(renderedText, subtitleLookupTime(video.currentTime)));
+        focusTranscriptCue(
+          findCueMatchingText(
+            renderedText,
+            subtitleLookupTime(video.currentTime),
+          ),
+        );
         if (renderedText) handleFallbackRenderedSubtitle();
         requestAnimationFrame(playbackLoop);
         return;
@@ -4103,7 +4474,10 @@
         !trackIsImported() &&
         settings.showNativeWhenTargetLanguage !== false
       ) {
-        removeRenderedSubtitlesBySource("timed", "using-native-same-language-captions");
+        removeRenderedSubtitlesBySource(
+          "timed",
+          "using-native-same-language-captions",
+        );
         lastRenderedCueKey = key;
         currentStatus.playbackMode = "native captions (target language)";
         currentStatus.lastTranslatedText = "";
@@ -4178,17 +4552,12 @@
     return {
       text,
       stable:
-        now - renderedSubtitleCandidateSince >=
-        RENDERED_SUBTITLE_STABILITY_MS,
+        now - renderedSubtitleCandidateSince >= RENDERED_SUBTITLE_STABILITY_MS,
     };
   }
 
   async function handleFallbackRenderedSubtitle() {
-    if (
-      !sessionLifecycle.active ||
-      !isWatchPage() ||
-      !settings.enabled
-    ) return;
+    if (!sessionLifecycle.active || !isWatchPage() || !settings.enabled) return;
     // The DOM fallback exists because a captured track can fail to be confirmed
     // against what the player draws. An imported track needs no confirmation —
     // it is a file — so reading the service's captions here would only add a
@@ -4237,7 +4606,10 @@
         currentStatus.playbackMode = "native captions (target language)";
         currentStatus.lastTranslatedText = "";
         removeRenderedSubtitlesBySource("dom", "same-language-native-captions");
-        removeRenderedSubtitlesBySource("timed", "same-language-native-captions");
+        removeRenderedSubtitlesBySource(
+          "timed",
+          "same-language-native-captions",
+        );
         applySubtitleAppearance();
         if (!alreadyKnown) {
           setStatus(
@@ -4285,7 +4657,12 @@
 
     try {
       const result = await translateCues([fallbackCue]);
-      if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
+      if (
+        generation !== sessionLifecycle.playbackGeneration ||
+        !sessionLifecycle.active ||
+        !isWatchPage()
+      )
+        return;
       const translated = result.entries[key] || "";
 
       if (translated && lastFallbackText === text) {
@@ -4318,7 +4695,12 @@
           result.failures[0].error || "Realtime translation failed";
       }
     } catch (error) {
-      if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
+      if (
+        generation !== sessionLifecycle.playbackGeneration ||
+        !sessionLifecycle.active ||
+        !isWatchPage()
+      )
+        return;
       currentStatus.lastError = error.message;
       setStatus(`Realtime translation error: ${error.message}`, true);
     }
@@ -4484,10 +4866,20 @@
     } catch (error) {
       console.warn("[LST] Could not reconcile fallback translations:", error);
     }
-    if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
+    if (
+      generation !== sessionLifecycle.playbackGeneration ||
+      !sessionLifecycle.active ||
+      !isWatchPage()
+    )
+      return;
 
     const allCached = await getCachedTranslations(cues);
-    if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
+    if (
+      generation !== sessionLifecycle.playbackGeneration ||
+      !sessionLifecycle.active ||
+      !isWatchPage()
+    )
+      return;
     currentStatus.translatedCount = Object.keys(allCached).length;
     updateProgress();
 
@@ -4548,7 +4940,9 @@
   }
 
   function normalizedTargetLanguage() {
-    return String(settings.targetLanguage || "").trim().toLowerCase();
+    return String(settings.targetLanguage || "")
+      .trim()
+      .toLowerCase();
   }
 
   // Whether this track has to reach a translation provider at all. Everything
@@ -4559,10 +4953,12 @@
       const decision = subtitleImport()?.needsTranslation?.({
         language: capturedTrackLanguage || exposedLanguage,
         targetLanguage: settings.targetLanguage,
-        sampleText: (
-          cues.length
-            ? cues.slice(0, 20).map((cue) => cue.text).join(" ")
-            : sampleText
+        sampleText: (cues.length
+          ? cues
+              .slice(0, 20)
+              .map((cue) => cue.text)
+              .join(" ")
+          : sampleText
         ).slice(0, 4000),
       });
       return decision ? decision.translate : true;
@@ -4597,9 +4993,11 @@
   }
 
   function translationMayRun(renderedText = "") {
-    return !settings.translationPaused &&
+    return (
+      !settings.translationPaused &&
       trackNeedsTranslation(renderedText) &&
-      !serviceSubtitlesAreOff(renderedText);
+      !serviceSubtitlesAreOff(renderedText)
+    );
   }
 
   // Whether an imported file has to be translated, for the language the viewer
@@ -4647,7 +5045,8 @@
   function importedTrackStatusText() {
     const name = importedTrack?.fileName || "imported subtitles";
     const cueCount = `${cues.length} cue${cues.length === 1 ? "" : "s"}`;
-    const described = subtitleImport()?.describeFileTiming?.(fileTimingOffsetMs());
+    const described =
+      subtitleImport()?.describeFileTiming?.(fileTimingOffsetMs());
     const timing = described?.offsetMs ? ` · timing ${described.label}` : "";
     return trackNeedsTranslation()
       ? `Imported subtitles: ${name} · ${cueCount}${timing}.`
@@ -4687,7 +5086,10 @@
 
   // Read what is known about this show. Called where the episode is, rather than
   // on a timer, so a viewer who never settles on a title asks nothing.
-  async function refreshJimakuFinding({ reason = "episode", force = false } = {}) {
+  async function refreshJimakuFinding({
+    reason = "episode",
+    force = false,
+  } = {}) {
     if (!sessionLifecycle.active || !isWatchPage()) return;
     const api = subtitleImport();
     if (!api?.normalizeJimakuFinding) return;
@@ -4704,7 +5106,10 @@
     jimakuFindingKey = key;
     let response;
     try {
-      response = await runtimeMessage({ type: "GET_JIMAKU_FINDING", showKey: key });
+      response = await runtimeMessage({
+        type: "GET_JIMAKU_FINDING",
+        showKey: key,
+      });
     } catch (error) {
       logDiagnostic("warning", "import", "jimaku-finding-unavailable", {
         reason: "background-unavailable",
@@ -4717,7 +5122,10 @@
     if (jimakuFindingKey !== key) return;
     jimakuFinding = api.normalizeJimakuFinding(response?.finding) || null;
     logDiagnostic("info", "import", "jimaku-finding-read", {
-      reason: jimakuFindingText()?.reason || response?.reason || api.FINDING_REASON.none,
+      reason:
+        jimakuFindingText()?.reason ||
+        response?.reason ||
+        api.FINDING_REASON.none,
       entryCount: jimakuFinding?.entryCount ?? 0,
       fileCount: jimakuFinding?.fileCount ?? null,
       episode: jimakuFinding?.episode ?? null,
@@ -4738,7 +5146,8 @@
       !described ||
       jimakuNoteDismissed.has(show) ||
       settings.showStatusMessages === false ||
-      (quickPillsPanel?.dataset.compact === "true" && described.tone !== "warn");
+      (quickPillsPanel?.dataset.compact === "true" &&
+        described.tone !== "warn");
     if (jimakuNote.hidden) return;
     jimakuNoteText.textContent =
       described.tone === "warn"
@@ -4771,7 +5180,9 @@
     if (jimakuCheckPending) return;
     const api = subtitleImport();
     const metadata = cacheMetadata();
-    const query = api?.queryFromShowName ? api.queryFromShowName(metadata.showName) : "";
+    const query = api?.queryFromShowName
+      ? api.queryFromShowName(metadata.showName)
+      : "";
     if (!query) {
       setStatus(
         "LST has no show name to search for yet. Wait for the title to load, then press Check Jimaku again.",
@@ -4792,7 +5203,8 @@
       const described = adoptJimakuFinding(response?.finding);
       const entryCount = Number(response?.entries?.length) || 0;
       logDiagnostic("info", "import", "jimaku-checked", {
-        reason: described?.reason || api?.FINDING_REASON?.none || "no-finding-yet",
+        reason:
+          described?.reason || api?.FINDING_REASON?.none || "no-finding-yet",
         entryCount,
       });
       if (described) {
@@ -4902,7 +5314,10 @@
       try {
         await getCachedTranslations(cues);
       } catch (error) {
-        console.warn("[LST] Could not read this episode's cached translations:", error);
+        console.warn(
+          "[LST] Could not read this episode's cached translations:",
+          error,
+        );
       }
     }
     return true;
@@ -4941,7 +5356,10 @@
   // Ask the background what was imported for this episode. Called when playback
   // starts, when the episode changes, and when an import is added or removed on
   // another page, so the player never keeps a track the viewer has deleted.
-  async function refreshImportedTrack({ reason = "playback-start", force = false } = {}) {
+  async function refreshImportedTrack({
+    reason = "playback-start",
+    force = false,
+  } = {}) {
     if (!sessionLifecycle.active || !isWatchPage()) return;
     const generation = sessionLifecycle.playbackGeneration;
     const episodeKey = importedEpisodeKey();
@@ -4959,14 +5377,22 @@
 
     let response;
     try {
-      response = await runtimeMessage({ type: "GET_IMPORTED_TRACK", episodeKey });
+      response = await runtimeMessage({
+        type: "GET_IMPORTED_TRACK",
+        episodeKey,
+      });
     } catch (error) {
       logDiagnostic("warning", "import", "imported-track-unavailable", {
         reason: "background-unavailable",
       });
       return;
     }
-    if (generation !== sessionLifecycle.playbackGeneration || !sessionLifecycle.active || !isWatchPage()) return;
+    if (
+      generation !== sessionLifecycle.playbackGeneration ||
+      !sessionLifecycle.active ||
+      !isWatchPage()
+    )
+      return;
     // The viewer may have moved to another episode while the answer was in
     // flight, in which case the answer describes a track that is not this
     // page's track.
@@ -4974,7 +5400,8 @@
 
     const track = response?.track;
     if (!track) {
-      if (cueTrackKind === "imported") releaseImportedTrack(response?.reason || "removed");
+      if (cueTrackKind === "imported")
+        releaseImportedTrack(response?.reason || "removed");
       return;
     }
     const unchanged =
@@ -5011,7 +5438,9 @@
       throw new Error("Resume subtitle translation before precomputing.");
     }
     if (!settings.model && trackNeedsTranslation()) {
-      throw new Error("Choose a translation model in extension settings first.");
+      throw new Error(
+        "Choose a translation model in extension settings first.",
+      );
     }
     if (!trackNeedsTranslation()) {
       // The imported file is already written in the language the viewer asked
@@ -5031,6 +5460,8 @@
 
     precomputeInProgress = true;
     precomputeCancelled = false;
+    precomputeInitialMissing = 0;
+    precomputeCompletedCues = 0;
 
     currentStatus.precomputing = true;
     currentStatus.failedCount = 0;
@@ -5050,6 +5481,7 @@
       const missing = remainingCues.filter(
         (cue) => !Object.prototype.hasOwnProperty.call(cached, cueKey(cue)),
       );
+      precomputeInitialMissing = missing.length;
 
       const batchSize = Math.max(1, Number(settings.batchSize) || 16);
       currentStatus.totalBatches = Math.ceil(missing.length / batchSize);
@@ -5103,6 +5535,7 @@
         // that set so progress cannot double-count the just-finished batch.
         refreshCacheCoverage(activeVideo()?.currentTime);
         currentStatus.failedCount += result.failures.length;
+        precomputeCompletedCues += batch.length;
 
         if (result.failures.length) {
           currentStatus.lastError =
@@ -5151,6 +5584,8 @@
       throw error;
     } finally {
       precomputeInProgress = false;
+      precomputeInitialMissing = 0;
+      precomputeCompletedCues = 0;
       currentStatus.precomputing = false;
       currentStatus.batchStartedAt = 0;
       currentStatus.currentText = "";
@@ -5205,7 +5640,16 @@
   // captured-track-lifecycle.js; this runtime performs the resulting effects.
 
   function holdCapturedDocument(payload) {
-    const { url, text, site, capture = "", language = "", reason = "" } = payload || {};
+    const {
+      url,
+      text,
+      site,
+      capture = "",
+      language = "",
+      reason = "",
+      ownerVideoId = "",
+      pageVideoId: capturedPageVideoId = "",
+    } = payload || {};
     // A document captured on one service is never adopted by the other: the
     // page hook tags what it publishes, and a mismatch is reported rather than
     // trusted, because a subtitle track from another site would be filed under
@@ -5231,14 +5675,14 @@
     const result = capturedTrackLifecycle.hold({
       url: String(url || ""),
       text,
-      details: { capture, language, reason },
-      // Which episode LST was working with when this document was captured, and
-      // which item the address named at the same moment. They are two different
-      // questions — on Prime Video the episode is the listing's own id while the
-      // address usually names the series — so they are recorded separately and
-      // asked separately when the document is offered to another episode.
-      videoId: getVideoId(),
-      pageVideoId: pageVideoId(),
+      details: {
+        capture,
+        language,
+        reason,
+        ownerVideoId,
+      },
+      videoId: ownerVideoId || getVideoId(),
+      pageVideoId: capturedPageVideoId || pageVideoId(),
       // Where the player was in the item when the document was captured, so a
       // document held for the next episode can be told apart from one fetched
       // ahead of a switch that has not happened: only the item restarting moves
@@ -5253,8 +5697,26 @@
   function handleCapturedDocument(payload) {
     const held = holdCapturedDocument(payload);
     if (!held) return;
+
+    logDiagnostic("info", "track", "capture-received", {
+      capture: payload?.capture || "unknown",
+      cueVideoId,
+      currentVideoId: getVideoId(),
+      heldVideoId: held.videoId,
+      heldDocument: true,
+    });
+
+    if (cueVideoId && cueVideoId !== getVideoId()) {
+      logDiagnostic("info", "track", "capture-deferred", {
+        previousVideoId: cueVideoId,
+        nextVideoId: getVideoId(),
+      });
+
+      return;
+    }
+
     acceptSubtitleDocument(held.url, held.text, held.details).catch((error) => {
-      console.warn("[LST] Could not parse captured subtitles:", error);
+      console.warn("[LST] Subtitle capture failed:", error);
     });
   }
 
@@ -5324,18 +5786,15 @@
   }
 
   function notifyCaptureRouteChanged() {
-    if (globalThis.LSTCaptureBridge?.requestResync) {
-      globalThis.LSTCaptureBridge.requestResync();
-    } else if (typeof window.postMessage === "function") {
-      window.postMessage(
-        {
-          source: SOURCE,
-          channel: "content-capture",
-          type: "CAPTURE_ROUTE_CHANGED",
-        },
-        "*",
-      );
-    }
+    window.postMessage(
+      {
+        source: SOURCE,
+        channel: "content-capture",
+        type: "CAPTURE_ROUTE_CHANGED",
+        videoId: getVideoId(),
+      },
+      "*",
+    );
   }
 
   // The other piece of evidence, for a player that draws no line at all: a
@@ -5405,7 +5864,8 @@
       lastCaptureSummary = {
         at: new Date().toISOString(),
         event: "subtitle-document",
-        reason: message.payload?.reason || message.payload?.capture || "captured",
+        reason:
+          message.payload?.reason || message.payload?.capture || "captured",
         trackCount: 1,
         language: message.payload?.language || "unknown",
       };
@@ -5425,7 +5885,8 @@
       // document is held rather than dropped: the request that carried it is
       // never repeated, so it is the only copy of this episode's track LST will
       // get, and playback picks it up when the player comes back.
-      if (message?.type === "SUBTITLE_DOCUMENT") holdCapturedDocument(message.payload);
+      if (message?.type === "SUBTITLE_DOCUMENT")
+        holdCapturedDocument(message.payload);
       return;
     }
 
@@ -5435,13 +5896,44 @@
     // viewer can find out why a title has no full track instead of watching LST
     // wait.
     if (message?.type === "SUBTITLE_CAPTURE") {
-      const { site, event: captureEvent, reason, trackCount, language } =
-        message.payload || {};
+      const {
+        site,
+        event: captureEvent,
+        reason,
+        trackCount,
+        language,
+        source,
+        status,
+        contentType,
+        chars,
+        documentKind,
+        pageVideoId: capturedPageVideoId,
+        requestedEpisodeKnown,
+        cachedDocumentCount,
+        ownerKnown,
+      } = message.payload || {};
       if (site && site !== currentSiteId()) return;
       logDiagnostic("info", "track", `capture-${captureEvent || "note"}`, {
         reason: reason || "unspecified",
         trackCount: Number(trackCount) || 0,
         language: language || "unknown",
+        ...(source ? { source } : {}),
+        ...(Number.isFinite(Number(status))
+          ? { status: Number(status) }
+          : {}),
+        ...(contentType ? { contentType } : {}),
+        ...(Number.isFinite(Number(chars)) ? { chars: Number(chars) } : {}),
+        ...(documentKind ? { documentKind } : {}),
+        ...(capturedPageVideoId
+          ? { capturedPageVideoId: String(capturedPageVideoId) }
+          : {}),
+        ...(typeof requestedEpisodeKnown === "boolean"
+          ? { requestedEpisodeKnown }
+          : {}),
+        ...(Number.isFinite(Number(cachedDocumentCount))
+          ? { cachedDocumentCount: Number(cachedDocumentCount) }
+          : {}),
+        ...(typeof ownerKnown === "boolean" ? { ownerKnown } : {}),
       });
       return;
     }
@@ -5489,7 +5981,8 @@
     let captureBridge = { available: false };
     try {
       const bridgeSnapshot = globalThis.LSTCaptureBridge?.snapshot?.();
-      if (bridgeSnapshot) captureBridge = { available: true, ...bridgeSnapshot };
+      if (bridgeSnapshot)
+        captureBridge = { available: true, ...bridgeSnapshot };
     } catch {}
 
     return {
@@ -5520,8 +6013,14 @@
       capture: { ...lastCaptureSummary },
       settings: {
         enabled: settingRecord("enabled", settings.enabled !== false),
-        siteEnabled: settingRecord("enabledSites", siteEnabled(currentSiteId())),
-        showQuickPills: settingRecord("showQuickPills", settings.showQuickPills !== false),
+        siteEnabled: settingRecord(
+          "enabledSites",
+          siteEnabled(currentSiteId()),
+        ),
+        showQuickPills: settingRecord(
+          "showQuickPills",
+          settings.showQuickPills !== false,
+        ),
         autoMinimizeControls: settingRecord(
           "autoMinimizeControls",
           settings.autoMinimizeControls !== false,
@@ -5534,12 +6033,18 @@
           "translationPaused",
           settings.translationPaused === true,
         ),
-        cacheWhilePaused: settingRecord("cacheWhilePaused", settings.cacheWhilePaused !== false),
+        cacheWhilePaused: settingRecord(
+          "cacheWhilePaused",
+          settings.cacheWhilePaused !== false,
+        ),
         autoTranslateAhead: settingRecord(
           "autoTranslateAhead",
           settings.autoTranslateAhead !== false,
         ),
-        showTranslated: settingRecord("showTranslated", settings.showTranslated !== false),
+        showTranslated: settingRecord(
+          "showTranslated",
+          settings.showTranslated !== false,
+        ),
         hideNativeSubtitles: settingRecord(
           "hideNativeSubtitles",
           settings.hideNativeSubtitles !== false,
@@ -5548,7 +6053,10 @@
           "showTranscriptSidebar",
           settings.showTranscriptSidebar === true,
         ),
-        targetLanguage: settingRecord("targetLanguage", settings.targetLanguage || ""),
+        targetLanguage: settingRecord(
+          "targetLanguage",
+          settings.targetLanguage || "",
+        ),
         modelConfigured: settingRecord("model", Boolean(settings.model)),
       },
       playerUi: {
@@ -5557,7 +6065,8 @@
         hudDisplayed: Boolean(hud?.isConnected && hud.style.display !== "none"),
         pillConnected: Boolean(quickPillsPanel?.isConnected),
         pillDisplayed: Boolean(
-          quickPillsPanel?.isConnected && quickPillsPanel.style.display !== "none"
+          quickPillsPanel?.isConnected &&
+          quickPillsPanel.style.display !== "none",
         ),
         pillCompact: quickPillsPanel?.dataset.compact === "true",
         pillMenuOpen: Boolean(quickPillsMenu && !quickPillsMenu.hidden),
@@ -5567,14 +6076,16 @@
         captured: Boolean(currentStatus.captured),
         cueCount: cues.length,
         imported: trackIsImported(),
-        sourceLanguage: capturedTrackLanguage || languages.subtitle || "unknown",
+        sourceLanguage:
+          capturedTrackLanguage || languages.subtitle || "unknown",
         audioLanguage: languages.audio || "unknown",
         needsTranslation,
-        translationReason: needsTranslation == null
-          ? "no-track"
-          : needsTranslation
-            ? "target-language-differs"
-            : "already-target-language",
+        translationReason:
+          needsTranslation == null
+            ? "no-track"
+            : needsTranslation
+              ? "target-language-differs"
+              : "already-target-language",
         syncState: timedTrackLifecycle.state,
         heldDocument: capturedTrackLifecycle.snapshot().held,
         heldDocumentAgeMs: capturedTrackLifecycle.snapshot().ageMs,
@@ -5594,7 +6105,9 @@
         eligibilityReason: pausedDecision.reason || "unspecified",
         blocker: currentStatus.pausedCacheBlocker || "",
         pausedCaching: Boolean(pausedCachingPromise),
-        precomputing: Boolean(currentStatus.precomputing || precomputeInProgress),
+        precomputing: Boolean(
+          currentStatus.precomputing || precomputeInProgress,
+        ),
       },
       translation: {
         requestState: currentStatus.requestState,
@@ -5653,7 +6166,11 @@
             return;
           }
           const described = adoptJimakuFinding(message.finding);
-          sendResponse({ ok: true, applied: Boolean(described), reason: described?.reason || "" });
+          sendResponse({
+            ok: true,
+            applied: Boolean(described),
+            reason: described?.reason || "",
+          });
           return;
         }
 
@@ -5715,12 +6232,19 @@
           // still needs translating.
           if (trackIsImported()) {
             const wasTranslating = trackNeedsTranslation();
-            await refreshImportedTrack({ reason: "settings-changed", force: true });
-            if (sessionLifecycle.active && wasTranslating !== trackNeedsTranslation()) {
+            await refreshImportedTrack({
+              reason: "settings-changed",
+              force: true,
+            });
+            if (
+              sessionLifecycle.active &&
+              wasTranslating !== trackNeedsTranslation()
+            ) {
               setStatus(importedTrackStatusText(), true);
             }
           }
           ensureOverlay();
+          if (settings.showNetflixCaptionNotice !== true) clearCaptionNotice();
           applySubtitleAppearance();
           updateOverlayPanelVisibility();
           updateDebugPanel();
@@ -5742,6 +6266,7 @@
     recordPlayerSessionTransition("stopped", reason);
     flushDiagnosticEvents();
     sessionLifecycle.stop();
+    clearCaptionNotice();
     clearTimeout(quickPillsMinimizeTimer);
     quickPillsMinimizeTimer = null;
     precomputeCancelled = true;
@@ -5776,13 +6301,13 @@
     translationCoordinator = null;
     knownCachedKeys = new Set();
     knownCachedTranslations = new Map();
-      lookAheadQueued = new Set();
-      lookAheadNoticeShown = false;
-      lookAheadReadyNoticeShown = false;
-      pausedCacheFailedKeys = new Set();
-      pausedCacheNoticeShown = false;
-      pausedCacheCompleteNoticeShown = false;
-      lastPlaybackWasPaused = false;
+    lookAheadQueued = new Set();
+    lookAheadNoticeShown = false;
+    lookAheadReadyNoticeShown = false;
+    pausedCacheFailedKeys = new Set();
+    pausedCacheNoticeShown = false;
+    pausedCacheCompleteNoticeShown = false;
+    lastPlaybackWasPaused = false;
     renderedSubtitles = [];
     lastRenderedCueKey = "";
     currentStatus = {
@@ -5821,12 +6346,17 @@
     if (lastInactiveSiteReason === `${reason}:${currentSiteId()}`) return;
     lastInactiveSiteReason = `${reason}:${currentSiteId()}`;
     const detected = detectedSite();
-    logDiagnostic(reason === "site-disabled" ? "info" : "warning", "site", reason, {
-      siteId: detected.siteId || "none",
-      matchPattern: detected.matchPattern || "none",
-      host: detected.view?.host || "unknown",
-      ...details,
-    });
+    logDiagnostic(
+      reason === "site-disabled" ? "info" : "warning",
+      "site",
+      reason,
+      {
+        siteId: detected.siteId || "none",
+        matchPattern: detected.matchPattern || "none",
+        host: detected.view?.host || "unknown",
+        ...details,
+      },
+    );
   }
 
   // The stored preference is read once, on the first page that could actually
@@ -5850,7 +6380,10 @@
         effectiveSettingSources.enabled = "global";
       }
       if (stored.enabledSites && typeof stored.enabledSites === "object") {
-        settings.enabledSites = settingsSchema.normalizeValue("enabledSites", stored.enabledSites);
+        settings.enabledSites = settingsSchema.normalizeValue(
+          "enabledSites",
+          stored.enabledSites,
+        );
         effectiveSettingSources.enabledSites = "global";
       }
       if (typeof stored.showQuickPills === "boolean") {
@@ -5953,6 +6486,7 @@
       }
       ensureOverlay();
       setStatus(`Waiting for ${siteName()} subtitles…`, true);
+      scheduleCaptionNotice();
       refreshShowSettings({ force: true }).catch((error) => {
         console.warn("[LST] Could not load show settings:", error);
       });
@@ -5974,7 +6508,10 @@
       // What Jimaku held for this show, if the viewer ever asked: a note read
       // from local storage, so arriving at a title sends nothing anywhere.
       refreshJimakuFinding({ reason: "playback-start" }).catch((error) => {
-        console.warn("[LST] Could not read what Jimaku holds for this show:", error);
+        console.warn(
+          "[LST] Could not read what Jimaku holds for this show:",
+          error,
+        );
       });
     } catch (error) {
       if (sessionLifecycle.deactivate(generation)) {
@@ -5989,8 +6526,12 @@
   }
 
   startFullscreenObserver();
-  syncPlaybackRoute().catch((error) => console.warn("[LST] Could not start playback:", error));
+  syncPlaybackRoute().catch((error) =>
+    console.warn("[LST] Could not start playback:", error),
+  );
   setInterval(() => {
-    syncPlaybackRoute().catch((error) => console.warn("[LST] Could not follow site navigation:", error));
+    syncPlaybackRoute().catch((error) =>
+      console.warn("[LST] Could not follow site navigation:", error),
+    );
   }, 750);
 })();

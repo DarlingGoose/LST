@@ -226,6 +226,34 @@ assert.equal(site.activeVideo(undefined).reason, "no-video-element");
     "netflix-watch-page-is-the-player",
   );
 
+  const captionSelection = (selected) => ({
+    netflix: {
+      appContext: {
+        state: {
+          playerApp: {
+            getAPI: () => ({
+              videoPlayer: {
+                getAllPlayerSessionIds: () => ["playing"],
+                getVideoPlayerBySessionId: () => ({
+                  getTimedTextTrack: () => selected,
+                }),
+              },
+            }),
+          },
+        },
+      },
+    },
+  });
+  assert.equal(
+    site.SITES.netflix.captionSelection(captionSelection(null)).state,
+    "off",
+  );
+  assert.equal(
+    site.SITES.netflix.captionSelection(captionSelection({ trackId: "ja" })).state,
+    "on",
+  );
+  assert.equal(site.SITES.netflix.captionSelection({}).state, "unknown");
+
   const noContainer = site.SITES.primevideo.playerPresence(fakeDocument([]));
   assert.equal(noContainer.present, false);
   assert.equal(noContainer.reason, "prime-player-container-absent");

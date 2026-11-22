@@ -91,6 +91,7 @@ class MockXHR {
     this.responseType = "";
     this.responseText = "";
     this.responseURL = "";
+    this.status = 200;
     this.headers = {};
   }
   open(method, url) {
@@ -108,6 +109,35 @@ class MockXHR {
     // The request is already complete by the time the hook listens for load.
     for (const handler of this.listeners.get("load") || []) handler.call(this);
   }
+}
+
+// Both page-world transports report whether a candidate response was accepted,
+// without including the response body or its signed URL in the diagnostic.
+{
+  const harness = createPageHarness("https://www.netflix.com/watch/80100172");
+  await harness.fetch("https://www.netflix.com/subtitle.vtt", "text/vtt", VTT);
+  await harness.xhr(
+    "https://www.netflix.com/api/timedtext?o=123",
+    "text/xml",
+    "<html>not timed text</html>",
+  );
+
+  const accepted = harness
+    .notes()
+    .find((entry) => entry.payload.event === "capture-network-accepted");
+  assert.equal(accepted?.payload.source, "fetch");
+  assert.equal(accepted?.payload.documentKind, "vtt");
+  assert.equal(accepted?.payload.status, 200);
+
+  const rejected = harness
+    .notes()
+    .find((entry) => entry.payload.event === "capture-network-rejected");
+  assert.equal(rejected?.payload.source, "xhr");
+  assert.equal(rejected?.payload.documentKind, "html");
+  assert.equal(rejected?.payload.contentType, "text/xml");
+  assert.equal(rejected?.payload.chars, 27);
+  assert.equal("text" in rejected.payload, false);
+  assert.equal("url" in rejected.payload, false);
 }
 
 function responseFor({ url, contentType, body }) {

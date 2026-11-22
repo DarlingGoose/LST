@@ -66,6 +66,36 @@
     playerPresence() {
       return { present: true, reason: "netflix-watch-page-is-the-player" };
     },
+    captionSelection(win, document) {
+      try {
+        const videoPlayer = win?.netflix?.appContext?.state?.playerApp?.getAPI?.()?.videoPlayer;
+        const sessions = videoPlayer?.getAllPlayerSessionIds?.();
+        const player = sessions?.length
+          ? videoPlayer.getVideoPlayerBySessionId?.(sessions[sessions.length - 1])
+          : null;
+        const read = player?.getTimedTextTrack || player?.getCurrentTimedTextTrack;
+        if (typeof read === "function") {
+          const selected = read.call(player);
+          if (selected === undefined) return { state: "unknown", reason: "selection-unavailable" };
+          if (
+            !selected ||
+            selected === "off" ||
+            selected === "none" ||
+            selected?.isForced === true
+          ) {
+            return { state: "off", reason: "player-selection-off" };
+          }
+          return { state: "on", reason: "player-selection-on" };
+        }
+      } catch {}
+      const tracks = h.activeVideo(document)?.textTracks;
+      if (tracks?.length) {
+        return Array.from(tracks).some((track) => track.mode === "showing")
+          ? { state: "on", reason: "video-track-showing" }
+          : { state: "off", reason: "video-tracks-disabled" };
+      }
+      return { state: "unknown", reason: "selection-unavailable" };
+    },
     renderedSubtitleLines(document) {
       const containers = [
         ".player-timedtext",

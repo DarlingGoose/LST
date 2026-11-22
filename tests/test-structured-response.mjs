@@ -243,6 +243,11 @@ vm.runInContext(
   { filename: "settings-schema.js" },
 );
 vm.runInContext(
+  await fs.readFile(new URL("../src/shared/prompt-policy.js", import.meta.url), "utf8"),
+  context,
+  { filename: "prompt-policy.js" },
+);
+vm.runInContext(
   await fs.readFile(new URL("../src/shared/translation-context.js", import.meta.url), "utf8"),
   context,
   { filename: "translation-context.js" },

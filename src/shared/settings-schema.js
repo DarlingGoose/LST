@@ -24,6 +24,8 @@
     "minimumSubtitleDisplaySeconds",
     "maximumVisibleSubtitles",
     "showStatusMessages",
+    "showNetflixCaptionNotice",
+    "showCacheEta",
     "showDebugPanel",
     "debugPanelAlwaysOnTop",
     "showQuickPills",
@@ -67,6 +69,8 @@
     minimumSubtitleDisplaySeconds: { default: 2, type: "number", min: 0, max: 10 },
     maximumVisibleSubtitles: { default: 2, type: "integer", min: 1, max: 4 },
     showStatusMessages: { default: true, type: "boolean" },
+    showNetflixCaptionNotice: { default: false, type: "boolean" },
+    showCacheEta: { default: false, type: "boolean" },
     autoTranslateAhead: { default: true, type: "boolean" },
     useTranslationContext: { default: false, type: "boolean" },
     contextLevel: {
@@ -79,7 +83,9 @@
     cacheWhilePaused: { default: true, type: "boolean" },
     batchSize: { default: 8, type: "integer", min: 1, max: 50 },
     requestTimeoutSeconds: { default: 75, type: "number", min: 15, max: 300 },
+    preloadModelBeforeBenchmark: { default: false, type: "boolean" },
     customTranslationPrompt: { default: "", type: "string" },
+    modelPrompts: { default: Object.freeze({}), type: "string-map" },
     showDebugPanel: { default: false, type: "boolean" },
     debugPanelAlwaysOnTop: { default: false, type: "boolean" },
     showQuickPills: { default: true, type: "boolean" },
@@ -130,6 +136,16 @@
       if (!value || typeof value !== "object" || Array.isArray(value)) return result;
       for (const [key, enabled] of Object.entries(value)) {
         if (typeof enabled === "boolean") result[key] = enabled;
+      }
+      return result;
+    }
+    if (definition.type === "string-map") {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+      const result = {};
+      for (const [key, prompt] of Object.entries(value).slice(0, 50)) {
+        if (typeof key === "string" && key.length <= 200 && typeof prompt === "string" && prompt.trim()) {
+          result[key] = prompt.trim().slice(0, 12000);
+        }
       }
       return result;
     }

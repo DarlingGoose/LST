@@ -9,9 +9,35 @@ vm.runInContext(
   { filename: "settings-schema.js" },
 );
 const schema = context.LSTSettingsSchema;
+vm.runInContext(
+  await fs.readFile(new URL("../src/shared/prompt-policy.js", import.meta.url), "utf8"),
+  context,
+  { filename: "prompt-policy.js" },
+);
+const promptPolicy = context.LSTPromptPolicy;
+
+assert.equal(promptPolicy.automatic("translategemma:2b").tier, "small");
+assert.equal(promptPolicy.automatic("translategemma:4b").tier, "small");
+assert.equal(promptPolicy.automatic("qwen3:7b").tier, "large");
+assert.equal(promptPolicy.automatic("translategemma:12b").tier, "large");
+assert.equal(promptPolicy.automatic("gemini-2.5-pro").sizeBillions, null);
+assert.equal(promptPolicy.resolve({ provider: "ollama", model: "translategemma:12b" }).source, "automatic");
+assert.equal(promptPolicy.resolve({ provider: "ollama", model: "translategemma:12b",
+  customTranslationPrompt: "Global",
+  modelPrompts: { "ollama:translategemma:12b": "Model-specific" },
+}).prompt, "Model-specific");
+assert.equal(promptPolicy.resolve({ provider: "ollama", model: "translategemma:4b",
+  customTranslationPrompt: "Global",
+}).prompt, "Global");
+assert.deepEqual(JSON.parse(JSON.stringify(schema.normalizePatch({
+  modelPrompts: { "ollama:translategemma:12b": " Custom ", invalid: 42 },
+}).modelPrompts)), { "ollama:translategemma:12b": "Custom" });
 
 assert.equal(schema.VERSION, 1);
 assert.equal(schema.DEFAULTS.showQuickPills, true);
+assert.equal(schema.DEFAULTS.showNetflixCaptionNotice, false);
+assert.equal(schema.DEFAULTS.showCacheEta, false);
+assert.equal(schema.DEFAULTS.preloadModelBeforeBenchmark, false);
 assert.deepEqual(
   [...schema.PER_SHOW_NAMES],
   ["showTranslated", "hideNativeSubtitles", "showTranscriptSidebar", "promptInstructions"],

@@ -65,6 +65,11 @@ vm.runInContext(
   { filename: "settings-schema.js" },
 );
 vm.runInContext(
+  await fs.readFile(new URL("../src/shared/prompt-policy.js", import.meta.url), "utf8"),
+  context,
+  { filename: "prompt-policy.js" },
+);
+vm.runInContext(
   await fs.readFile(new URL("../src/shared/structured-response.js", import.meta.url), "utf8"),
   context,
   { filename: "structured-response.js" },
@@ -121,6 +126,18 @@ for (const [provider, key, model, prefix] of [
       "application/json");
     assert.match(JSON.parse(request.init.body).systemInstruction.parts[0].text, /Custom rules for English/);
   }
+  await send({ type: "SAVE_SETTINGS", settings: {
+    modelPrompts: { [`${provider}:${model}`]: "Per-model rules for {{targetLanguage}}." },
+  } });
+  const overridden = await send({ type: "TRANSLATE_BATCH", items: [{ id: "a", text: "こんにちは" }] });
+  assert.equal(overridden.ok, true);
+  const overrideRequest = requests.at(-1);
+  const overrideBody = JSON.parse(overrideRequest.init.body);
+  const system = provider === "deepseek"
+    ? overrideBody.messages[0].content
+    : overrideBody.systemInstruction.parts[0].text;
+  assert.match(system, /Per-model rules for English/);
+  assert.doesNotMatch(system, /Custom rules for English/);
 }
 
 await send({ type: "SET_PROVIDER_KEY", provider: "gemini", key: "" });

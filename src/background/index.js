@@ -8,6 +8,7 @@ try {
   if (typeof importScripts === "function") {
     importScripts(
       "../shared/settings-schema.js",
+      "../shared/prompt-policy.js",
       "../sites/playback-site.js",
       "../sites/netflix.js",
       "../sites/prime-video.js",
@@ -25,6 +26,8 @@ try {
 const ext = globalThis.browser || globalThis.chrome;
 const settingsSchema = globalThis.LSTSettingsSchema;
 if (!settingsSchema) throw new Error("settings-schema.js must load before background.js");
+const promptPolicy = globalThis.LSTPromptPolicy;
+if (!promptPolicy) throw new Error("prompt-policy.js must load before background.js");
 const DIAGNOSTIC_LOG_KEY = "diagnosticLog";
 const DIAGNOSTIC_LOG_LIMIT = 750;
 const SHOW_SETTINGS_KEY = "showSettings";
@@ -353,31 +356,11 @@ function translationSchema() {
 }
 
 function systemPrompt(targetLanguage, hasContext = false, customPrompt = "", showPrompt = "") {
-  let basePrompt = "";
-  if (String(customPrompt || "").trim()) {
-    basePrompt = String(customPrompt).trim().replace(/\{\{targetLanguage\}\}/gi, targetLanguage);
-    if (hasContext) {
-      basePrompt = `${basePrompt} Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity. Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list.`;
-    }
-  } else {
-    const instructions = [
-      "You are a subtitle translator.",
-      `Translate every requested subtitle into ${targetLanguage}.`,
-      "Use natural, concise language suitable for subtitles.",
-      "Preserve names, honorifics, punctuation, speaker labels, and intent.",
-      "Do not add explanations, notes, analysis, or romanization.",
-      "Do not merge, split, omit, or reorder items.",
-      "Never use fullwidth brackets (【 】 ［ ］) or Japanese punctuation to wrap JSON keys or IDs.",
-      "Never output multiple subtitle lines or IDs inside a single item's text."
-    ];
-    if (hasContext) {
-      instructions.push(
-        "Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity.",
-        "Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list."
-      );
-    }
-    basePrompt = instructions.join(" ");
+  let basePrompt = String(customPrompt || "").trim().replace(/\{\{targetLanguage\}\}/gi, targetLanguage);
+  if (hasContext) {
+    basePrompt = `${basePrompt} Treat contextSubtitles as reference only for understanding meaning, speakers, names, and continuity. Do not translate or return contextSubtitles unless they also appear in the subtitles translation target list.`;
   }
+  basePrompt += " Never use fullwidth brackets (【 】 ［ ］) or Japanese punctuation to wrap JSON keys or IDs. Never output multiple subtitle lines or IDs inside a single item's text.";
 
   const showInstructions = String(showPrompt || "").trim();
   if (showInstructions) {
@@ -508,7 +491,7 @@ async function runStructuredTranslation(items, opts) {
           subtitles: ordinals.ids.map((id, index) => ({ id, text: input[index].text })),
           ...(contextInput.length ? { contextSubtitles: contextInput } : {})
     }),
-    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt, opts.showPrompt)} ` +
+    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, promptPolicy.resolve(opts).prompt, opts.showPrompt)} ` +
       "Return exactly one translation for every input item as JSON with a translations array of {id, text} objects. Copy each input id exactly using standard ASCII quotes and braces.",
     opts, true, input.length
   );
@@ -573,7 +556,7 @@ async function runPlainSingleTranslation(item, opts) {
               contextSubtitles: contextInput
             })
           : String(item.text ?? ""),
-    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, opts.customTranslationPrompt, opts.showPrompt)} ` +
+    `${systemPrompt(opts.targetLanguage, contextInput.length > 0, promptPolicy.resolve(opts).prompt, opts.showPrompt)} ` +
       (opts.guardHint ? `${String(opts.guardHint).trim()} ` : "") +
       "Return only the translated subtitle text. Do not return JSON or a label.",
     opts, false, 1
@@ -1388,6 +1371,22 @@ function benchmarkContext(cues, selected, settings) {
   }).items;
 }
 
+async function preloadOllamaBenchmarkModel(opts) {
+  const startedAt = Date.now();
+  const base = normalizeBaseUrl(opts.ollamaUrl);
+  await fetchJson(`${base}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: opts.model,
+      prompt: "",
+      stream: false,
+      keep_alive: "15m",
+    }),
+  }, Math.max(15, Number(opts.requestTimeoutSeconds) || 75) * 1000);
+  return Date.now() - startedAt;
+}
+
 async function benchmarkTranslation(message) {
   const totalStartedAt = Date.now();
   const cacheStartedAt = Date.now();
@@ -1406,6 +1405,7 @@ async function benchmarkTranslation(message) {
     targetLanguage: settings.targetLanguage,
     requestTimeoutSeconds: settings.requestTimeoutSeconds,
     customTranslationPrompt: settings.customTranslationPrompt || "",
+    modelPrompts: settings.modelPrompts || {},
     showPrompt: "",
     verifyTranslations: settings.verifyTranslations !== false,
     contextItems: benchmarkContext(detail.cues, sample, settings),
@@ -1416,10 +1416,36 @@ async function benchmarkTranslation(message) {
   if (!opts.model) throw new Error(`No ${providerName(opts.provider)} model selected.`);
   if (opts.provider !== "ollama") await providerApiKey(opts.provider);
 
-  const setupMs = Date.now() - totalStartedAt;
+  const preloadRequested = settings.preloadModelBeforeBenchmark === true;
+  const preloadStartedAt = Date.now();
+  const preloadMs = preloadRequested && opts.provider === "ollama"
+    ? await preloadOllamaBenchmarkModel(opts)
+    : 0;
+  const excludedPreloadMs = preloadRequested && opts.provider === "ollama"
+    ? Date.now() - preloadStartedAt
+    : 0;
+  const setupMs = Date.now() - totalStartedAt - excludedPreloadMs;
   const items = sample.map((cue, index) => ({ id: String(index), text: cue.sourceText }));
-  const result = await translateBatchResilient(items, opts);
-  const totalMs = Date.now() - totalStartedAt;
+  const realtime = message.mode === "realtime";
+  let result;
+  const cueLatenciesMs = [];
+  if (realtime) {
+    result = { translations: [], failures: [], diagnostics: [] };
+    for (const [index, item] of items.entries()) {
+      const startedAt = Date.now();
+      const single = await translateBatchResilient([item], {
+        ...opts,
+        contextItems: benchmarkContext(detail.cues, [sample[index]], settings),
+      });
+      cueLatenciesMs.push(Date.now() - startedAt);
+      result.translations.push(...(single.translations || []));
+      result.failures.push(...(single.failures || []));
+      result.diagnostics.push(...(single.diagnostics || []));
+    }
+  } else {
+    result = await translateBatchResilient(items, opts);
+  }
+  const totalMs = Date.now() - totalStartedAt - excludedPreloadMs;
   const trace = translationTrace(
     result,
     Math.max(0, totalMs - cacheReadMs),
@@ -1459,6 +1485,10 @@ async function benchmarkTranslation(message) {
       model: opts.model,
       targetLanguage: opts.targetLanguage,
       contextCueCount: opts.contextItems.length,
+      mode: realtime ? "realtime" : "batch",
+      preload: preloadRequested && opts.provider === "ollama" ? "completed" : "not-used",
+      preloadMs,
+      cueLatenciesMs,
       trace,
       cacheChanged: false,
     },
@@ -1470,6 +1500,10 @@ async function benchmarkTranslation(message) {
     model: opts.model,
     targetLanguage: opts.targetLanguage,
     contextCueCount: opts.contextItems.length,
+    mode: realtime ? "realtime" : "batch",
+    preload: preloadRequested && opts.provider === "ollama" ? "completed" : "not-used",
+    preloadMs,
+    cueLatenciesMs,
     cacheCompatible: compatible,
     cacheCompatibilityReason: compatible
       ? "settings-match-cache"
@@ -2352,6 +2386,7 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
           requestTimeoutSeconds:
             message.requestTimeoutSeconds || settings.requestTimeoutSeconds,
           customTranslationPrompt: settings.customTranslationPrompt || "",
+          modelPrompts: settings.modelPrompts || {},
           showPrompt,
           verifyTranslations: settings.verifyTranslations !== false,
           // Context arrives in a message, so it is checked here, once, before it

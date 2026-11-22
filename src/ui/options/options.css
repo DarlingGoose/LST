@@ -45,6 +45,7 @@ button:disabled { opacity: .55; cursor: wait; transform: none; }
 .settings-tab { width: 100%; display: flex; align-items: center; justify-content: space-between; border: 0; background: transparent; color: var(--muted); text-align: left; }
 .settings-tab:hover { background: #1b2028; color: #fff; }
 .settings-tab[aria-selected="true"] { background: var(--raised); color: #fff; }
+.settings-tab-child { margin-left: 14px; width: calc(100% - 14px); font-size: 12px; }
 .nav-badge { min-width: 28px; padding: 3px 8px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; text-align: center; }
 .privacy-card { margin-top: auto; padding: 14px 16px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
 .privacy-card strong { display: block; margin-top: 10px; font-size: 13px; }
@@ -235,6 +236,12 @@ input[type="range"] { width: 100%; margin: 16px 0 6px; accent-color: var(--accen
 .diagnostic-log-empty { padding: 38px 18px; color: var(--muted); text-align: center; }
 .benchmark-controls { display: grid; grid-template-columns: minmax(240px, 1fr) 140px auto; gap: 14px; align-items: end; }
 .benchmark-controls .field { margin: 0; }
+.benchmark-model-controls { margin-top: 14px; grid-template-columns: minmax(240px, 1fr) auto auto; }
+.benchmark-queue { display: grid; gap: 8px; margin-top: 16px; }
+.benchmark-queue-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.benchmark-queue-item span { overflow-wrap: anywhere; }
+#benchmarkRanking { margin-top: 16px; }
+#benchmarkRanking .cache-preview-table td { vertical-align: middle; }
 .benchmark-status { min-height: 18px; margin-top: 14px; }
 .benchmark-apply-actions { align-items: center; justify-content: flex-start; margin-top: 14px; }
 .benchmark-apply-actions .help { margin: 0; }
@@ -266,6 +273,7 @@ input[type="range"] { width: 100%; margin: 16px 0 6px; accent-color: var(--accen
   .nav-label, .privacy-card { display: none; }
   .settings-tabs { display: flex; overflow-x: auto; }
   .settings-tab { width: auto; flex: 0 0 auto; }
+  .settings-tab-child { margin-left: 0; }
   .workspace { padding: 24px 18px 56px; }
   .page-header { display: block; margin-bottom: 24px; }
   .header-actions { min-width: 0; justify-content: space-between; padding-top: 20px; }

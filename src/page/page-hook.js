@@ -33,8 +33,24 @@
   const CONTENT_CHANNEL = "content-capture";
   const URL_PATTERN_CACHE = new Map();
   const PENDING_CAPTURE_LIMIT = 8;
+  const RECENT_DOCUMENT_LIMIT = 4;
+  const RECENT_DOCUMENT_TTL_MS = 120_000;
+  const REPLAY_COOLDOWN_MS = 8_000;
+  const FETCH_RETRY_COOLDOWN_MS = 15_000;
+  const INVALID_DOCUMENT_RETRY_COOLDOWN_MS = 60_000;
+  const DIAGNOSTIC_COOLDOWN_MS = 15_000;
+  const MAX_TIMING_RECOVERY_REQUESTS = 3;
   const pendingCaptures = new Map();
+  // Acknowledged captures are no longer in pendingCaptures. Keep a separate,
+  // small, expiring copy so episode transitions can recover one-shot documents.
+  const recentDocuments = new Map();
+  const latestListingIdentityBySite = new Map();
+  const trackFetchesInFlight = new Map();
+  const failedFetchUntil = new Map();
+  const lastDiagnosticByKind = new Map();
   let nextCaptureEventId = 1;
+  let lastResyncScheduledAt = 0;
+  let scheduledResyncs = [];
   // The page's own fetch, kept before the wrapper below replaces it. The
   // document a listing names is fetched with this one, so LST's own request is
   // never observed and handed back to itself.
@@ -66,6 +82,121 @@
     return message.eventId;
   }
 
+  function pageVideoId(detected) {
+    try {
+      return String(
+        detected?.site?.videoIdFrom?.(detected.view)?.videoId || "",
+      );
+    } catch {
+      return "";
+    }
+  }
+
+  function captureOwner(detected) {
+    const pageId = pageVideoId(detected);
+    return {
+      pageVideoId: pageId,
+      // The Netflix /watch/<id> path names the episode. Prime's path can name
+      // the series instead, so its episode ID must come from the listing.
+      ownerVideoId: detected?.siteId === "netflix" ? pageId : "",
+    };
+  }
+
+  function documentKey(payload) {
+    return [
+      payload.site || "",
+      payload.ownerVideoId || "",
+      payload.pageVideoId || "",
+      payload.url || "",
+    ].join("\u001f");
+  }
+
+  function expireRecentDocuments() {
+    const now = Date.now();
+    for (const [key, entry] of recentDocuments) {
+      if (now - entry.at > RECENT_DOCUMENT_TTL_MS) recentDocuments.delete(key);
+    }
+    while (recentDocuments.size > RECENT_DOCUMENT_LIMIT) {
+      recentDocuments.delete(recentDocuments.keys().next().value);
+    }
+  }
+
+  function rememberDocument(payload) {
+    expireRecentDocuments();
+    const key = documentKey(payload);
+    recentDocuments.delete(key);
+    recentDocuments.set(key, {
+      payload,
+      at: Date.now(),
+      lastReplayAt: 0,
+    });
+    expireRecentDocuments();
+  }
+
+  // The content runtime requests recovery only while it has no subtitle cues.
+  // Re-publish the *document*, not the expired signed URL, using a new event ID
+  // so the bridge can deliver it even after acknowledging its original event.
+  function replayRecentDocument(detected, requestedVideoId = "") {
+    expireRecentDocuments();
+    const pageId = pageVideoId(detected);
+    const latestListing = latestListingIdentityBySite.get(detected.siteId);
+    const listingId =
+      latestListing?.pageVideoId === pageId ? latestListing.videoId || "" : "";
+    const requestedId =
+      requestedVideoId && requestedVideoId !== "unknown"
+        ? requestedVideoId
+        : "";
+    const targetId = String(requestedId || listingId || pageId || "");
+    if (!targetId || targetId === "unknown") return false;
+
+    const entries = [...recentDocuments.values()].reverse();
+    for (const entry of entries) {
+      const payload = entry.payload;
+      if (payload.site !== detected.siteId) continue;
+      if (payload.pageVideoId && pageId && payload.pageVideoId !== pageId)
+        continue;
+
+      if (payload.ownerVideoId) {
+        if (payload.ownerVideoId !== targetId) continue;
+      } else if (detected.siteId !== "netflix" || targetId !== pageId) {
+        // A Prime document without catalog ownership cannot be proven to
+        // belong to the episode on screen. Do not replay it across episodes.
+        continue;
+      }
+
+      const now = Date.now();
+      if (now - entry.lastReplayAt < REPLAY_COOLDOWN_MS) return true;
+      // Pending/unacknowledged events are already replayed by the ready handshake.
+      if (
+        [...pendingCaptures.values()].some(
+          (pending) =>
+            pending.type === "SUBTITLE_DOCUMENT" &&
+            documentKey(pending.payload || {}) === documentKey(payload),
+        )
+      )
+        return true;
+
+      entry.lastReplayAt = now;
+      postCapture("SUBTITLE_DOCUMENT", { ...payload });
+      note(detected.siteId, "capture-document-replayed", {
+        reason: "matching-episode",
+        ownerKnown: Boolean(payload.ownerVideoId),
+      });
+      return true;
+    }
+    return false;
+  }
+
+  function scheduleResync(videoId = "") {
+    if (Date.now() - lastResyncScheduledAt < 2_000) return;
+    lastResyncScheduledAt = Date.now();
+    for (const timer of scheduledResyncs) clearTimeout(timer);
+    resyncSubtitles(videoId);
+    scheduledResyncs = [600, 1800].map((delay) =>
+      setTimeout(() => resyncSubtitles(videoId), delay),
+    );
+  }
+
   // The isolated-world receiver can start before or after this hook. Its ready
   // message is repeated until acknowledged; every unacknowledged capture is
   // replayed when it arrives. Subtitle text remains bounded by the same event
@@ -83,16 +214,18 @@
     ) {
       if (event.data.type === "CAPTURE_CONSUMER_READY") {
         window.postMessage(
-          { source: SOURCE, channel: PAGE_CHANNEL, type: "CAPTURE_BRIDGE_READY" },
+          {
+            source: SOURCE,
+            channel: PAGE_CHANNEL,
+            type: "CAPTURE_BRIDGE_READY",
+          },
           "*",
         );
         for (const message of pendingCaptures.values()) {
           window.postMessage({ ...message, delivery: "replay" }, "*");
         }
       }
-      resyncSubtitles();
-      setTimeout(resyncSubtitles, 600);
-      setTimeout(resyncSubtitles, 1800);
+      scheduleResync(event.data.videoId || "");
     }
   });
 
@@ -150,13 +283,15 @@
 
   function publish(siteId, url, text, extra = {}) {
     if (!isLikelySubtitleText(text)) return false;
-    if (url) rememberCaptured(url);
-    postCapture("SUBTITLE_DOCUMENT", {
+    const payload = {
       url: String(url || ""),
       text,
       site: siteId,
       ...extra,
-    });
+    };
+    if (url) rememberCaptured(url);
+    rememberDocument(payload);
+    postCapture("SUBTITLE_DOCUMENT", payload);
     return true;
   }
 
@@ -165,10 +300,66 @@
   // language code — never subtitle text — so the event log can say what happened
   // on a service LST has no other view of.
   function note(siteId, event, details = {}) {
+    // Recovery checks may see dozens of Netflix media/CDN resources whose URLs
+    // merely match a broad subtitle heuristic. One note per category is enough.
+    const category = [
+      siteId,
+      event,
+      details.reason || "",
+      details.source || "",
+      details.contentType || "",
+    ].join("|");
+    const now = Date.now();
+    if (
+      now - (lastDiagnosticByKind.get(category) || 0) <
+      DIAGNOSTIC_COOLDOWN_MS
+    ) {
+      return;
+    }
+    lastDiagnosticByKind.set(category, now);
+    if (lastDiagnosticByKind.size > 80) {
+      lastDiagnosticByKind.delete(lastDiagnosticByKind.keys().next().value);
+    }
     postCapture(
       "SUBTITLE_CAPTURE",
       { site: siteId, event, ...details },
       { retain: false },
+    );
+  }
+
+  // Do not log actual response content or signed resource URLs. The first
+  // characters are used to classify only, not included in diagnostics.
+  function documentKind(text) {
+    const head = String(text || "")
+      .trimStart()
+      .slice(0, 120);
+    if (/^WEBVTT/i.test(head)) return "vtt";
+    if (/<tt[\s>]/i.test(head)) return "ttml";
+    if (/^<!doctype\s+html|^<html[\s>]/i.test(head)) return "html";
+    if (/^[\[{]/.test(head)) return "json-like";
+    if (/^<\?xml|^</.test(head)) return "xml-or-html";
+    if (!head) return "empty";
+    if (/[\u0000-\u0008\u000E-\u001F]/.test(head)) return "binary-like";
+    return "other";
+  }
+
+  function noteNetworkCapture(detected, source, captured, text, details = {}) {
+    note(
+      detected.siteId,
+      captured ? "capture-network-accepted" : "capture-network-rejected",
+      {
+        source,
+        reason: captured
+          ? "valid-subtitle-document"
+          : "invalid-subtitle-document",
+        status: Number(details.status) || 0,
+        contentType: String(details.contentType || "")
+          .split(";")[0]
+          .slice(0, 80),
+        chars: String(text || "").length,
+        documentKind: documentKind(text),
+        pageVideoId: pageVideoId(detected),
+      },
     );
   }
 
@@ -190,32 +381,99 @@
     CAPTURED_TRACK_URLS.add(url);
   }
 
-  // The track itself, fetched here in the page world. These URLs are signed and
-  // short-lived, so the document is read now and never asked for again; a
-  // request that fails leaves nothing behind but a reason.
-  async function fetchTrackText(url) {
-    if (typeof originalFetch !== "function") return "";
+  // Avoid concurrent refetches and repeated requests for signed URLs that just
+  // failed. Recovery primarily replays already captured documents from memory.
+  async function fetchTrackText(url, siteId = "", source = "unknown") {
+    if (typeof originalFetch !== "function" || !url) return "";
+    if (Date.now() < (failedFetchUntil.get(url) || 0)) return "";
+    if (trackFetchesInFlight.has(url)) return trackFetchesInFlight.get(url);
+
+    const request = (async () => {
+      try {
+        const response = await originalFetch.call(window, url);
+        if (!response?.ok) {
+          if (siteId)
+            note(siteId, "capture-fetch-failed", {
+              reason: "http-status",
+              source,
+              status: Number(response?.status) || 0,
+            });
+          failedFetchUntil.set(url, Date.now() + FETCH_RETRY_COOLDOWN_MS);
+          return "";
+        }
+        const text = await response.text();
+        if (!isLikelySubtitleText(text)) {
+          if (siteId)
+            note(siteId, "capture-fetch-failed", {
+              reason: "invalid-subtitle-document",
+              source,
+              status: Number(response.status) || 0,
+              contentType: String(response.headers?.get?.("content-type") || "")
+                .split(";")[0]
+                .slice(0, 80),
+              chars: text.length,
+              documentKind: documentKind(text),
+            });
+          failedFetchUntil.set(
+            url,
+            Date.now() + INVALID_DOCUMENT_RETRY_COOLDOWN_MS,
+          );
+          return "";
+        }
+        return text;
+      } catch {
+        if (siteId)
+          note(siteId, "capture-fetch-failed", {
+            reason: "request-failed",
+            source,
+          });
+        failedFetchUntil.set(url, Date.now() + FETCH_RETRY_COOLDOWN_MS);
+        return "";
+      }
+    })();
+    trackFetchesInFlight.set(url, request);
     try {
-      const response = await originalFetch.call(window, url);
-      if (!response?.ok) return "";
-      return await response.text();
-    } catch {
-      return "";
+      return await request;
+    } finally {
+      trackFetchesInFlight.delete(url);
+      // Keep this auxiliary map bounded; these URLs are typically signed.
+      while (failedFetchUntil.size > 32) {
+        failedFetchUntil.delete(failedFetchUntil.keys().next().value);
+      }
     }
   }
 
   function checkRecentResourceTimings(detected) {
-    if (!detected || typeof window.performance?.getEntriesByType !== "function") return;
+    if (!detected || typeof window.performance?.getEntriesByType !== "function")
+      return;
     try {
       const entries = window.performance.getEntriesByType("resource");
-      for (let i = entries.length - 1; i >= 0 && i >= entries.length - 40; i--) {
+      let attempted = 0;
+      for (
+        let i = entries.length - 1;
+        i >= 0 && i >= entries.length - 40;
+        i--
+      ) {
+        if (attempted >= MAX_TIMING_RECOVERY_REQUESTS) break;
         const url = entries[i]?.name;
-        if (url && matchesSubtitleUrl(detected.site, url) && !alreadyCaptured(url)) {
-          fetchTrackText(url).then((text) => {
-            if (text && isLikelySubtitleText(text)) {
-              publish(detected.siteId, url, text, { capture: "resource-timing" });
-            }
-          }).catch(() => {});
+        if (
+          url &&
+          matchesSubtitleUrl(detected.site, url) &&
+          !alreadyCaptured(url) &&
+          Date.now() >= (failedFetchUntil.get(url) || 0) &&
+          !trackFetchesInFlight.has(url)
+        ) {
+          attempted++;
+          fetchTrackText(url, detected.siteId, "resource-timing-poll")
+            .then((text) => {
+              if (text && !alreadyCaptured(url)) {
+                publish(detected.siteId, url, text, {
+                  capture: "resource-timing",
+                  ...captureOwner(detected),
+                });
+              }
+            })
+            .catch(() => {});
         }
       }
     } catch {}
@@ -226,21 +484,32 @@
     try {
       const found = detected.site.activeTimedTextTrack(window);
       if (found?.url && !alreadyCaptured(found.url)) {
-        fetchTrackText(found.url).then((text) => {
-          if (text && isLikelySubtitleText(text)) {
-            publish(detected.siteId, found.url, text, {
-              language: found.language || "",
-              capture: "player-api",
-            });
-          }
-        }).catch(() => {});
+        fetchTrackText(found.url, detected.siteId, "player-api")
+          .then((text) => {
+            if (text && !alreadyCaptured(found.url)) {
+              publish(detected.siteId, found.url, text, {
+                language: found.language || "",
+                capture: "player-api",
+                ...captureOwner(detected),
+              });
+            }
+          })
+          .catch(() => {});
       }
     } catch {}
   }
 
-  function resyncSubtitles() {
+  function resyncSubtitles(requestedVideoId = "") {
     const detected = currentSite();
     if (!detected) return;
+    if (replayRecentDocument(detected, requestedVideoId)) return;
+    note(detected.siteId, "capture-resync-no-document", {
+      reason: "no-matching-cached-document",
+      requestedEpisodeKnown: Boolean(
+        requestedVideoId && requestedVideoId !== "unknown",
+      ),
+      cachedDocumentCount: recentDocuments.size,
+    });
     checkRecentResourceTimings(detected);
     checkActiveTrack(detected);
   }
@@ -250,7 +519,11 @@
   function xhrJson(xhr) {
     try {
       if (xhr.responseType === "json") return xhr.response || null;
-      if (xhr.responseType && xhr.responseType !== "" && xhr.responseType !== "text") {
+      if (
+        xhr.responseType &&
+        xhr.responseType !== "" &&
+        xhr.responseType !== "text"
+      ) {
         return null;
       }
       return JSON.parse(xhr.responseText);
@@ -277,16 +550,21 @@
     } catch {
       identity = null;
     }
-    if (!identity) return;
+    if (!identity) return null;
+    latestListingIdentityBySite.set(detected.siteId, {
+      ...identity,
+      pageVideoId: pageVideoId(detected),
+    });
     postCapture("EPISODE_IDENTITY", {
       site: detected.siteId,
       ...identity,
     });
+    return identity;
   }
 
   async function captureTimedTextFromListing(detected, payload) {
     const site = detected.site;
-    publishListingIdentity(detected, payload);
+    const identity = publishListingIdentity(detected, payload);
     let tracks = [];
     let choice = null;
     try {
@@ -306,15 +584,39 @@
       });
       return;
     }
-    if (alreadyCaptured(track.url)) return;
+    const ownerVideoId = String(identity?.videoId || "");
+    const ownerPageVideoId = pageVideoId(detected);
+    expireRecentDocuments();
+    // Skip an already captured *document for this episode*, not merely a URL:
+    // different episodes could theoretically receive the same resource URL.
+    if (
+      [...recentDocuments.values()].some(
+        ({ payload: saved }) =>
+          saved.site === detected.siteId &&
+          saved.url === track.url &&
+          saved.ownerVideoId === ownerVideoId &&
+          saved.pageVideoId === ownerPageVideoId,
+      )
+    ) {
+      note(detected.siteId, "capture-duplicate-skipped", {
+        reason: "document-already-retained",
+        ownerKnown: Boolean(ownerVideoId),
+      });
+      return;
+    }
 
-    const text = await fetchTrackText(track.url);
+    const text = await fetchTrackText(
+      track.url,
+      detected.siteId,
+      "playback-resources",
+    );
     const captured = publish(detected.siteId, track.url, text, {
       capture: "playback-resources",
       language: track.languageCode,
       reason,
+      ownerVideoId,
+      pageVideoId: ownerPageVideoId,
     });
-    if (captured) rememberCaptured(track.url);
     note(
       detected.siteId,
       captured
@@ -354,8 +656,8 @@
     })().catch(() => {});
   }
 
-  async function inspectResponse(response) {
-    const detected = currentSite();
+  async function inspectResponse(response, requestDetected = null) {
+    const detected = requestDetected || currentSite();
     if (!detected) return;
     try {
       const url = response.url || "";
@@ -376,15 +678,27 @@
       if (length && length > 5_000_000) return;
 
       const text = await response.clone().text();
-      publish(detected.siteId, url, text);
+
+      const captured = publish(
+        detected.siteId,
+        url,
+        text,
+        captureOwner(detected),
+      );
+
+      noteNetworkCapture(detected, "fetch", captured, text, {
+        status: response.status,
+        contentType: type,
+      });
     } catch {
       // Never let diagnostics interfere with playback.
     }
   }
 
   window.fetch = async function (...args) {
+    const detectedAtRequest = currentSite();
     const response = await originalFetch.apply(this, args);
-    await inspectResponse(response);
+    await inspectResponse(response, detectedAtRequest);
     return response;
   };
 
@@ -397,10 +711,10 @@
   };
 
   XMLHttpRequest.prototype.send = function (...args) {
-    if (currentSite()) {
+    const detectedAtRequest = currentSite();
+    if (detectedAtRequest) {
       this.addEventListener("load", function () {
-        const detected = currentSite();
-        if (!detected) return;
+        const detected = detectedAtRequest;
         try {
           const url = this.responseURL || this.__notSubtitleUrl || "";
           if (matchesPlaybackResourcesUrl(detected.site, url)) {
@@ -415,7 +729,9 @@
             return;
           }
 
-          const type = (this.getResponseHeader("content-type") || "").toLowerCase();
+          const type = (
+            this.getResponseHeader("content-type") || ""
+          ).toLowerCase();
 
           if (
             !matchesSubtitleType(detected.site, type) &&
@@ -424,7 +740,17 @@
             return;
           }
           if (this.responseType === "" || this.responseType === "text") {
-            publish(detected.siteId, url, this.responseText);
+            const text = this.responseText;
+            const captured = publish(
+              detected.siteId,
+              url,
+              text,
+              captureOwner(detected),
+            );
+            noteNetworkCapture(detected, "xhr", captured, text, {
+              status: this.status,
+              contentType: type,
+            });
           } else if (
             this.responseType === "arraybuffer" &&
             this.response &&
@@ -432,12 +758,33 @@
           ) {
             try {
               const text = new TextDecoder("utf-8").decode(this.response);
-              publish(detected.siteId, url, text);
+              const captured = publish(
+                detected.siteId,
+                url,
+                text,
+                captureOwner(detected),
+              );
+              noteNetworkCapture(detected, "xhr", captured, text, {
+                status: this.status,
+                contentType: type,
+              });
             } catch {}
           } else if (this.responseType === "blob" && this.response) {
-            this.response.text().then((text) => {
-              publish(detected.siteId, url, text);
-            }).catch(() => {});
+            this.response
+              .text()
+              .then((text) => {
+                const captured = publish(
+                  detected.siteId,
+                  url,
+                  text,
+                  captureOwner(detected),
+                );
+                noteNetworkCapture(detected, "xhr", captured, text, {
+                  status: this.status,
+                  contentType: type,
+                });
+              })
+              .catch(() => {});
           }
         } catch {
           // Ignore capture failures.
@@ -455,12 +802,21 @@
         if (!detected) return;
         for (const entry of list.getEntries()) {
           const url = entry?.name;
-          if (url && matchesSubtitleUrl(detected.site, url) && !alreadyCaptured(url)) {
-            fetchTrackText(url).then((text) => {
-              if (text && isLikelySubtitleText(text)) {
-                publish(detected.siteId, url, text, { capture: "resource-timing" });
-              }
-            }).catch(() => {});
+          if (
+            url &&
+            matchesSubtitleUrl(detected.site, url) &&
+            !alreadyCaptured(url)
+          ) {
+            fetchTrackText(url, detected.siteId, "resource-timing-observer")
+              .then((text) => {
+                if (text && !alreadyCaptured(url)) {
+                  publish(detected.siteId, url, text, {
+                    capture: "resource-timing",
+                    ...captureOwner(detected),
+                  });
+                }
+              })
+              .catch(() => {});
           }
         }
       });
@@ -469,7 +825,6 @@
   }
 
   window.addEventListener("popstate", () => {
-    setTimeout(resyncSubtitles, 400);
-    setTimeout(resyncSubtitles, 1200);
+    scheduleResync();
   });
 })();

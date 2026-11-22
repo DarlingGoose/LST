@@ -3,19 +3,13 @@ const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
 const settingsSchema = globalThis.LSTSettingsSchema;
 if (!settingsSchema) throw new Error("settings-schema.js must load before options.js");
+const promptPolicy = globalThis.LSTPromptPolicy;
+if (!promptPolicy) throw new Error("prompt-policy.js must load before options.js");
 const DEFAULT_MODEL = "translategemma:4b";
 const PROVIDER_NAMES = { ollama: "Ollama", deepseek: "DeepSeek", gemini: "Gemini" };
-const ORIGINAL_TRANSLATION_PROMPT = [
-  "You are a subtitle translator.",
-  "Translate every requested subtitle into {{targetLanguage}}.",
-  "Use natural, concise language suitable for subtitles.",
-  "Preserve names, honorifics, punctuation, speaker labels, and intent.",
-  "Do not add explanations, notes, analysis, or romanization.",
-  "Do not merge, split, omit, or reorder items."
-].join(" ");
 const providerModels = { ollama: DEFAULT_MODEL, deepseek: "", gemini: "" };
 let configuredKeys = { deepseek: false, gemini: false };
-const SETTINGS_TABS = ["general", "subtitles", "storage", "advanced"];
+const SETTINGS_TABS = ["general", "subtitles", "storage", "advanced", "benchmark"];
 const TAB_DETAILS = {
   general: {
     title: "Translation control center",
@@ -32,12 +26,20 @@ const TAB_DETAILS = {
   advanced: {
     title: "Advanced and diagnostics",
     description: "Troubleshooting controls with privacy boundaries kept explicit."
+  },
+  benchmark: {
+    title: "Model benchmark",
+    description: "Compare subtitle latency before choosing realtime playback or episode caching."
   }
 };
 let diagnosticLogEvents = [];
 let currentPlayerHealthSnapshot = null;
 let translationCaches = [];
 let latestBenchmark = null;
+const benchmarkQueue = [];
+let benchmarkRunning = false;
+let modelPromptsDraft = {};
+let modelPromptEditingKey = "";
 
 // Where the LST control button and its status may sit inside a player, and the
 // legacy spelling of the setting that hides the service's own captions.
@@ -676,7 +678,56 @@ function renderBenchmarkCacheOptions() {
     ));
   }
   if ([...select.options].some((option) => option.value === selected)) select.value = selected;
-  $("runBenchmark").disabled = false;
+  $("runBenchmark").disabled = benchmarkRunning || !benchmarkQueue.length;
+}
+
+function refreshBenchmarkModels() {
+  const source = $("model");
+  const select = $("benchmarkModel");
+  const previous = select.value;
+  select.replaceChildren();
+  for (const option of source.options) {
+    if (option.value && !option.textContent.includes("— unavailable")) {
+      select.appendChild(new Option(option.textContent, option.value));
+    }
+  }
+  if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+  else if ([...select.options].some((option) => option.value === source.value)) select.value = source.value;
+  $("addBenchmarkModel").disabled = !select.value || benchmarkRunning;
+}
+
+function renderBenchmarkQueue() {
+  const container = $("benchmarkQueue");
+  container.replaceChildren();
+  for (const [index, entry] of benchmarkQueue.entries()) {
+    const row = document.createElement("div");
+    row.className = "benchmark-queue-item";
+    const label = document.createElement("span");
+    label.textContent = `${index + 1}. ${PROVIDER_NAMES[entry.provider]} · ${entry.model}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary";
+    remove.textContent = "Remove";
+    remove.disabled = benchmarkRunning;
+    remove.addEventListener("click", () => {
+      benchmarkQueue.splice(index, 1);
+      renderBenchmarkQueue();
+    });
+    row.append(label, remove);
+    container.appendChild(row);
+  }
+  $("runBenchmark").disabled = benchmarkRunning || !translationCaches.length || !benchmarkQueue.length;
+  $("addBenchmarkModel").disabled = benchmarkRunning || !$("benchmarkModel").value || benchmarkQueue.length >= 5;
+}
+
+function benchmarkVerdict(response) {
+  const latencies = response.cueLatenciesMs || [];
+  const failed = (response.results || []).some((entry) => !entry.translatedText);
+  if (failed || !latencies.length) return { label: "Cache first", reason: "Some sample lines failed." };
+  const slowest = Math.max(...latencies);
+  if (slowest <= 1000) return { label: "Realtime ready", reason: "Every tested line finished within 1 second." };
+  if (slowest <= 2000) return { label: "Realtime possible", reason: "Every tested line finished within 2 seconds; occasional delays may still occur." };
+  return { label: "Cache first", reason: "At least one line exceeded the 2-second playback target." };
 }
 
 function formatDuration(ms) {
@@ -743,28 +794,69 @@ function renderBenchmark(response, cacheId) {
 async function runTranslationBenchmark() {
   const cacheId = $("benchmarkCache").value;
   if (!cacheId) throw new Error("Choose a cached episode first.");
+  if (!benchmarkQueue.length) throw new Error("Add at least one model to the queue.");
   const button = $("runBenchmark");
-  button.disabled = true;
-  button.textContent = "Running…";
+  benchmarkRunning = true;
+  renderBenchmarkQueue();
+  button.textContent = "Comparing…";
   $("benchmarkResults").hidden = true;
   $("benchmarkApplyActions").hidden = true;
+  $("benchmarkRanking").hidden = true;
+  $("benchmarkAdvice").hidden = true;
+  $("benchmarkRankingBody").replaceChildren();
   latestBenchmark = null;
-  $("benchmarkStatus").textContent = "Translating a fresh sample…";
+  const settings = collectSettings();
+  const sampleSize = Math.max(1, Math.min(12, Number($("benchmarkSize").value) || 4));
+  let completed = 0;
   try {
-    const response = await runtimeMessage({
-      type: "BENCHMARK_TRANSLATION",
-      cacheId,
-      sampleSize: Math.max(1, Math.min(12, Number($("benchmarkSize").value) || 4)),
-      settings: collectSettings(),
-    });
-    renderBenchmark(response, cacheId);
-    $("benchmarkStatus").textContent =
-      `${PROVIDER_NAMES[response.provider] || response.provider} · ${response.model} · ` +
-      `${response.targetLanguage} · ${response.contextCueCount || 0} context lines · cache unchanged`;
-    setStatus(`Benchmark completed in ${formatDuration(response.trace?.totalMs)}.`, "success");
+    for (const [index, entry] of benchmarkQueue.entries()) {
+      $("benchmarkStatus").textContent = settings.preloadModelBeforeBenchmark && entry.provider === "ollama"
+        ? `Loading ${index + 1}/${benchmarkQueue.length}: ${entry.model}, then testing subtitle lines…`
+        : `Testing ${index + 1}/${benchmarkQueue.length}: ${entry.model}…`;
+      const row = document.createElement("tr");
+      const cells = Array.from({ length: 6 }, () => document.createElement("td"));
+      cells[0].textContent = `${PROVIDER_NAMES[entry.provider]} · ${entry.model}`;
+      row.append(...cells);
+      $("benchmarkRankingBody").appendChild(row);
+      $("benchmarkRanking").hidden = false;
+      try {
+        const response = await runtimeMessage({
+          type: "BENCHMARK_TRANSLATION",
+          mode: "realtime",
+          cacheId,
+          sampleSize,
+          settings: { ...settings, provider: entry.provider, model: entry.model },
+        });
+        completed += 1;
+        const latencies = response.cueLatenciesMs || [];
+        const sorted = [...latencies].sort((a, b) => a - b);
+        const typical = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+        const verdict = benchmarkVerdict(response);
+        cells[1].textContent = response.preload === "completed" ? formatDuration(response.preloadMs) : "—";
+        cells[2].textContent = formatDuration(latencies[0]);
+        cells[3].textContent = formatDuration(typical);
+        cells[4].textContent = formatDuration(Math.max(...latencies));
+        const detail = document.createElement("button");
+        detail.type = "button";
+        detail.className = "secondary";
+        detail.textContent = `${verdict.label} · details`;
+        detail.title = verdict.reason;
+        detail.addEventListener("click", () => {
+          renderBenchmark(response, cacheId);
+          $("benchmarkAdvice").hidden = false;
+          $("benchmarkAdvice").textContent = `${entry.model}: ${verdict.reason} First-request load time and subtitle complexity can vary; this sample is a guide, not a guarantee.`;
+        });
+        cells[5].appendChild(detail);
+      } catch (error) {
+        cells[5].textContent = `Could not test: ${error.message}`;
+      }
+    }
+    $("benchmarkStatus").textContent = `${completed}/${benchmarkQueue.length} models tested. Select a result for details. No cache was changed.`;
+    setStatus("Model comparison finished.", completed ? "success" : "error");
   } finally {
-    button.disabled = !translationCaches.length;
-    button.textContent = "Run benchmark";
+    benchmarkRunning = false;
+    button.textContent = "Compare queued models";
+    renderBenchmarkQueue();
   }
 }
 
@@ -880,6 +972,8 @@ async function load() {
   $("showOriginal").checked = s.showOriginal === true;
   $("showTranslated").checked = s.showTranslated !== false;
   $("showStatusMessages").checked = s.showStatusMessages !== false;
+  $("showNetflixCaptionNotice").checked = s.showNetflixCaptionNotice === true;
+  $("showCacheEta").checked = s.showCacheEta === true;
   $("autoTranslateAhead").checked = s.autoTranslateAhead !== false;
   $("useTranslationContext").checked = s.useTranslationContext === true;
   renderContextLevel(s.contextLevel);
@@ -899,7 +993,10 @@ async function load() {
   $("minimumSubtitleDisplaySeconds").value = s.minimumSubtitleDisplaySeconds ?? 2;
   $("maximumVisibleSubtitles").value = s.maximumVisibleSubtitles ?? 2;
   $("requestTimeoutSeconds").value = s.requestTimeoutSeconds ?? 75;
-  $("customTranslationPrompt").value = s.customTranslationPrompt || ORIGINAL_TRANSLATION_PROMPT;
+  $("preloadModelBeforeBenchmark").checked = s.preloadModelBeforeBenchmark === true;
+  $("customTranslationPrompt").value = s.customTranslationPrompt || "";
+  modelPromptsDraft = { ...(s.modelPrompts || {}) };
+  modelPromptEditingKey = "";
   $("modelSummary").textContent = providerModels[$("provider").value] || "No model selected";
   applyAppearance(s);
   await loadCacheLibrary();
@@ -921,6 +1018,7 @@ async function load() {
     option.value = providerModels[$("provider").value] || "";
     option.textContent = option.value || "No model selected";
     select.appendChild(option);
+    renderModelPromptEditor();
     setStatus(`Could not load ${PROVIDER_NAMES[$("provider").value]} models: ${error.message}`, "error");
   }
 }
@@ -979,6 +1077,28 @@ function renderProvider() {
     : "No key saved. Enter a key and choose Save key before refreshing models.";
 }
 
+function renderModelPromptEditor() {
+  if (modelPromptEditingKey) {
+    const edited = $("modelTranslationPrompt").value.trim();
+    if (edited) modelPromptsDraft[modelPromptEditingKey] = edited;
+    else delete modelPromptsDraft[modelPromptEditingKey];
+  }
+  const provider = $("provider").value;
+  const model = $("model").value;
+  modelPromptEditingKey = model ? promptPolicy.keyFor(provider, model) : "";
+  $("modelTranslationPrompt").disabled = !model;
+  $("resetModelTranslationPrompt").disabled = !model;
+  $("modelTranslationPrompt").value = modelPromptsDraft[modelPromptEditingKey] || "";
+  const automatic = promptPolicy.automatic(model);
+  const size = automatic.sizeBillions == null
+    ? "size not identified; concise default"
+    : `${automatic.sizeBillions}B; ${automatic.tier} default`;
+  $("modelPromptHelp").textContent = model
+    ? `${PROVIDER_NAMES[provider]} · ${model} · ${size}. Leave blank for the global prompt, if set, or this automatic default.`
+    : "Select a model in General to edit its prompt.";
+  $("promptDefaultPreview").textContent = automatic.prompt;
+}
+
 async function refreshModels(selected = $("model").value) {
   const provider = $("provider").value;
   setStatus(`Loading ${PROVIDER_NAMES[provider]} models…`);
@@ -1019,6 +1139,8 @@ async function refreshModels(selected = $("model").value) {
   $("connectionState").textContent = "Connected";
   providerModels[provider] = select.value;
   $("modelSummary").textContent = select.value || "No model selected";
+  refreshBenchmarkModels();
+  renderModelPromptEditor();
   setStatus(`Found ${response.models.length} ${PROVIDER_NAMES[provider]} model${response.models.length === 1 ? "" : "s"}.`, "success");
 }
 
@@ -1038,11 +1160,14 @@ function renderPullProgress(message) {
 
 function collectSettings() {
   providerModels[$("provider").value] = $("model").value;
+  if (modelPromptEditingKey) {
+    const edited = $("modelTranslationPrompt").value.trim();
+    if (edited) modelPromptsDraft[modelPromptEditingKey] = edited;
+    else delete modelPromptsDraft[modelPromptEditingKey];
+  }
   return {
-    customTranslationPrompt:
-      $("customTranslationPrompt").value.trim() === ORIGINAL_TRANSLATION_PROMPT
-        ? ""
-        : $("customTranslationPrompt").value.trim(),
+    customTranslationPrompt: $("customTranslationPrompt").value.trim(),
+    modelPrompts: { ...modelPromptsDraft },
     provider: $("provider").value,
     ollamaModel: providerModels.ollama,
     deepseekModel: providerModels.deepseek,
@@ -1058,6 +1183,8 @@ function collectSettings() {
     showOriginal: $("showOriginal").checked,
     showTranslated: $("showTranslated").checked,
     showStatusMessages: $("showStatusMessages").checked,
+    showNetflixCaptionNotice: $("showNetflixCaptionNotice").checked,
+    showCacheEta: $("showCacheEta").checked,
     autoTranslateAhead: $("autoTranslateAhead").checked,
     useTranslationContext: $("useTranslationContext").checked,
     contextLevel:
@@ -1078,6 +1205,7 @@ function collectSettings() {
     minimumSubtitleDisplaySeconds: clampNumber("minimumSubtitleDisplaySeconds", 2),
     maximumVisibleSubtitles: Math.round(clampNumber("maximumVisibleSubtitles", 2)),
     requestTimeoutSeconds: clampNumber("requestTimeoutSeconds", 75),
+    preloadModelBeforeBenchmark: $("preloadModelBeforeBenchmark").checked,
     subtitleHorizontalPosition: $("subtitleHorizontalPosition").value,
     subtitleVerticalPosition: clampNumber("subtitleVerticalPosition", 9),
     subtitleMaxWidth: clampNumber("subtitleMaxWidth", 92),
@@ -2007,6 +2135,8 @@ $("provider").addEventListener("change", () => {
   const selected = providerModels[$("provider").value];
   $("model").replaceChildren(new Option(selected || "Refresh models to choose", selected || ""));
   $("modelSummary").textContent = selected || "No model selected";
+  refreshBenchmarkModels();
+  renderModelPromptEditor();
   const provider = $("provider").value;
   refreshModels(selected).catch((error) => {
     if (provider !== $("provider").value) return;
@@ -2103,10 +2233,20 @@ $("resetInterface").addEventListener("click", async () => {
 });
 
 $("resetTranslationPrompt").addEventListener("click", () => {
-  $("customTranslationPrompt").value = ORIGINAL_TRANSLATION_PROMPT;
+  $("customTranslationPrompt").value = "";
   markUnsaved();
-  setStatus("Original translation prompt restored. Save changes to apply it.", "success");
+  setStatus("Global prompt cleared. Save changes to use model-specific or automatic prompts.", "success");
 });
+
+$("resetModelTranslationPrompt").addEventListener("click", () => {
+  if (!modelPromptEditingKey) return;
+  delete modelPromptsDraft[modelPromptEditingKey];
+  $("modelTranslationPrompt").value = "";
+  markUnsaved();
+});
+
+$("modelTranslationPrompt").addEventListener("input", markUnsaved);
+$("customTranslationPrompt").addEventListener("input", markUnsaved);
 
 $("openSetup").addEventListener("click", () => {
   try {
@@ -2120,6 +2260,7 @@ $("openSetup").addEventListener("click", () => {
 $("model").addEventListener("change", () => {
   providerModels[$("provider").value] = $("model").value;
   $("modelSummary").textContent = $("model").value || "No model selected";
+  renderModelPromptEditor();
 });
 
 $("copyOllamaCommand").addEventListener("click", async () => {
@@ -2229,6 +2370,19 @@ $("runBenchmark").addEventListener("click", () => {
     $("benchmarkStatus").textContent = `Benchmark failed: ${error.message}`;
     setStatus(`Benchmark failed: ${error.message}`, "error");
   });
+});
+
+$("addBenchmarkModel").addEventListener("click", () => {
+  const provider = $("provider").value;
+  const model = $("benchmarkModel").value;
+  if (!model || benchmarkRunning || benchmarkQueue.length >= 5) return;
+  if (benchmarkQueue.some((entry) => entry.provider === provider && entry.model === model)) {
+    $("benchmarkStatus").textContent = "That provider and model are already queued.";
+    return;
+  }
+  benchmarkQueue.push({ provider, model });
+  renderBenchmarkQueue();
+  $("benchmarkStatus").textContent = `${benchmarkQueue.length} model${benchmarkQueue.length === 1 ? "" : "s"} queued.`;
 });
 
 $("applyBenchmark").addEventListener("click", () => {

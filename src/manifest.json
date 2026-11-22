@@ -25,6 +25,7 @@
   "background": {
     "scripts": [
       "shared/settings-schema.js",
+      "shared/prompt-policy.js",
       "sites/playback-site.js",
       "sites/netflix.js",
       "sites/prime-video.js",

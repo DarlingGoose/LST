@@ -637,6 +637,11 @@ vm.runInContext(
   backgroundContext,
   { filename: "settings-schema.js" },
 );
+vm.runInContext(
+  await fs.readFile(new URL("../src/shared/prompt-policy.js", import.meta.url), "utf8"),
+  backgroundContext,
+  { filename: "prompt-policy.js" },
+);
 vm.runInContext(identitySource, backgroundContext, { filename: "episode-identity.js" });
 vm.runInContext(translationContextSource, backgroundContext, {
   filename: "translation-context.js",

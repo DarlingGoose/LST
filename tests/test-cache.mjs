@@ -28,6 +28,11 @@ const subtitleFileText = [
 async function mockFetch(url, init = {}) {
   fetchRequests.push({ url, init });
 
+  if (url.endsWith("/api/generate") && JSON.parse(init.body || "{}").prompt === "") {
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    return { ok: true, status: 200, statusText: "OK", async json() { return { done: true }; } };
+  }
+
   if (url.startsWith("https://www.subtitlebot.com/api/jimaku/search")) {
     return {
       ok: true,
@@ -138,6 +143,11 @@ vm.runInContext(
   await fs.readFile(new URL("../src/shared/settings-schema.js", import.meta.url), "utf8"),
   context,
   { filename: "settings-schema.js" },
+);
+vm.runInContext(
+  await fs.readFile(new URL("../src/shared/prompt-policy.js", import.meta.url), "utf8"),
+  context,
+  { filename: "prompt-policy.js" },
 );
 vm.runInContext(
   await fs.readFile(new URL("../src/shared/episode-identity.js", import.meta.url), "utf8"),
@@ -382,6 +392,51 @@ assert.equal(
   "the redacted benchmark trace is available in diagnostics",
 );
 const benchmarkResponse = response;
+const realtimeBenchmark = await send({
+  type: "BENCHMARK_TRANSLATION",
+  mode: "realtime",
+  cacheId,
+  sampleSize: 2,
+  settings: {
+    provider: "ollama",
+    model: "qwen3:8b",
+    targetLanguage: "English",
+    verifyTranslations: false,
+  },
+});
+assert.equal(realtimeBenchmark.ok, true);
+assert.equal(realtimeBenchmark.mode, "realtime");
+assert.equal(realtimeBenchmark.cueLatenciesMs.length, 2);
+assert.equal(realtimeBenchmark.trace.providerRequests, 2,
+  "realtime mode sends one request per line rather than timing a batch");
+assert.equal(JSON.stringify(values[`translationCache:${cacheId}`]), cacheBeforeBenchmark);
+const requestsBeforePreload = fetchRequests.length;
+const loadedBenchmark = await send({
+  type: "BENCHMARK_TRANSLATION",
+  mode: "realtime",
+  cacheId,
+  sampleSize: 2,
+  settings: {
+    provider: "ollama",
+    model: "qwen3:8b",
+    targetLanguage: "English",
+    verifyTranslations: false,
+    preloadModelBeforeBenchmark: true,
+  },
+});
+assert.equal(loadedBenchmark.ok, true);
+assert.equal(loadedBenchmark.preload, "completed");
+assert.ok(loadedBenchmark.preloadMs >= 10);
+assert.equal(loadedBenchmark.cueLatenciesMs.length, 2);
+assert.equal(loadedBenchmark.trace.providerRequests, 2,
+  "preloading is not counted as a subtitle provider request");
+const preloadRequests = fetchRequests.slice(requestsBeforePreload).filter((request) =>
+  request.url.endsWith("/api/generate"));
+assert.equal(preloadRequests.length, 3);
+assert.deepEqual(JSON.parse(preloadRequests[0].init.body), {
+  model: "qwen3:8b", prompt: "", stream: false, keep_alive: "15m",
+});
+assert.equal(JSON.stringify(values[`translationCache:${cacheId}`]), cacheBeforeBenchmark);
 const incompatibleApply = await send({
   type: "APPLY_BENCHMARK_TRANSLATIONS",
   cacheId,
